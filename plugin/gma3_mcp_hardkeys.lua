@@ -1790,7 +1790,11 @@ function QuickeyBackend:unavailable(code)
   if not e then out[#out + 1] = why
   elseif not e.qualified then out[#out + 1] = string.format("Quickey code %s is discovered only (no KB-10 evidence); this backend dispatches only qualified codes", e.name) end
   local x, xerr = self:_deps()
-  if not x then out[#out + 1] = xerr end
+  -- A direct-capable code still taps through deps.quickeys.press without the executor deps (review 15); its holds are
+  -- refused at preflight.
+  local q = type(self.instance._deps) == "table" and self.instance._deps.quickeys or nil
+  local directOnly = e and e.qualified and e.qualified.direct and type(q) == "table" and type(q.press) == "function"
+  if not x and not directOnly then out[#out + 1] = xerr end
   return out
 end
 
@@ -1811,15 +1815,20 @@ function QuickeyBackend:preflight(tuple, route, ctx)
   if type(tuple) ~= "table" or tuple.pcKey or not tuple.quickkey then return false, "the owned-Quickey backend dispatches Quickey tuples only (no PC keys, no text)" end
   local ok, why = self:supportsQuickkey(tuple.quickkey)
   if not ok then return false, why end
-  local x, xerr = self:_deps()
-  if not x then return false, xerr end
   local t, err = self.instance:bankTarget(tuple.quickkey, self.instance._now)
   if not t then return false, err.message, err end
-  -- A direct tap uses no executor: the verified Quickey is all it needs (KB-29).
+  -- A direct tap uses no executor: the verified Quickey and deps.quickeys.press are all it needs (KB-29; review 15:
+  -- checked before the executor dependencies, which a direct-only consumer need not provide).
   if ctx and ctx.direct and ctx.kind == "tap" then
     local e = self:_entry(tuple.quickkey)
-    if e and e.qualified and e.qualified.direct then return true end
+    if e and e.qualified and e.qualified.direct then
+      local q = type(self.instance._deps) == "table" and self.instance._deps.quickeys or nil
+      if type(q) ~= "table" or type(q.press) ~= "function" then return false, "console dep quickeys.press is missing (consoleDeps(_G) provides it); a direct tap needs it" end
+      return true
+    end
   end
+  local x, xerr = self:_deps()
+  if not x then return false, xerr end
   -- Enough reserved executors that are free AND verify right now (placeholder or a bank code on them),
   -- for this key and the ones planned with it in a combo, so a chord never starts without a place for
   -- every key. Each is re-read again right before the press.
@@ -2632,6 +2641,16 @@ function Instance:teardownBank(now, opts)
       e.state = cls.state == "owned-changed" and "changed" or (cls.state == "error" and "unreadable" or "replaced")
       e.problem = cls.changed and table.concat(cls.changed, "; ") or cls.error or ("slot is " .. cls.state .. " ('" .. tostring(cls.read and cls.read.name) .. "')")
       skipped[#skipped + 1] = { index = e.index, code = e.name, reason = e.problem .. "; not ours as it stands, left alone" }; remaining[#remaining + 1] = e
+    end
+  end
+  -- Review 15: a static code Quickey kept on another executor than its own is recorded where it actually is, so a
+  -- later adoption and cleanup look at the executor that still references it.
+  if bank.spec.executors.static and bank.staticByCode then
+    local byRef = {}
+    for _, x in ipairs(bank.executors) do byRef[string.format("%d.%d", x.page, x.index)] = x end
+    for _, e in ipairs(remaining) do
+      local holderX = not e.placeholder and keep[e.index] and byRef[keep[e.index]]
+      if holderX then bank.staticByCode[e.name] = holderX end
     end
   end
   local summary

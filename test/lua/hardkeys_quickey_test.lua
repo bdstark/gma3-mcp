@@ -996,6 +996,37 @@ do
     deps.executors.clear = origClear
     check("a foreign object after the clear does not keep the old bank Quickey", t7 and t7.complete == true and console.quickeys[maQ7] == nil, J({ complete = t7 and t7.complete, skipped = t7 and t7.skipped }))
   end
+  -- #75 review 15: a direct tap needs quickeys.press only, not the executor dependencies.
+  do
+    local i8 = fresh()
+    local saved = { press = deps.executors.press, unpress = deps.executors.unpress, assign = deps.executors.assign }
+    deps.executors.press, deps.executors.unpress, deps.executors.assign = nil, nil, nil
+    console.cmds = {}
+    local t8, e8 = i8:tap("s", 1, { key = "NUM5" }, 50)
+    local h8, he8 = i8:press("s", 1.1, { key = "NUM5" })
+    deps.executors.press, deps.executors.unpress, deps.executors.assign = saved.press, saved.unpress, saved.assign
+    check("...while a hold without those deps is refused before dispatch", h8 == nil and tostring(he8 and he8.message):find("executors.press") ~= nil, J(he8))
+    check("a direct tap goes out without executor press/unpress/assign deps", t8 and t8.target.direct == true and J(console.cmds) == J({ "Press Quickey " .. i8:bankTarget("NUM5", 1).index }), J({ err = e8, cmds = console.cmds }))
+    i8:dispose(2)
+  end
+  -- #75 review 15: a static code Quickey kept on another executor is recorded where it is.
+  do
+    newConsole(); pageWithExecutors(1, 190, 20)
+    local i9 = newInst()
+    local b9 = assert(i9:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0))
+    local maQ9 = i9:bankTarget("MA1", 0).index
+    local stE9; for i, c in ipairs(b9.codes) do if c.name == "STORE" then stE9 = 189 + i end end
+    console.executors["1." .. stE9] = { quickey = maQ9 }  -- the operator put MA1 on STORE's executor
+    local origClear = deps.executors.clear
+    deps.executors.clear = function(page, index) if page == 1 and index == stE9 then return false, "refused" end return origClear(page, index) end
+    local t9 = i9:teardownBank(1, { authorized = true })
+    deps.executors.clear = origClear
+    local d9 = i9:dispose(2)
+    local maRec9; for _, c in ipairs(d9.bank and d9.bank.codes or {}) do if c.name == "MA1" then maRec9 = c end end
+    check("the record maps the kept MA1 to the executor that holds it", t9 and t9.complete == false and console.quickeys[maQ9] ~= nil and maRec9 and maRec9.executor == stE9, J({ rec = maRec9, at = stE9, skipped = t9 and t9.skipped }))
+    local a9, e9 = newInst():adoptBank(d9.bank, 3)
+    check("...and that record is adopted", a9 ~= nil, J(e9))
+  end
   -- #75 review 10: an executor press that raised may have acted, so it counts as a press for the frame gates.
   do
     local inst3 = fresh()
