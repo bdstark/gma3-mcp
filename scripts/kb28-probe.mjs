@@ -175,9 +175,14 @@ async function cleanup(conn, unpressAll = false) {
 }
 
 // Sets the slot's code (verified by readback) without pressing anything.
+// Every rewrite (and so every press that follows it) re-verifies ownership: the name, the probe's marker Note and
+// the slot's executor still holding this Quickey (review 4). A replaced object is never written or pressed.
 async function code(conn, s, name) {
   const back = await lua(conn, `local q = ObjectList('Quickey ${s.q}')[1]
-if not q or tostring(q.name) ~= '${s.name}' then return 'not ours' end
+if not q or tostring(q.name) ~= '${s.name}' or tostring(q:Get('Note')) ~= '${MARKER}' then return 'not ours' end
+local h = ObjectList('Page ${EXP}.${s.e}')[1]
+local o = h and h:Get('Object')
+if not o or tostring(o:GetClass()) ~= 'Quickey' or tonumber(o.index) ~= ${s.q} then return 'executor not ours' end
 q:Set('Code', '${name}')
 return tostring(q:Get('Code'))`);
   if (back !== name) throw new Error(`Quickey ${s.q} code ${name} reads back ${back}`);
@@ -320,6 +325,14 @@ async function dimmer(A) {
   return row ? row.value : null;
 }
 async function runFull(A) {
+  try {
+    await runFullStage(A);
+  } finally {
+    // The selection and the programmer value are cleared whatever happened in the stage (review 4).
+    await lua(A, "Cmd('ClearAll'); return true").catch(() => {});
+  }
+}
+async function runFullStage(A) {
   if (!(await clearLine(A))) { record("FULL: command line cleared", false); return; }
   await lua(A, `Cmd('ClearAll'); Cmd('Fixture ${FIXTURE}'); return true`);
   const sel0 = await lua(A, "return SelectionCount()");

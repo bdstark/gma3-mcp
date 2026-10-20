@@ -2907,10 +2907,10 @@ function Instance:combo(sessionId, now, specs, opts)
   local s, serr = self:_admit(sessionId, now)
   if not s then return nil, serr end
   -- Preflight every key: resolution, routes, ownership, capacity, exclusivity, backend checks.
-  local plans, seen = {}, {}
+  local plans, seen, plannedQuickkeys = {}, {}, {}
   for i, spec in ipairs(specs) do
     if type(spec) == "table" and spec.exclusive then return fail("bad-argument", "key " .. i .. ": a combo cannot be exclusive; a long-press is a single exclusive press/tap") end
-    local plan, perr = self:_planPress(sessionId, now, spec, { comboIndex = i, reserved = seen, extra = #plans,
+    local plan, perr = self:_planPress(sessionId, now, spec, { comboIndex = i, reserved = seen, extra = #plans, planned = plannedQuickkeys,
       kind = holdMs and "tap" or "hold", interaction = opts.interaction, fromSequence = opts.fromSequence })
     if not plan then
       perr.key = i
@@ -2922,6 +2922,8 @@ function Instance:combo(sessionId, now, specs, opts)
     end
     seen[plan.tupleKey] = i
     plans[#plans + 1] = plan
+    -- Earlier keys of the combo are not live yet; the pair check of the next key includes them (review 4).
+    if plan.tuple.quickkey then plannedQuickkeys[plan.tupleKey] = { quickkey = plan.tuple.quickkey, capabilities = plan.route and plan.route.capabilities } end
   end
   -- Dispatch in order. A failure releases what went down and reports everything.
   self._seq = self._seq + 1
@@ -4132,8 +4134,8 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     if cerr then return nil, cerr end
     -- A chord needs the flag on EVERY participating key: a held Quickey without chord evidence must not
     -- get a neighbour either (the hold's own stored flags decide, never the current policy).
-    if simultaneous then
-      cerr = self:_heldQuickkeyChordError(tupleKey(tuple), nil, tuple, route and route.capabilities)
+    if simultaneous or (ctx.planned and next(ctx.planned)) then
+      cerr = self:_heldQuickkeyChordError(tupleKey(tuple), ctx.planned, tuple, route and route.capabilities)
       if cerr then return nil, cerr end
     end
   end
