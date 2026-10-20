@@ -1410,7 +1410,10 @@ between its presses (`adapter.separateFrames`). No shipped backend has one, so o
 code is refused before dispatch (`reason = "same-frame"`) until frame-separated dispatch is qualified; KB-10's
 MA1 + STORE chord is unaffected. An ordered group's keys share its earliest deadline, a due later key brings the
 earlier keys of its group due with it, and the sequence and interaction cleanup reports carry the keys held back
-behind an unresolved release (`blocked`, review 14). No MCP tool or TypeScript contract changed.
+behind an unresolved release (`blocked`, review 14). The pairs were released one frame per key as well, so a separating backend also
+breaks the frame between an ordered group's releases and before a rollback; a break that raises keeps the later key
+down as `blocked` (review 16). `gma3_hardkeys_release_all`, sequence warnings and the bridge log name blocked keys,
+and adoption reports a changed `chordWith` in `requalified`. No MCP tool or TypeScript contract changed.
 
 ### Record (2026-10-20)
 

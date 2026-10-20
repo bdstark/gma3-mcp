@@ -174,6 +174,22 @@ return true`);
 // left pressed: --unpress makes it issue Unpress on its own executors before deleting (the operator's decision;
 // an Unpress of a key that is not down is not qualified).
 const pressed = new Set();
+// A toggle stage that ended while its slot may be down leaves the mode restoration to cleanup: once the slot is
+// released, the mode is tapped back to its baseline before the slot is deleted (review 16).
+let pendingRestore = null;
+async function restoreToggle(conn, s, r) {
+  try {
+    const now = await fb(conn, r.reader);
+    if (now === undefined) { note(`${r.name}: ${r.reader} unreadable after the release; left for the operator (baseline ${r.v0})`); return; }
+    if (now === r.v0) { note(`${r.name}: ${r.reader} already at its baseline ${r.v0}`); return; }
+    await code(conn, s, r.name);
+    if (accepted(await press(conn, s))) await unpress(conn, s);
+    const after = await settle(() => fb(conn, r.reader), now);
+    record(`${r.name}: ${r.reader} restored to its baseline after cleanup released the slot`, after === r.v0, { baseline: r.v0, before: now, after });
+  } catch (e) {
+    record(`${r.name}: restoring ${r.reader} after the release failed; left for the operator (baseline ${r.v0})`, false, String(e && e.message));
+  }
+}
 async function cleanup(conn, unpressAll = false) {
   const out = {};
   // Slots are released in press order (A, then B): after a refused release of an earlier slot, a later slot that
@@ -197,6 +213,18 @@ async function cleanup(conn, unpressAll = false) {
       }
       pressed.delete(s.name);
       note(`${s.name}: released before cleanup`, fu);
+      if (pendingRestore && s === SLOTS.A) {
+        const r = pendingRestore;
+        pendingRestore = null;
+        await restoreToggle(conn, s, r);
+        if (pressed.has(s.name)) {
+          // The restoring tap's release did not go through: the slot is kept for recovery like any other.
+          record(`${s.name}: the restoring tap may still be down; Quickey ${s.q} and executor ${EXP}.${s.e} left in place for recovery`, false);
+          out[s.name] = await readSlot(conn, s);
+          earlierStuck = true;
+          continue;
+        }
+      }
     }
     // Each delete re-checks ownership in the SAME request (review 10): a replacement after readSlot is never deleted.
     const ownQ = `local q = ObjectList('Quickey ${s.q}')[1]
@@ -419,7 +447,8 @@ async function runCmdline(A, codes, only) {
       // first, and the mode is then left for the operator (reported).
       const now = await read().catch(() => undefined);
       if (pressed.has(SLOTS.A.name)) {
-        if (v0 !== undefined && now !== v0) note(`${name}: ${reader} left at ${now} (baseline ${v0}); the slot may be down, cleanup releases it first`, now);
+        // Cleanup releases the slot first and then taps the mode back (review 16).
+        if (now !== v0) { pendingRestore = { name, reader, v0 }; note(`${name}: ${reader} at ${now} (baseline ${v0}); the slot may be down, cleanup releases it and then restores the mode`, now); }
       } else if (v0 !== undefined && now !== undefined && now !== v0) {
         await code(A, SLOTS.A, name).catch(() => {});
         if (accepted(await press(A, SLOTS.A).catch(() => null))) await unpress(A, SLOTS.A).catch(() => {});

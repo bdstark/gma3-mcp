@@ -358,7 +358,17 @@ do
   local firstPress
   for i, cmd in ipairs(cmds) do if cmd:find("^Press") then firstPress = i; break end end
   check("a probed pair breaks the frame once, after the first key's press and before the second's", c and console.frames == 1 and firstPress and console.frameAt[1] == n0 + firstPress and cmds[#cmds]:find("^Press"), J({ frames = console.frames, at = console.frameAt, cmds = cmds }))
+  local nr, fr = #console.cmds, console.frames
   inst:service(1.11)
+  local rel = cmdsSince(nr)
+  check("review 16: the ordered pair is released with a frame break between its two Unpress commands", #rel == 2 and console.frames == fr + 1 and console.frameAt[#console.frameAt] == nr + 1 and pressedCount() == 0, J({ rel = rel, frames = console.frames, at = console.frameAt }))
+  -- A frame break that raises before the second release keeps that key down (blocked) until recover().
+  local cb = inst:combo("s", 1.2, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 50 })
+  console.raise.frame = "frame break failed"
+  local sv = inst:service(1.3)
+  check("...a raising break before the second release keeps it held and reports it blocked", cb and pressedCount() == 1 and sv.blocked and #sv.blocked == 1 and sv.blocked[1].hold == cb.holds[2].id, J({ pressed = pressedCount(), blocked = sv.blocked }))
+  inst:recover(nil, 1.4)
+  check("...recover() then releases it", pressedCount() == 0, J(inst:status(1.4).holds))
   -- A frame break that raises stops the combo: the first key is released, the second never pressed.
   console.raise.frame = "frame break failed"
   local c2, err2 = inst:combo("s", 2, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 100 })
