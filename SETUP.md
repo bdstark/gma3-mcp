@@ -866,10 +866,20 @@ show groups sequences for Kill Instant / Kill Delayed and for playback commands 
 - `Go+`/`Off Tag` reach every tagged sequence. Invalid `TagType` values are silently ignored.
 - `Action` ignores every Lua `Set`; `Set Tag N Property "Action" "<token>"` applies each `TagActionToken` (None,
   Pool Default, Go+, Off, Flash, Temp, Top, Toggle, Pause, List Reference) and answers `Not allowed` to anything else.
-- Not probed: Kill Instant / Kill Delayed and Protect in playback, playback with Forward Commands off, objects of
-  another data pool, two tags with one name, and writing or clearing a tag's appearance.
+- The first probe left open Kill Instant / Kill Delayed and Protect in playback, playback with Forward Commands off,
+  objects of another data pool, two tags with one name, and writing or clearing a tag's appearance. The
+  implementation probe (same record) answered them all: a second tag with a taken name is stored as `name#2`, and
+  appearance is written with `Assign Appearance a At Tag n` and cleared with `Set Tag n Property "Appearance" ""`.
 
-**Status:** proposed.
+**Status:** implemented in bridge 0.36.0 ([docs/tools/tags.md](docs/tools/tags.md), probe record
+[su-21-tags-macos-2.5.1.md](docs/probes/su-21-tags-macos-2.5.1.md), live test `test/live/tags.live.ts` 1/1 on macOS
+onPC 2.5.1).
+- Bridge: `tags` (the pool, settings, references from `GetReferences()`, paged both ways), `tags.of` (a cue as its
+  Part 0), `tags.protect`, and `TAGS` decoded to `{tag, name, protect}` in `object`, `objects` and `children`.
+- `gma3_tags`, `gma3_store_tag`, `gma3_delete_tag`, `gma3_assign_tag` (with `data_pool`) and `gma3_configure_tag`,
+  with batch forms; `gma3_playback` on `Tag n` resolves the tagged sequences first and reads each one back.
+- Kill Instant, Kill Delayed, Protect and Forward Commands off were probed and are tested live. After a kill tag has acted on a sequence, that
+  tag's protect flag cannot be read from the sequence's `TAGS` (reported as `protectUnreadable`); Protect still applies.
 
 ### Acceptance criteria
 
@@ -894,7 +904,7 @@ show groups sequences for Kill Instant / Kill Delayed and for playback commands 
 - `gma3_configure_tag` sets type, Forward Commands, action and note, refusing values outside the enums before
   sending and reading each one back. `Action` is written with `Set Tag N Property "Action" "<token>"`, since Lua
   `Set` ignores it. Appearance stays read-only until a probe establishes how it is written (by number, name or
-  handle) and cleared.
+  handle) and cleared. (Done in the implementation probe: by appearance number, checked to exist first.)
 - Tag playback is verified: `gma3_playback` with a tag target resolves a tag name to one tag number first (refusing a
   name that matches several tags or none, as `gma3_assign_tag` does), dispatches by number, resolves the tag's
   sequences through `GetReferences()` and reads each one's state back a frame later, instead of returning `notRead`.
@@ -920,8 +930,8 @@ From the second field test:
 - SU-13 and SU-14 build on it.
 - SU-15's probe (does `cmd` expand `$variables`) is small. Run it early, since SU-14 depends on its answer.
 - SU-16, SU-18, SU-19 and SU-20 are independent.
-- SU-21 (tags) is independent. Its first probe is recorded; the data-pool command form, kill and protect behaviour,
-  Forward Commands off, same-named tags and appearance writes still need probing before the tools that use them.
+- SU-21 (tags) is independent. Both probes are recorded (the second answered the data-pool command form, kill and
+  protect behaviour, Forward Commands off, same-named tags and appearance writes); implemented in bridge 0.36.0.
 - SU-17's `resync` is independent. Its plugin tools wait for the interface that bdstark/gma3-beat-sync's BS-01 and BS-02
   define.
 

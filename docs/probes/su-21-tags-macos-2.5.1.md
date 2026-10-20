@@ -125,3 +125,66 @@ pool action does were not probed.
 - `Lock` on a tag, and how the tag editor's "Add New Tag Reference" relates to the missing children.
 - Undo of `Assign Tag`.
 - Writing or clearing a tag's `APPEARANCE` (by number, name or handle; Lua `Set` or the command line).
+
+The implementation probe below answers the data-pool form, kill and protect behaviour, Forward Commands off,
+same-named tags and appearance writes.
+
+## Implementation probe (2026-10-19, bridge 0.36.0)
+
+Run while implementing the tools, on the same show, with the bridge's `cmd`, `set`, `object`, `dump` and new `tags*`
+ops (Lua was on for the first part, off afterwards). Tags 950-952, Sequences 950-952, Group 950, Macro 950 and a
+temporary DataPool 2 were created and deleted; Preset 4.1 got Tag 950 by mistake and it was removed again at once
+(its `TAGS` read empty afterwards).
+
+### Reading
+
+| Read | Result |
+| --- | --- |
+| `GetReferences()` of a tag on a sequence, a cue, a group, a macro and a macro line | the `Part 0` reads `no` nil and `Get("Part")` 0; its cue's `no` is 1000 for cue 1 |
+| a reference's data pool | the ancestor of class **`Pool`** (`Default`, `Pool 2`) whose parent is `DataPools`; there is no class `DataPool` |
+| a part's `Addr()` | `14.14.1.7.950.-1.0`: the negative index does not resolve as an address, so a part is re-read as `[DataPool n] Sequence s Cue c Part 0` |
+| `HandleToStr(tag)` | `#1BC000E42` here (nine hex digits; the length varies) |
+| `Dump()` of a sequence | `TAGS = "950 'McpKill'"`: a third form, without the protect flag |
+| `Tag` properties with `PropertyInfo` | `ACTION` is enum `TagActionToken`, `TAGTYPE` enum `TagType`, `FORWARDCOMMANDS` YesNo |
+
+### Writing
+
+| Command | Result |
+| --- | --- |
+| `Set Tag 950 Property "Action" "Toggle"`, `"Flash"`, `"Pool Default"` | applied (Lua `Set` with names, numbers or "3" is ignored) |
+| `Set Tag 950 Property "Action" "bogus"` | `Not allowed`, unchanged |
+| `Set Tag 950 Property "TagType" "Kill Delayed"` / `"bogus"` | applied / `Illegal value`, unchanged |
+| `Set Tag 950 Property "ForwardCommands" "No"`, `"Note" "hello, world"` | applied (a note keeps commas) |
+| `Set Tag 950 Property "Appearance" "Appearance 1"` | OK, but nothing is assigned |
+| `Assign Appearance 1 At Tag 950` | assigned |
+| `Set Tag 950 Property "Appearance" ""` | cleared (`Assign Off Appearance At Tag 950` answers OK and clears nothing) |
+| `Store Tag 950 "Other" /NoConfirmation` on an existing tag | OK; the name and references are kept |
+| `Assign Tag "NoSuchTag" At Sequence 950`, `Assign Tag 951 At ...` (no Tag 951) | **OK, and nothing happens** |
+| `Assign Tag 950 At Fixture 1` | `Illegal object` |
+| `Assign Tag 950 At Preset 4.1` | assigned (presets carry tags) |
+| `Label Tag 951 "McpTag A2"` while Tag 950 is `McpTag A2` | stored as **`McpTag A2#2`**: names are kept unique |
+| `Store DataPool 2 /NoConfirmation`, then `Assign Tag 951 At DataPool 2 Sequence 950` | only that data pool's Sequence 950 gets it (`dataPool` `Pool 2`); the Default pool's Sequence 950 is unchanged. `Assign Off`, a cue (`... Cue 1` → its Part 0) and the protect write work the same way |
+
+### Kill types and Protect
+
+Three empty sequences, each with one cue, all carrying Tag 950; `HasActivePlayback` read 300 ms after each command.
+
+| Setup | Commands | Result |
+| --- | --- | --- |
+| Kill Instant | `Go+ Sequence 950`, `Go+ Sequence 951` | 950 off, 951 on: starting 951 turned 950 off |
+| Kill Instant | then `Go+ Sequence 952` | 951 off at once, 952 on |
+| Kill Instant, 951's reference protected | `Go+` 950, 951, then 952 | 951 **keeps running**, 952 on |
+| Kill Delayed, `CueInFade` 2 s on Sequence 952 Cue 1 (empty cue, and again with a dimmer value) | `Go+` 951, then 952 | 951 still on at +0.3 s and +1.2 s, **off at +2.6 s** |
+| Kill Delayed with no fade on 952 | `Go+` 952 | the others go off at once |
+| Kill Instant | `Go+ Tag 950` | only Sequence 950 is left running; `Off Tag 950` turns everything off |
+| Kill Instant, 951 protected, after 951 has run once (its flag now unreadable, see below) | `Go+` 951, then 952 | 951 keeps running: Protect still applies |
+| Type None, Forward Commands **off** (live test) | `Go+ Tag 952` | OK, and **no tagged sequence starts**; with Forward Commands on again, all three start |
+
+**The protect flag becomes unreadable.** After a kill tag has acted on a sequence, that tag's entry in the sequence's
+`TAGS` holds other text where the flag was, in both roles, and the text can contain a comma:
+`#5BC000E58:-'..--).0-*(+,))+(0(` (Edit role) and `McpKill:-'..--).0-*(+,))+(0(` (default role). It was the same text
+on all three sequences, and another tag of type None on the same sequence kept its plain `0`. Writing
+`#5BC000E58:1` replaces it, and the flag reads back until the sequence runs again. The bridge splits entries at each
+`,#<hex>:` and reports such a flag as unknown.
+
+The `CueFade` property of a part does not take a value through `Set` (it read back `0.00`); `CueInFade` does.

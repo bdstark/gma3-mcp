@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.35.0"
+local VERSION      = "0.36.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -534,8 +534,74 @@ local function roleEdit()
   return nil
 end
 
+-- SU-21 (0.36.0): an object's TAGS, the tags it carries. The Edit role reads "#<hex>:<protect>,..." (tag handles;
+-- the default role gives tag names, which may contain colons and lose commas, so it is never parsed). Each entry is
+-- resolved through StrToHandle to { tag = <number>, name, protect }; one that does not resolve keeps its handle text.
+-- On a sequence that a Kill Instant / Kill Delayed tag has acted on, that tag's entry carries other text after the
+-- colon instead of 0/1 (it can hold commas: "#5BC000E58:-'..--).0-*(+,))+(0(", live 2026-10-19), so entries are split
+-- at each ",#<hex>:" and a flag that is not 0 or 1 is reported as unknown (protect absent, flagUnreadable = true),
+-- never guessed. Text in no known form is kept as { raw }. docs/probes/su-21-tags-macos-2.5.1.md.
+-- One table, not three locals: the main chunk is at Lua's limit of 200 locals.
+local TagCodec = {}
+function TagCodec.text(h, role)
+  if role == nil then role = roleEdit() end
+  local ok, v
+  if role then ok, v = pcall(h.Get, h, "Tags", role) else ok, v = pcall(h.Get, h, "Tags") end
+  if ok and type(v) == "string" then return v end
+  return nil
+end
+
+-- Entries { hex, flag = "0" | "1" | other text, protect = bool | nil } or { raw }.
+function TagCodec.entries(text)
+  text = tostring(text or "")
+  local out, starts, pos = {}, {}, 1
+  while true do
+    local a, b = text:find("#%x+:", pos)
+    if not a then break end
+    if a == 1 or text:sub(a - 1, a - 1) == "," then starts[#starts + 1] = a end
+    pos = b + 1
+  end
+  if #starts == 0 or starts[1] ~= 1 then
+    local lead = #starts > 0 and text:sub(1, starts[1] - 2) or text
+    if lead:match("%S") then out[#out + 1] = { raw = lead } end
+  end
+  for i, a in ipairs(starts) do
+    local entry = text:sub(a, (starts[i + 1] and starts[i + 1] - 2) or #text)
+    local hex, flag = entry:match("^(#%x+):(.*)$")
+    local e = { hex = hex, flag = flag }
+    if flag == "0" then e.protect = false elseif flag == "1" then e.protect = true end
+    out[#out + 1] = e
+  end
+  return out
+end
+
+function TagCodec.decode(text)
+  local out = {}
+  for _, e in ipairs(TagCodec.entries(text)) do
+    if e.hex then
+      local row = { protect = e.protect }
+      if e.protect == nil then row.flagUnreadable = true end
+      local ok, t = pcall(StrToHandle, e.hex)
+      if ok and isHandle(t) then
+        row.tag = tonumber(safeProp(t, "no"))
+        row.name = safeProp(t, "name")
+      end
+      if row.tag == nil then row.handle = e.hex end
+      out[#out + 1] = row
+    else
+      out[#out + 1] = { raw = e.raw }
+    end
+  end
+  if #out == 0 then setmetatable(out, { __jsontype = "array" }) end
+  return out
+end
+
 -- Read a single property as a JSON-safe value.
 local function getProp(h, name, asText)
+  if type(name) == "string" and name:upper() == "TAGS" then
+    local text = TagCodec.text(h)
+    if text ~= nil then return TagCodec.decode(text) end
+  end
   local role = asText and roleEdit() or nil
   local ok, v
   if role then
@@ -5235,6 +5301,266 @@ end)()
     return { scope = args.scope, user = args.scope == "user" and user() or nil, before = before, after = read(h, name) }
   end
 end)()
+
+-------------------------------------------------------------------------------
+-- SU-21 (0.36.0): tags (SETUP.md SU-21, docs/probes/su-21-tags-macos-2.5.1.md).
+--   tags          read-only: the show-wide tag pool (ShowData().Tags, sparse) with each tag's settings and, per tag,
+--                 every object that carries it from tag:GetReferences() (Children() lists only the first reference
+--                 on 2.5.1). A reference's protect flag is read from that object's TAGS.
+--   tags.of       read-only: the tags objects carry (a command-line range); a cue is read as its Part 0, where
+--                 Assign Tag ... At Sequence n Cue m puts the tag (the cue has no TAGS).
+--   tags.protect  sets the protect flag of one tag's reference on objects, by rewriting each object's TAGS in the
+--                 handle form (unambiguous, flags kept) and reading it back.
+-- Creating, naming, assigning and the settings go through the command line (Store/Label/Delete Tag, Assign [Off]
+-- Tag ... At ..., Set Tag n Property ...): the console answers an illegal value there, while tag:Set ignores it.
+;(function()
+  local MAX_REFS = 2000
+  local tagsText, tagEntries, decodeTags = TagCodec.text, TagCodec.entries, TagCodec.decode
+
+  local function tagPool() return ShowData().Tags end
+
+  local function hexOf(h)
+    local ok, s = pcall(HandleToStr, h)
+    if ok and type(s) == "string" then return s end
+    return nil
+  end
+
+  local function sameHex(a, b) return a ~= nil and b ~= nil and a:upper() == b:upper() end
+
+  -- The tag with this number or exact name (nil when there is none).
+  local function findTag(key)
+    for _, t in ipairs(safeCall(tagPool(), "Children") or {}) do
+      if type(key) == "number" and tonumber(safeProp(t, "no")) == key then return t end
+      if type(key) == "string" and safeProp(t, "name") == key then return t end
+    end
+    return nil
+  end
+
+  -- The data pool an object belongs to: the ancestor whose parent is DataPools (its class reads "Pool" on 2.5.1).
+  -- nil for show-wide objects (a tag on a tag).
+  local function dataPoolOf(h)
+    local p, guard = safeCall(h, "Parent"), 0
+    while p and guard < 10 do
+      local pp = safeCall(p, "Parent")
+      if safeCall(p, "GetClass") == "DataPool" or (pp and safeCall(pp, "GetClass") == "DataPools") then return { no = tonumber(safeProp(p, "no")), name = safeProp(p, "name") } end
+      p, guard = pp, guard + 1
+    end
+    return nil
+  end
+
+  local function partNo(part)
+    local ok, v = pcall(part.Get, part, "Part")
+    local n = ok and tonumber(v) or nil
+    if n == nil then n = tonumber(tostring(safeProp(part, "name") or ""):match("^Part%s+(%-?%d+)$")) end
+    return n
+  end
+
+  -- Where an object sits: class, number, name, address, data pool; a part says its sequence and cue (cue numbers are
+  -- stored x1000), a macro line its macro.
+  local function objectRow(h)
+    local cls = safeCall(h, "GetClass")
+    local row = { class = cls, name = safeProp(h, "name"), no = tonumber(safeProp(h, "no")), addr = safeCall(h, "Addr"), addrNative = safeCall(h, "AddrNative"), dataPool = dataPoolOf(h) }
+    if cls == "Part" then
+      row.no = nil
+      row.part = partNo(h)
+      local cue = safeCall(h, "Parent")
+      local seq = cue and safeCall(cue, "Parent")
+      local cueNo = cue and tonumber(safeProp(cue, "no"))
+      if cueNo then row.cue = cueNo / 1000 end
+      if seq then row.sequence = tonumber(safeProp(seq, "no")) end
+    elseif cls == "Cue" then
+      if row.no then row.cue = row.no / 1000 end
+      row.no = nil
+      local seq = safeCall(h, "Parent")
+      if seq then row.sequence = tonumber(safeProp(seq, "no")) end
+    elseif cls == "MacroLine" then
+      local m = safeCall(h, "Parent")
+      if m then row.macro = tonumber(safeProp(m, "no")) end
+    end
+    return row
+  end
+
+  -- The protect flag of tag `hex` on object h, and whether its TAGS lists the tag at all (the flag is nil when listed
+  -- with an unreadable flag).
+  local function protectOf(h, hex)
+    for _, e in ipairs(tagEntries(tagsText(h))) do
+      if sameHex(e.hex, hex) then return e.protect, true end
+    end
+    return nil, false
+  end
+
+  -- A tag's settings and, with withRefs, one page of the objects that carry it (refOffset, refLimit), with the total.
+  local function tagRow(t, withRefs, classFilter, refLimit, refOffset)
+    local appearance = handleProp(t, "Appearance")
+    local row = {
+      no = tonumber(safeProp(t, "no")),
+      name = safeProp(t, "name"),
+      tagType = textProp(t, "TagType"),
+      forwardCommands = yesNo(textProp(t, "ForwardCommands")),
+      action = textProp(t, "Action"),
+      appearance = appearance and { no = tonumber(safeProp(appearance, "no")), name = safeProp(appearance, "name") } or nil,
+      note = textProp(t, "Note") or "",
+      lock = yesNo(textProp(t, "Lock")),
+      count = tonumber(safeCall(t, "Count")),
+      addr = safeCall(t, "Addr"),
+      tags = decodeTags(tagsText(t)),
+    }
+    if withRefs then
+      local hex = hexOf(t)
+      local ok, refs = pcall(t.GetReferences, t)
+      if not ok or type(refs) ~= "table" then
+        row.referencesError = "GetReferences failed: " .. tostring(refs)
+      else
+        local out, total = {}, 0
+        for _, r in ipairs(refs) do
+          if isHandle(r) and (classFilter == nil or safeCall(r, "GetClass") == classFilter) then
+            total = total + 1
+            if total > refOffset and #out < refLimit then
+              local rr = objectRow(r)
+              local p, listed = protectOf(r, hex)
+              rr.protect = p
+              if listed and p == nil then rr.flagUnreadable = true end
+              out[#out + 1] = rr
+            end
+          end
+        end
+        row.references = emptyArray(out)
+        row.referencesTotal = total
+        row.referencesOffset = refOffset
+        row.referencesIncomplete = total > refOffset + #out
+      end
+    end
+    return row
+  end
+
+  -- args: { tags = [number | name, ...], from, to (a number range; default every tag), class = "Sequence" (only
+  --         references of this class), references = bool (default true), offset, limit (a page of tags; default 100),
+  --         refOffset, refLimit (a page of each tag's references; default 200) }
+  ops["tags"] = function(args)
+    local withRefs = args.references ~= false
+    local limit = args.limit ~= nil and integerArg(args.limit, "limit", 1, 1000) or 100
+    local offset = args.offset ~= nil and integerArg(args.offset, "offset", 0, 100000) or 0
+    local refLimit = args.refLimit ~= nil and integerArg(args.refLimit, "refLimit", 1, MAX_REFS) or 200
+    local refOffset = args.refOffset ~= nil and integerArg(args.refOffset, "refOffset", 0, 1000000) or 0
+    if args.class ~= nil and (type(args.class) ~= "string" or args.class == "") then raise("[bad-args] class must be a class name such as Sequence") end
+    local from = args.from ~= nil and integerArg(args.from, "from", 1, 1000000) or nil
+    local to = args.to ~= nil and integerArg(args.to, "to", 1, 1000000) or nil
+    local want, missing
+    if args.tags ~= nil then
+      if type(args.tags) ~= "table" or #args.tags == 0 or #args.tags > 1000 then raise("[bad-args] tags must list 1-1000 tag numbers or names") end
+      want, missing = {}, {}
+      for _, k in ipairs(args.tags) do
+        if type(k) ~= "number" and type(k) ~= "string" then raise("[bad-args] a tag is a number or a name") end
+        local t = findTag(k)
+        if t then want[#want + 1] = t else missing[#missing + 1] = k end
+      end
+    end
+    local list = {}
+    for _, t in ipairs(want or safeCall(tagPool(), "Children") or {}) do
+      local no = tonumber(safeProp(t, "no"))
+      if (from == nil or (no and no >= from)) and (to == nil or (no and no <= to)) then list[#list + 1] = t end
+    end
+    local items = {}
+    for i = offset + 1, math.min(#list, offset + limit) do items[#items + 1] = tagRow(list[i], withRefs, args.class, refLimit, refOffset) end
+    return { total = #list, offset = offset, count = #items, incomplete = #list > offset + #items, items = emptyArray(items), missing = missing and emptyArray(missing) or nil }
+  end
+
+  -- The objects a reference names, a cue replaced by its Part 0 (the first part when no part reads 0).
+  local function targets(ref)
+    if type(ref) ~= "string" or ref == "" then raise("[bad-args] ref must be an object reference") end
+    local ok, list = pcall(resolveMany, ref)
+    if not ok or list == nil or #list == 0 then raise("[not-found] no objects found for '" .. ref .. "'") end
+    if #list > 1000 then raise("[bad-args] '" .. ref .. "' names more than 1000 objects") end
+    local out = {}
+    for _, h in ipairs(list) do
+      if safeCall(h, "GetClass") == "Cue" then
+        local first, zero
+        for _, c in ipairs(safeCall(h, "Children") or {}) do
+          if safeCall(c, "GetClass") == "Part" then
+            first = first or c
+            if partNo(c) == 0 then zero = c; break end
+          end
+        end
+        out[#out + 1] = { h = zero or first, asCue = h, noPart = (zero or first) == nil }
+      else
+        out[#out + 1] = { h = h }
+      end
+    end
+    return out
+  end
+
+  local function targetRow(tg)
+    if tg.noPart then
+      local row = objectRow(tg.asCue)
+      row.error = "the cue has no part to carry tags"
+      return row
+    end
+    local row = objectRow(tg.h)
+    local text = tagsText(tg.h)
+    if text == nil then row.carriesTags = false else row.tags = decodeTags(text) end
+    if tg.asCue then row.fromCue = true end
+    return row
+  end
+
+  -- args: { ref, raw = bool (also the TAGS text as read in the Edit and the default role, for diagnosis) }
+  ops["tags.of"] = function(args)
+    local items = {}
+    for _, tg in ipairs(targets(args.ref)) do
+      local row = targetRow(tg)
+      if args.raw == true and tg.h then row.text = { edit = tagsText(tg.h), default = TagCodec.text(tg.h, false) } end
+      items[#items + 1] = row
+    end
+    return { ref = args.ref, count = #items, items = emptyArray(items) }
+  end
+
+  -- args: { ref, tag = number | name, protect = bool }
+  ops["tags.protect"] = function(args)
+    if type(args.protect) ~= "boolean" then raise("[bad-args] protect must be true or false") end
+    if type(args.tag) ~= "number" and type(args.tag) ~= "string" then raise("[bad-args] tag must be a tag number or name") end
+    local t = findTag(args.tag)
+    if not t then raise("[no-tag] tag " .. tostring(args.tag) .. " does not exist") end
+    local hex = hexOf(t)
+    if not hex then raise("[no-handle] the tag's handle cannot be read") end
+    local items = {}
+    for _, tg in ipairs(targets(args.ref)) do
+      local row = targetRow(tg)
+      if not row.error and row.carriesTags ~= false then
+        local entries, found, parts, unreadable = tagEntries(tagsText(tg.h)), false, {}, nil
+        for _, e in ipairs(entries) do
+          if not e.hex then
+            unreadable = "an entry in no known form (" .. tostring(e.raw) .. ")"; break
+          end
+          local p = e.protect
+          if sameHex(e.hex, hex) then
+            found = true; row.before = p; p = args.protect
+          elseif p == nil then
+            -- Writing the list would reset another tag's flag that cannot be read: refuse rather than guess.
+            unreadable = "the protect flag of another tag on it cannot be read (" .. e.hex .. ")"; break
+          end
+          parts[#parts + 1] = e.hex .. ":" .. (p and "1" or "0")
+        end
+        if unreadable then
+          row.error = "not rewritten: " .. unreadable
+        elseif not found then
+          row.error = "the object does not carry tag " .. tostring(args.tag)
+        elseif row.before ~= args.protect then
+          local ok, err = pcall(tg.h.Set, tg.h, "Tags", table.concat(parts, ","))
+          if not ok then row.error = "Set failed: " .. tostring(err) end
+          row.changed = ok
+        else
+          row.changed = false
+        end
+        row.after = (protectOf(tg.h, hex))
+        row.tags = decodeTags(tagsText(tg.h))
+      elseif row.carriesTags == false then
+        row.error = "the object has no TAGS property"
+      end
+      items[#items + 1] = row
+    end
+    return { ref = args.ref, tag = { no = tonumber(safeProp(t, "no")), name = safeProp(t, "name") }, protect = args.protect, items = emptyArray(items) }
+  end
+end)()
+GUARDED_OPS["tags.protect"] = "a tag protection change"
 
 -------------------------------------------------------------------------------
 -- SU-20 (0.35.0): saving the show (SETUP.md SU-20, docs/probes/su-20-save-show-macos-2.5.1.md).
