@@ -661,6 +661,10 @@ do
   console.raise.qpress = "console busy"
   inst:tap("s", 5.63, { key = "NUM5" }, 50)
   check("an uncertain (raised) direct tap counts as a press", inst._pressCount == pc0 + 1, J({ pc0, inst._pressCount }))
+  -- #75 review 9: the sequence preflight refuses a non-boolean direct before its first event.
+  local ncq = #console.cmds
+  local qd, ed = inst:startSequence("s", 5.64, { { kind = "tap", key = "NUM5" }, { kind = "tap", key = "NUM1", direct = "false" } })
+  check("a sequence with a non-boolean direct is refused at preflight, nothing dispatched", qd == nil and ed.code == "bad-argument" and ed.step == 2 and #console.cmds == ncq, J(ed))
   -- #75 review 7: a non-table spec is refused as a structured error, never a Lua raise.
   local okT, tb, eb = pcall(inst.tap, inst, "s", 5.65, 5, 50)
   check("tap() with a non-table spec returns an error instead of raising", okT and tb == nil and type(eb) == "table" and eb.code ~= nil, J({ ok = okT, err = eb }))

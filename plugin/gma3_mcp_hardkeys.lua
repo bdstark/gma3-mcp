@@ -2366,6 +2366,12 @@ function Instance:_rollbackCreated(created, assigned, bank)
       out.kept[#out.kept + 1] = { executor = ref, reason = "no longer holds the placeholder (" .. cls.state .. "); left alone" }
       local qi = holder(cls)  -- another bank Quickey left on it (e.g. a mismatched readback) stays with it (review 8 of #75)
       if qi then stillAssigned[qi] = ref end
+      -- An executor that cannot be classified (unreadable) may still reference what this call assigned to it: that
+      -- Quickey is kept as well (review 9 of #75).
+      if not qi then
+        local mine = x.code and bank.byName[x.code] or bank.byName[BANK_PLACEHOLDER]
+        if mine then stillAssigned[mine.index] = ref end
+      end
     end
   end
   for i = #created, 1, -1 do
@@ -3520,6 +3526,7 @@ function Instance:_validateSequence(sessionId, steps)
         return what .. "maxHoldMs must be a number in (0, " .. self._config.maxHoldMs .. "]"
       end
       if spec.exclusive ~= nil and type(spec.exclusive) ~= "boolean" then return what .. "exclusive must be a boolean" end
+      if spec.direct ~= nil and type(spec.direct) ~= "boolean" then return what .. "direct must be a boolean" end  -- review 9 of #75
       return nil
     end
     local function commitsText(tuple, route)
