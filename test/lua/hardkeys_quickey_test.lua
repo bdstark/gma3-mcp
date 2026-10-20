@@ -80,6 +80,15 @@ local deps = {
       for k, v in pairs(props) do if k == "Code" then q.code = v elseif k == "Name" then q.name = v elseif k == "Note" then q.note = v end end
       return true
     end,
+    press = function(index)
+      tally("quickeys.press")
+      console.cmds[#console.cmds + 1] = "Press Quickey " .. index
+      local f, e = maybeFail("qpress"); if f == false then return false, e end
+      if not console.quickeys[index] then return false, "Object not found" end
+      console.taps = console.taps or {}
+      console.taps[#console.taps + 1] = console.quickeys[index].code
+      return true, "OK"
+    end,
     delete = function(index)
       tally("quickeys.delete")
       console.cmds[#console.cmds + 1] = "Delete Quickey " .. index
@@ -210,7 +219,7 @@ do
   local inst3 = fresh({ noBank = true })
   d = inst3:describeRoute("NUM5")
   check("without a bank the route is unavailable and names the KB-12 requirement", d.supported and d.dispatchable == false and has(d.unavailable, "no Quickey bank"), J(d))
-  local h; h, err = inst3:tap("s", 1, { key = "NUM5" }, 50)
+  local h; h, err = inst3:tap("s", 1, { key = "NUM5", direct = false }, 50)
   check("a press without a bank is refused as unavailable, nothing issued", h == nil and err.code == "unavailable" and has(err.unavailable, "no Quickey bank") and #console.cmds == 0 and inst3:status(1).holdCount == 0, J(err))
   check("supportsQuickkey / quickkeyCapabilities / unavailable without a bank", select(1, backend:supportsQuickkey("NUM5")) == true and HK.quickeyBackend(inst3):quickkeyCapabilities("NUM5") == nil and select(2, HK.quickeyBackend(inst3):supportsQuickkey("NUM5")):find("no Quickey bank"))
 end
@@ -221,7 +230,7 @@ end
 do
   local inst, backend = fresh()
   local n5 = idx("NUM5")
-  local h, err = inst:tap("s", 1, { key = "NUM5" }, 50)
+  local h, err = inst:tap("s", 1, { key = "NUM5", direct = false }, 50)
   check("tap dispatches an executor press of the code's Quickey", h and h.pressOutcome == "dispatched" and h.releaseOutcome == "scheduled" and h.quickkey == "NUM5" and h.backend == "quickey", J(err or h))
   check("the hold records its target: page, executor, Quickey index, code", h.target and h.target.page == 1 and h.target.executor == 190 and h.target.quickeyIndex == n5 and h.target.code == "NUM5" and h.target.value == 72 and h.target.bank == inst:bankStatus().id, J(h.target))
   check("commands in order: Assign then Press Page (paged form), nothing else", J(console.cmds) == J({ string.format("Assign Quickey %d At Page 1.190", n5), "Press Page 1.190" }), J(console.cmds))
@@ -235,15 +244,15 @@ do
   check("the executor keeps the code's Quickey after the release (no placeholder re-assignment)", inst:bankExecutor(190).assigned == "NUM5" and (console.calls["executors.clear"] or 0) == 0)
   -- Second tap of the same code: the executor already holds it, so only Press/Unpress go out.
   before = #console.cmds
-  h = inst:tap("s", 2, { key = "NUM5" }, 50); inst:service(2.06)
+  h = inst:tap("s", 2, { key = "NUM5", direct = false }, 50); inst:service(2.06)
   check("a repeat tap of the same code reuses the assignment: Press and Unpress only", J(cmdsSince(before)) == J({ "Press Page 1.190", "Unpress Page 1.190" }) and backend.counters.assigned == 1, J(cmdsSince(before)))
   -- A different code on the (free) first executor: re-assigned, verified, pressed.
   before = #console.cmds
-  h = inst:tap("s", 3, { key = "THRU" }, 50); inst:service(3.06)
+  h = inst:tap("s", 3, { key = "THRU", direct = false }, 50); inst:service(3.06)
   check("another code re-assigns the first free executor", J(cmdsSince(before)) == J({ string.format("Assign Quickey %d At Page 1.190", idx("THRU")), "Press Page 1.190", "Unpress Page 1.190" }) and h.target.executor == 190, J(cmdsSince(before)))
   -- Alias: UNDO routes to the OOPS object (tap qualified).
   before = #console.cmds
-  h, err = inst:tap("s", 4, { key = "UNDO" }, 50)
+  h, err = inst:tap("s", 4, { key = "UNDO", direct = false }, 50)
   check("UNDO dispatches the OOPS Quickey (alias folded, tap qualified)", h and h.quickkey == "UNDO" and h.target.code == "OOPS" and h.target.quickeyIndex == idx("OOPS") and h.tupleKey == "quickkey:#86", J(err or h))
   inst:service(4.06)
   check("counters count presses, releases and assignments", backend.counters.press == 4 and backend.counters.release == 4 and backend.counters.refused == 0 and backend.counters.raised == 0 and backend.counters.assigned == 3, J(backend.counters))
@@ -309,7 +318,7 @@ do
   local n = #console.cmds
   local h2; h2, err = inst:press("s", 2.1, { key = "NUM5" })
   check("NUM5 (chord) may not join a held FIXTURE (no chord): refused naming the held key, nothing issued", h2 == nil and err.code == "unsupported" and err.reason == "capability" and has(err.missing, "chord") and err.heldKey == "FIXTURE" and #console.cmds == n and pressedCount() == 1, J(err))
-  h2, err = inst:tap("s", 2.15, { key = "STORE" }, 50)
+  h2, err = inst:tap("s", 2.15, { key = "STORE", direct = false }, 50)
   check("a STORE tap next to the held FIXTURE is refused the same way", h2 == nil and err.heldKey == "FIXTURE" and #console.cmds == n, J(err))
   h2, err = inst:combo("s", 2.2, { { key = "MA1" }, { key = "STORE" } }, { holdMs = 50 })
   check("a chord-capable combo next to the held FIXTURE is refused before its first key", h2 == nil and err.heldKey == "FIXTURE" and err.key == 1 and #console.cmds == n, J(err))
@@ -333,7 +342,7 @@ do
   h = inst:press("s", 2.86, { key = "STORE" })
   h2, err = inst:press("s", 2.87, { key = "THRU" })
   check("THRU next to a held STORE is refused: THRU's chord evidence covers digits only", h and h2 == nil and err.heldKey == "STORE" and pressedCount() == 1, J(err))
-  local q2; q2, err = inst:startSequence("s", 2.88, { { kind = "press", key = "MA1" }, { kind = "tap", key = "NUM1" } })
+  local q2; q2, err = inst:startSequence("s", 2.88, { { kind = "press", key = "MA1" }, { kind = "tap", key = "NUM1", direct = false } })
   check("the sequence preflight applies the same pair rule", q2 == nil and has(err.missing or {}, "chord"), J(err))
   local nc = #console.cmds
   local c2; c2, err = inst:combo("s", 2.89, { { key = "NUM1" }, { key = "MA1" } }, { holdMs = 50 })
@@ -348,18 +357,18 @@ do
   check("sequence preflight refuses an unqualified hold", q == nil and err.code == "unsupported" and has(err.missing or {}, "hold"), J(err))
   q, err = inst:startSequence("s", 4, { { kind = "tap", key = "ESC" } })
   check("sequence preflight refuses a discovered-only code", q == nil and err.code == "unavailable", J(err))
-  q, err = inst:startSequence("s", 4, { { kind = "press", key = "MA1" }, { kind = "tap", key = "CLEAR" } })
+  q, err = inst:startSequence("s", 4, { { kind = "press", key = "MA1" }, { kind = "tap", key = "CLEAR", direct = false } })
   check("sequence preflight refuses a chord of a non-chord code", q == nil and has(err.missing or {}, "chord"), J(err))
   n = #console.cmds
-  q, err = inst:startSequence("s", 4, { { kind = "press", key = "FIXTURE" }, { kind = "tap", key = "NUM5" } })
+  q, err = inst:startSequence("s", 4, { { kind = "press", key = "FIXTURE" }, { kind = "tap", key = "NUM5", direct = false } })
   check("sequence preflight refuses a chord-capable key next to an earlier non-chord press, nothing dispatched", q == nil and has(err.missing or {}, "chord") and err.heldKey == "FIXTURE" and err.step == 2 and #console.cmds == n, J(err))
   q, err = inst:startSequence("s", 4, { { kind = "press", key = "FIXTURE" }, { kind = "combo", keys = { { key = "MA1" }, { key = "STORE" } }, holdMs = 50 } })
   check("sequence preflight refuses a combo step next to an earlier non-chord press", q == nil and has(err.missing or {}, "chord") and err.step == 2 and #console.cmds == n, J(err))
   h = inst:press("s", 4.1, { key = "FIXTURE" })
-  q, err = inst:startSequence("s", 4.2, { { kind = "tap", key = "NUM5" } })
+  q, err = inst:startSequence("s", 4.2, { { kind = "tap", key = "NUM5", direct = false } })
   check("sequence preflight refuses a Quickey step while a live non-chord hold exists", q == nil and has(err.missing or {}, "chord") and #console.cmds == n + 2, J(err))
   inst:releaseAll("s", 4.3)
-  q, err = inst:startSequence("s", 5, { { kind = "press", key = "NUM5" }, { kind = "tap", key = "STORE" }, { kind = "release", key = "NUM5" } })
+  q, err = inst:startSequence("s", 5, { { kind = "press", key = "NUM5" }, { kind = "tap", key = "STORE", direct = false }, { kind = "release", key = "NUM5" } })
   check("a sequence of chord-capable keys validates", q ~= nil, J(err))
   inst:abortSequence("s", q.id, 5.1, "test")
   inst:releaseAll("s", 5.2)
@@ -372,18 +381,18 @@ do
   local inst, backend = fresh()
   local n5 = idx("NUM5")
   console.quickeys[n5] = nil
-  local h, err = inst:tap("s", 1, { key = "NUM5" }, 50)
+  local h, err = inst:tap("s", 1, { key = "NUM5", direct = false }, 50)
   check("a deleted Quickey refuses the press (bank-object-missing), nothing issued, no record", h == nil and err.code == "unsupported" and err.message:find("was deleted") and #console.cmds == 0 and inst:status(1).holdCount == 0, J(err))
   check("the bank reports the problem, nothing repaired", inst:bankStatus().state == "degraded" and (console.calls["quickeys.create"] or 0) == 13 and (console.calls["quickeys.set"] or 0) > 0 and backend.counters.press == 0, J(inst:bankStatus().codes[6]))
   console.quickeys[n5] = { name = "MCP NUM5", code = "NUM6", note = HK.bankMarkerText("bridge", inst:bankStatus().id, "NUM5", { page = 1, first = 190, count = 8 }) }
-  h, err = inst:tap("s", 2, { key = "NUM5" }, 50)
+  h, err = inst:tap("s", 2, { key = "NUM5", direct = false }, 50)
   check("an operator edit (Code) refuses the press (bank-object-changed)", h == nil and err.message:find("was modified") and #console.cmds == 0, J(err))
   console.quickeys[n5].code = "NUM5"
-  h, err = inst:tap("s", 3, { key = "NUM5" }, 50)
+  h, err = inst:tap("s", 3, { key = "NUM5", direct = false }, 50)
   check("restored object: the press goes through again", h and lastCmd() == "Press Page 1.190", J(err))
   inst:service(3.06)
   console.show = "other|Default"
-  h, err = inst:tap("s", 4, { key = "NUM5" }, 50)
+  h, err = inst:tap("s", 4, { key = "NUM5", direct = false }, 50)
   check("another show refuses the press (bank-stale), nothing issued", h == nil and err.message:find("show or data pool differs") and lastCmd() == "Unpress Page 1.190", J(err))
   console.show = "disposable|Default"
   -- Executors that lost their reservation are never used and never re-assigned by a press.
@@ -542,7 +551,7 @@ end
 do
   local inst = fresh()
   local before = #console.cmds
-  local q, err = inst:startSequence("s", 1, { { kind = "tap", key = "FIXTURE" }, { kind = "tap", key = "NUM1" }, { kind = "tap", key = "THRU" }, { kind = "tap", key = "NUM5" }, { kind = "tap", key = "PLEASE" } })
+  local q, err = inst:startSequence("s", 1, { { kind = "tap", key = "FIXTURE", direct = false }, { kind = "tap", key = "NUM1", direct = false }, { kind = "tap", key = "THRU", direct = false }, { kind = "tap", key = "NUM5", direct = false }, { kind = "tap", key = "PLEASE", direct = false } })
   check("the Fixture 1 Thru 5 Please sequence validates", q and q.steps == 5, J(err))
   local t = 1
   for _ = 1, 40 do t = t + 0.03; inst:service(t) end
@@ -554,7 +563,7 @@ do
   check("each tap assigned its code to executor 190 in order and pressed/released it before the next step", J(order) == J({ "FIXTURE", "NUM1", "THRU", "NUM5", "PLEASE" }) and #issued == 15 and issued[2] == "Press Page 1.190" and issued[3] == "Unpress Page 1.190" and pressedCount() == 0, J(issued))
   -- A sequence step whose release stays unresolved ends the sequence as uncertain and never replays.
   before = #console.cmds
-  q = inst:startSequence("s", 20, { { kind = "tap", key = "NUM5" }, { kind = "tap", key = "PLEASE" } })
+  q = inst:startSequence("s", 20, { { kind = "tap", key = "NUM5", direct = false }, { kind = "tap", key = "PLEASE", direct = false } })
   inst:service(20.01)
   console.executors["1.190"] = { quickey = idx("THRU") }  -- operator reassigns during the tap
   t = 20.01
@@ -564,6 +573,79 @@ do
   console.executors["1.190"] = { quickey = idx("NUM5") }
   inst:recover(nil, 30)
   check("recovery after the sequence releases the stuck tap", pressedCount() == 0 and inst:status(30).unresolved == 0)
+end
+
+-------------------------------------------------------------------------------
+-- KB-29: direct taps (Press Quickey N alone) and the static executor bank
+-------------------------------------------------------------------------------
+do
+  local inst, backend = fresh()
+  local before = #console.cmds
+  local h, err = inst:tap("s", 1, { key = "NUM5" }, 50)
+  check("a tap of a code with direct-tap evidence is one Press Quickey: no Assign, no executor press, complete at once", h and h.state == "released" and J(cmdsSince(before)) == J({ "Press Quickey " .. idx("NUM5") }) and h.target.direct == true and inst:status(1).capacity.used == 0 and backend.counters.direct == 1, J({ err = err, cmds = cmdsSince(before) }))
+  inst:service(1.1)
+  check("nothing is released later for a direct tap", J(cmdsSince(before)) == J({ "Press Quickey " .. idx("NUM5") }), J(cmdsSince(before)))
+  check("describeRoute reports the direct flag per code", inst:describeRoute("NUM5").quickkeyCapabilities.direct == true and inst:describeRoute("MA1").quickkeyCapabilities.direct == nil, J(inst:describeRoute("MA1").quickkeyCapabilities))
+  before = #console.cmds
+  h = inst:tap("s", 2, { key = "MA1" }, 50); inst:service(2.06)
+  check("a code without direct-tap evidence (MA1) is tapped through an executor", J(cmdsSince(before)) == J({ string.format("Assign Quickey %d At Page 1.190", idx("MA1")), "Press Page 1.190", "Unpress Page 1.190" }), J(cmdsSince(before)))
+  before = #console.cmds
+  h = inst:tap("s", 3, { key = "NUM5", direct = false }, 50); inst:service(3.06)
+  check("direct = false in the spec forces the executor path", cmdsSince(before)[2] == "Press Page 1.190" and lastCmd() == "Unpress Page 1.190", J(cmdsSince(before)))
+  -- Next to a live Quickey hold the tap goes through an executor (a direct tap next to a held key is not qualified).
+  local held = inst:press("s", 4, { key = "STORE" })
+  before = #console.cmds
+  h, err = inst:tap("s", 4.1, { key = "NUM5" }, 50)
+  check("a tap next to a live Quickey hold is an executor tap, not a direct one", h and not h.target.direct and has(cmdsSince(before), "Press Page"), J({ err = err, cmds = cmdsSince(before) }))
+  inst:releaseAll("s", 4.2); inst:service(4.3)
+  -- A refused direct tap leaves nothing behind.
+  console.fail.qpress = { err = "Illegal Command", count = 1 }
+  h, err = inst:tap("s", 5, { key = "THRU" }, 50)
+  check("a direct tap the console refuses is press-failed and leaves no record", h == nil and err.code == "press-failed" and err.message:find("Illegal Command") and inst:status(5).capacity.used == 0 and liveHold(inst, 5) == nil, J(err))
+  -- A sequence's tap steps take the direct path too.
+  console.taps = {}
+  local q = inst:startSequence("s", 6, { { kind = "tap", key = "NUM1" }, { kind = "tap", key = "THRU" }, { kind = "tap", key = "NUM5" } })
+  local t = 6
+  for _ = 1, 20 do t = t + 0.03; inst:service(t) end
+  check("sequence tap steps are direct taps, in order", q and inst:sequenceStatus(q.id, t).state == "completed" and J(console.taps) == J({ "NUM1", "THRU", "NUM5" }), J({ taps = console.taps }))
+end
+
+do
+  -- Static bank: every code on its own executor, assigned once; a hold presses it without Assign.
+  newConsole(); pageWithExecutors(1, 190, 20)
+  local inst = newInst()
+  local b, err = inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 4, static = true } }, 0)
+  check("a static bank smaller than its code list is refused before anything is created", b == nil and err.code == "bank-invalid" and err.message:find("one executor per code") and next(console.quickeys) == nil, J(err))
+  local n = 0; for name in pairs(VK) do n = n + 1 end
+  b, err = inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0)
+  check("a static bank provisions with its own id letter", b and b.id == "bridge@q900.s1.190-209" and b.state == "ready", J(err or b))
+  local ok = true
+  for i, c in ipairs(b.codes) do if console.executors["1." .. (189 + i)].quickey ~= c.index then ok = false end end
+  check("code i of the bank sits on executor first + i - 1; the rest hold the placeholder", ok and console.executors["1.209"].quickey == phIdx(), "executor map")
+  local backend = HK.quickeyBackend(inst)
+  assert(inst:enableInput(backend))
+  inst:openSession({ id = "s", leaseMs = 120000 }, 0)
+  local ma = inst:bankTarget("MA1", 0)
+  local maExec; for i, c in ipairs(b.codes) do if c.name == "MA1" then maExec = 189 + i end end
+  console.cmds = {}
+  local h = inst:press("s", 1, { key = "MA1" })
+  check("a static hold presses the code's own executor, no Assign", h and h.target.executor == maExec and J(console.cmds) == J({ string.format("Press Page 1.%d", maExec) }), J({ target = h and h.target, cmds = console.cmds }))
+  inst:release("s", 1.1, { hold = h.id })
+  check("...and releases it there", lastCmd() == string.format("Unpress Page 1.%d", maExec) and pressedCount() == 0)
+  -- An operator re-assignment is refused, never repaired.
+  local stExec; for i, c in ipairs(b.codes) do if c.name == "STORE" then stExec = 189 + i end end
+  console.executors["1." .. stExec] = { quickey = ma.index }
+  console.cmds = {}
+  local h2, err2 = inst:press("s", 2, { key = "STORE" })
+  check("a static executor holding another code is refused, nothing assigned or pressed", h2 == nil and #console.cmds == 0 and J(err2):find("its static code is STORE") ~= nil, J(err2))
+  console.executors["1." .. stExec] = { quickey = inst:bankTarget("STORE", 2).index }
+  -- Adoption keeps the static map; a dynamic record is never adopted as static (different id).
+  local dis = inst:dispose(3)
+  local inst2 = newInst()
+  local a, aerr = inst2:adoptBank(dis.bank, 4)
+  check("a static record is adopted with its map", a and a.state == "ready" and inst2._bank.staticByCode.MA1.index == maExec, J(aerr or a.problems))
+  local td = inst2:teardownBank(5, { authorized = true })
+  check("teardown clears every static executor and deletes the Quickeys", td and next(console.quickeys) == nil and console.executors["1.190"] == "empty", J(td))
 end
 
 print(string.format("\n%d passed, %d failed", passes, failures))

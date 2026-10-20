@@ -149,7 +149,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.11.0"
+local VERSION     = "0.12.0"
 local API_VERSION = 1
 
 -- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
@@ -667,6 +667,8 @@ local BANK_EXECUTOR_FUNCTIONS = { FLASH = true, BLACK = true, KILL = true, RATE1
 -- aliases are deduplicated by value with the alphabetically first name and reported.
 local BANK_ALIASES = { UNDO = "OOPS" }
 
+-- `direct`: KB-10 tapped these codes as Press Quickey N alone (one complete activation; KB-29 adds the KB-28
+-- codes): a tap of such a code needs no executor.
 -- KB-10 evidence per code (onPC 2.5.1.0, macOS, executor path for holds), extended by KB-28 (the NX-K's
 -- remaining keys: docs/probes/kb-28-quickey-codes-macos-2.5.1.md). Everything else is discovered only.
 -- `tap` is a direct Press Quickey or an executor press/release pair; `hold` is an executor Press kept
@@ -683,15 +685,15 @@ local CHORD_GROUPS = {
 }
 local KB28_DIGIT = { tap = true, hold = true, chord = true, chordWith = "keypad" }
 local BANK_QUALIFIED = {
-  NUM1    = { tap = true, hold = true,  chord = true, chordWith = "keypad" },
-  NUM5    = { tap = true, hold = true,  chord = true, note = "a direct Unpress Quickey re-activates it: stuck-key recovery is NOT qualified for NUM5" },
-  THRU    = { tap = true, hold = true,  chord = true, chordWith = "digit" },
-  FIXTURE = { tap = true, hold = true,  chord = false },
-  PLEASE  = { tap = true, hold = true,  chord = false, note = "executes the command line; immediately after digits it is accepted in the same chunk outside a text pop-up" },
-  CLEAR   = { tap = true, hold = true,  chord = false },
-  STORE   = { tap = true, hold = true,  chord = true, note = "a 2 s executor hold did not open the Store Settings pop-up" },
+  NUM1    = { tap = true, hold = true,  chord = true, chordWith = "keypad", direct = true },
+  NUM5    = { tap = true, hold = true,  chord = true, direct = true, note = "a direct Unpress Quickey re-activates it: stuck-key recovery is NOT qualified for NUM5" },
+  THRU    = { tap = true, hold = true,  chord = true, chordWith = "digit", direct = true },
+  FIXTURE = { tap = true, hold = true,  chord = false, direct = true },
+  PLEASE  = { tap = true, hold = true,  chord = false, direct = true, note = "executes the command line; immediately after digits it is accepted in the same chunk outside a text pop-up" },
+  CLEAR   = { tap = true, hold = true,  chord = false, direct = true },
+  STORE   = { tap = true, hold = true,  chord = true, direct = true, note = "a 2 s executor hold did not open the Store Settings pop-up" },
   MA1     = { tap = false, hold = true, chord = true, note = "a direct tap holds nothing; qualified as an executor hold (MA1+STORE gave Record); the only code whose stuck-key recovery (direct Unpress Quickey) is qualified" },
-  OOPS    = { tap = true, hold = false, chord = false, note = "Undo on an empty command line: it can revert show data, never use it as a clear" },
+  OOPS    = { tap = true, hold = false, chord = false, direct = true, note = "Undo on an empty command line: it can revert show data, never use it as a clear" },
   -- KB-28
   NUM0 = KB28_DIGIT, NUM2 = KB28_DIGIT, NUM3 = KB28_DIGIT, NUM4 = KB28_DIGIT,
   NUM6 = KB28_DIGIT, NUM7 = KB28_DIGIT, NUM8 = KB28_DIGIT, NUM9 = KB28_DIGIT,
@@ -734,13 +736,30 @@ local function parseBankMarker(note)
 end
 -- The bank id is deterministic from owner and ranges, so the same spec finds its own bank after a
 -- restart without any stored state; a different spec on the same slots is a mismatch, never a merge.
+-- A static bank (KB-29) has its own id letter ("s" instead of "e"), so a record of one mode is never adopted as the other.
 local function bankId(owner, spec)
-  return string.format("%s@q%d.e%d.%d-%d", owner, spec.quickeys.first, spec.executors.page, spec.executors.first, spec.executors.first + spec.executors.count - 1)
+  return string.format("%s@q%d.%s%d.%d-%d", owner, spec.quickeys.first, spec.executors.static and "s" or "e", spec.executors.page, spec.executors.first, spec.executors.first + spec.executors.count - 1)
+end
+-- KB-29: the static executor of each code: the bank's codes in bank order on the executors in order; executors
+-- beyond the codes hold the placeholder. Sets x.code on the bank's executor entries (nil = placeholder).
+local function applyStaticMap(bank)
+  if not (bank.spec and bank.spec.executors and bank.spec.executors.static) then return true end
+  local codes = {}
+  for _, e in ipairs(bank.codes) do if not e.placeholder then codes[#codes + 1] = e.name end end
+  if #codes > #bank.executors then
+    return nil, string.format("a static bank needs one executor per code: %d codes, %d executors (executors.count must be at least %d)", #codes, #bank.executors, #codes)
+  end
+  bank.staticByCode = {}
+  for i, x in ipairs(bank.executors) do
+    x.code = codes[i]
+    if x.code then bank.staticByCode[x.code] = x end
+  end
+  return true
 end
 local function bankIsToken(s) return type(s) == "string" and s ~= "" and not s:find("%s") and not s:find("=") end
 
 -- Validates a provisioning spec and returns a normalised copy, or nil, { code, message }.
--- spec = { authorized = true, quickeys = { first = n }, executors = { page = p, first = n, count = k },
+-- spec = { authorized = true, quickeys = { first = n }, executors = { page = p, first = n, count = k, static = bool },
 --          codes = "hardkeys" | "qualified" | { "NUM1", ... }, label = <string> }
 local function validateBankSpec(spec, config)
   if type(spec) ~= "table" then return nil, { code = "bank-invalid", message = "provisioning spec must be a table { authorized, quickeys, executors, codes, label }" } end
@@ -759,13 +778,18 @@ local function validateBankSpec(spec, config)
   local qfirst, err = posInt(spec.quickeys.first, "quickeys.first", 9999); if not qfirst then return nil, err end
   for k in pairs(spec.quickeys) do if k ~= "first" then return nil, { code = "bank-invalid", message = "unknown quickeys field '" .. tostring(k) .. "' (fields: first)" } end end
   if type(spec.executors) ~= "table" then return nil, { code = "bank-invalid", message = "executors = { page, first, count } is required: holds need the Quickey on an executor (KB-10), so the operator selects the executor range" } end
-  for k in pairs(spec.executors) do if k ~= "page" and k ~= "first" and k ~= "count" then return nil, { code = "bank-invalid", message = "unknown executors field '" .. tostring(k) .. "' (fields: page, first, count)" } end end
+  for k in pairs(spec.executors) do if k ~= "page" and k ~= "first" and k ~= "count" and k ~= "static" then return nil, { code = "bank-invalid", message = "unknown executors field '" .. tostring(k) .. "' (fields: page, first, count, static)" } end end
+  -- KB-29: static = true gives every code of the bank its own executor (code i on executor first + i - 1),
+  -- assigned once at provisioning; a press then needs no Assign. count must cover the codes (checked when they
+  -- are discovered); the dynamic default shares count executors among concurrently held keys.
+  if spec.executors.static ~= nil and type(spec.executors.static) ~= "boolean" then return nil, { code = "bank-invalid", message = "executors.static must be a boolean" } end
+  local static = spec.executors.static == true
   local page; page, err = posInt(spec.executors.page, "executors.page", 9999); if not page then return nil, err end
   local efirst; efirst, err = posInt(spec.executors.first, "executors.first", 9999); if not efirst then return nil, err end
   local count = spec.executors.count
   if count == nil then count = config.maxHolds end
-  count, err = posInt(count, "executors.count", 64); if not count then return nil, err end
-  if count < config.maxHolds then
+  count, err = posInt(count, "executors.count", static and 256 or 64); if not count then return nil, err end
+  if not static and count < config.maxHolds then
     return nil, { code = "bank-invalid", message = string.format("executors.count %d is below config.maxHolds %d: every concurrently held key needs its own executor", count, config.maxHolds) }
   end
   local codes = spec.codes
@@ -785,7 +809,7 @@ local function validateBankSpec(spec, config)
     return nil, { code = "bank-invalid", message = "codes must be a string or a list" }
   end
   if spec.label ~= nil and type(spec.label) ~= "string" then return nil, { code = "bank-invalid", message = "label must be a string" } end
-  return { authorized = spec.authorized == true, quickeys = { first = qfirst }, executors = { page = page, first = efirst, count = count }, codes = codes, label = spec.label }
+  return { authorized = spec.authorized == true, quickeys = { first = qfirst }, executors = { page = page, first = efirst, count = count, static = static or nil }, codes = codes, label = spec.label }
 end
 
 -- Discovers the code set from the VirtualKeyCode enum: one entry per distinct value, aliases folded
@@ -948,6 +972,12 @@ local function consoleDeps(env)
         return true
       end,
       delete = function(index) env.Cmd(string.format("Delete Quickey %d /NoConfirmation", index)); return true end,
+      -- KB-29: a direct tap (one complete activation, KB-10). The console's feedback is the parser's verdict.
+      press = function(index)
+        local fb = env.Cmd(string.format("Press Quickey %d", index))
+        if type(fb) == "string" and fb:sub(1, 2) == "OK" then return true, fb end
+        return false, tostring(fb)
+      end,
     },
     executors = {
       read = function(page, index)
@@ -1731,7 +1761,7 @@ function QuickeyBackend:quickkeyCapabilities(code)
   if not e.qualified then return { tap = false, hold = false, chord = false, note = "discovered only: no KB-10 evidence for this code" .. (e.note and ("; " .. e.note) or "") } end
   -- A tap on this backend IS a bounded executor hold (Press, then Unpress at the deadline), so a code
   -- qualified for holds is qualified for taps here (MA1: a direct tap holds nothing, an executor pair does).
-  return { tap = (e.qualified.tap or e.qualified.hold) and true or false, hold = e.qualified.hold and true or false, chord = e.qualified.chord and true or false, chordWith = e.qualified.chord and e.qualified.chordWith or nil, note = e.qualified.note }
+  return { tap = (e.qualified.tap or e.qualified.hold) and true or false, hold = e.qualified.hold and true or false, chord = e.qualified.chord and true or false, chordWith = e.qualified.chord and e.qualified.chordWith or nil, direct = e.qualified.direct and true or nil, note = e.qualified.note }
 end
 
 -- Named requirements a route through this backend is missing right now (reported by describeRoute()).
@@ -1772,6 +1802,15 @@ function QuickeyBackend:preflight(tuple, route, ctx)
   -- Enough reserved executors that are free AND verify right now (placeholder or a bank code on them),
   -- for this key and the ones planned with it in a combo, so a chord never starts without a place for
   -- every key. Each is re-read again right before the press.
+  if self.instance._bank.spec.executors.static then
+    -- KB-29: the code's own executor, free and verified (it must hold this code's Quickey).
+    local own = self.instance._bank.staticByCode and self.instance._bank.staticByCode[t.name]
+    if not own then return false, string.format("the static bank has no executor for %s", t.name) end
+    if self.instance:_executorsInUse()[own.index] then return false, string.format("Page %d.%d (%s) is held by a live Quickey record; release or recover it first", own.page, own.index, t.name) end
+    local xr, xerr = self.instance:bankExecutor(own.index, self.instance._now)
+    if not xr then return false, tostring(xerr and xerr.message) end
+    return true
+  end
   local need = 1 + (ctx and tonumber(ctx.extra) or 0)
   local free, total = self:_freeExecutors()
   if free < need then
@@ -1812,7 +1851,17 @@ function QuickeyBackend:press(tuple)
   -- the bank's code Quickeys (index, marker and Code verified by bankExecutor).
   local inUse = inst:_executorsInUse()
   local chosen, reasons = nil, {}
-  for _, cand in ipairs(bank.executors) do
+  if bank.spec.executors.static then
+    -- KB-29: the code's own executor, never re-assigned: it must verify and hold this code's Quickey.
+    local own = bank.staticByCode and bank.staticByCode[t.name]
+    if not own then return refuse(string.format("the static bank has no executor for %s; nothing pressed", t.name)) end
+    if inUse[own.index] then return refuse(string.format("Page %d.%d (%s) is held by a live Quickey record; nothing pressed", own.page, own.index, t.name)) end
+    local xr, xerr2 = inst:bankExecutor(own.index, inst._now)
+    if not xr then return refuse(string.format("Page %d.%d: %s; nothing pressed", own.page, own.index, tostring(xerr2 and xerr2.message))) end
+    if xr.assigned ~= t.name then return refuse(string.format("Page %d.%d does not hold the bank's %s (reads %s); nothing is re-assigned, nothing pressed", own.page, own.index, t.name, tostring(xr.assigned or xr.state))) end
+    chosen = xr
+  end
+  for _, cand in ipairs(chosen and {} or bank.executors) do
     if not inUse[cand.index] then
       local xr, xerr2 = inst:bankExecutor(cand.index, inst._now)
       if xr then chosen = xr; break end
@@ -1846,6 +1895,39 @@ function QuickeyBackend:press(tuple)
   end
   self:_log("press", tuple, { target = target, feedback = feedback })
   return true, nil, nil, target  -- dispatched; no per-key confirmation exists on this backend
+end
+
+-- KB-29: a direct tap. A Quickey addressed directly is always one complete activation (KB-10), so a code
+-- with direct-tap evidence is tapped with Press Quickey N alone: no executor, no Assign, no Unpress, and
+-- nothing is left down whatever happens. The Quickey is re-read as the bank's right before (bankTarget).
+function QuickeyBackend:tapDirect(tuple)
+  self.counters.direct = (self.counters.direct or 0) + 1
+  local function refuse(why)
+    self.counters.refused = self.counters.refused + 1
+    self:_log("tap", tuple, { failed = why, direct = true })
+    return false, nil, why
+  end
+  if type(tuple) ~= "table" or tuple.pcKey or not tuple.quickkey then return refuse("the owned-Quickey backend dispatches Quickey tuples only (no PC keys, no text)") end
+  local okS, why = self:supportsQuickkey(tuple.quickkey)
+  if not okS then return refuse(why) end
+  local e = self:_entry(tuple.quickkey)
+  if not (e and e.qualified and e.qualified.direct) then return refuse(string.format("Quickey code %s has no direct-tap evidence (KB-10/KB-29); it is tapped through an executor", tostring(tuple.quickkey))) end
+  local d = self.instance._deps
+  local qd = type(d) == "table" and d.quickeys or nil
+  if type(qd) ~= "table" or type(qd.press) ~= "function" then return refuse("console deps quickeys.press is missing (consoleDeps(_G) provides it)") end
+  local inst = self.instance
+  local t, err = inst:bankTarget(tuple.quickkey, inst._now)
+  if not t then return refuse(err.message) end
+  local target = { quickeyIndex = t.index, code = t.name, value = t.value, bank = inst._bank.id, direct = true }
+  local ok, accepted, feedback = pcall(qd.press, t.index)
+  if not ok then
+    self.counters.raised = self.counters.raised + 1
+    self:_log("tap", tuple, { target = target, raised = tostring(accepted), direct = true })
+    error({ message = string.format("Press Quickey %d (%s) raised: %s (whether it acted is unknown; a direct tap leaves nothing down)", t.index, t.name, tostring(accepted)), target = target }, 0)
+  end
+  if accepted == false then return refuse(string.format("Press Quickey %d (%s) was not accepted by the console: %s; nothing tapped", t.index, t.name, tostring(feedback))) end
+  self:_log("tap", tuple, { target = target, feedback = feedback, direct = true })
+  return true, nil, nil, target
 end
 
 -- Release on the recorded target only. The executor is re-read and must still hold the recorded
@@ -1990,6 +2072,11 @@ function MixedBackend:preflight(tuple, route, ctx)
   return true
 end
 function MixedBackend:press(tuple) local p = self:partFor(tuple); return p:press(tuple) end
+function MixedBackend:tapDirect(tuple)
+  local p = self:partFor(tuple)
+  if type(p.tapDirect) ~= "function" then return false, nil, "the " .. tostring(p.name) .. " part has no direct taps" end
+  return p:tapDirect(tuple)
+end
 function MixedBackend:release(tuple, target) local p = self:partFor(tuple); return p:release(tuple, target) end
 function MixedBackend:char(cp, display)
   local k = self.parts.keyboard
@@ -2161,6 +2248,14 @@ function Instance:provisionBank(spec, now)
     else refusals[#refusals + 1] = { executor = ref, reason = "unreadable", detail = tostring(cls.error) } end
     bank.executors[#bank.executors + 1] = x
   end
+  local okMap, mapErr = applyStaticMap(bank)
+  if not okMap then return fail("bank-invalid", mapErr) end
+  -- A static executor already holding a bank Quickey must hold its own code's one.
+  for _, x in ipairs(bank.executors) do
+    if bank.spec.executors.static and x.action == "reuse" and (x.assigned or nil) ~= x.code then
+      refusals[#refusals + 1] = { executor = string.format("%d.%d", x.page, x.index), reason = "executor-misassigned", detail = string.format("Page %d.%d holds the bank's %s, its static code is %s; nothing is re-assigned (tear down and provision again)", x.page, x.index, tostring(x.assigned or BANK_PLACEHOLDER), tostring(x.code or BANK_PLACEHOLDER)) }
+    end
+  end
   if #refusals > 0 then
     return fail("bank-preflight", string.format("%d of %d Quickey slots / %d executors cannot be reserved; nothing was created (%s)", #refusals, #plan, #bank.executors, refusals[1].reason .. ": " .. refusals[1].detail),
       { refusals = refusals, plan = plan, executors = bank.executors, exclusions = disc.exclusions })
@@ -2208,12 +2303,15 @@ function Instance:provisionBank(spec, now)
       if x.action == "reserve" then
         local again = self:_classifyExecutor(x.page, x.index, bank)
         if again.state ~= "empty" then failure = { executor = string.format("%d.%d", x.page, x.index), error = "executor was " .. again.state .. " at the recheck right before the reservation; it was empty at preflight (another writer?)" }; break end
-        local okA, aerr = bankOp(d.executors.assign, x.page, x.index, placeholder.index)
+        -- Static: the executor's own code Quickey (KB-29); otherwise the placeholder.
+        local q = x.code and bank.byName[x.code] or placeholder
+        local okA, aerr = bankOp(d.executors.assign, x.page, x.index, q.index)
         if not okA then failure = { executor = string.format("%d.%d", x.page, x.index), error = "assign failed: " .. tostring(aerr) }; break end
         assigned[#assigned + 1] = x
         local verify = self:_classifyExecutor(x.page, x.index, bank)
-        if verify.state ~= "reserved" then failure = { executor = string.format("%d.%d", x.page, x.index), error = "readback after the assignment: " .. verify.state .. (verify.error and (": " .. verify.error) or "") .. "; the executor does not hold the placeholder as expected" }; break end
-        x.action, x.state = "reserved-now", "reserved"
+        local good = x.code and (verify.state == "assigned" and verify.code == x.code) or (not x.code and verify.state == "reserved")
+        if not good then failure = { executor = string.format("%d.%d", x.page, x.index), error = "readback after the assignment: " .. verify.state .. (verify.error and (": " .. verify.error) or "") .. "; the executor does not hold " .. (x.code and ("the bank's " .. x.code) or "the placeholder") .. " as expected" }; break end
+        x.action, x.state, x.assigned = "reserved-now", x.code and "assigned" or "reserved", x.code
       end
     end
   end
@@ -2243,7 +2341,7 @@ function Instance:_rollbackCreated(created, assigned, bank)
     local x = assigned[i]
     local ref = string.format("%d.%d", x.page, x.index)
     local cls = self:_classifyExecutor(x.page, x.index, bank)
-    if cls.state == "reserved" and type(d.executors.clear) == "function" then
+    if (cls.state == "reserved" or (x.code and cls.state == "assigned" and cls.code == x.code)) and type(d.executors.clear) == "function" then
       local okC, cerr = bankOp(d.executors.clear, x.page, x.index)
       local after = okC and self:_classifyExecutor(x.page, x.index, bank) or nil
       if okC and after and after.state == "empty" then out.cleared[#out.cleared + 1] = { executor = ref }
@@ -2332,6 +2430,18 @@ end
 function Instance:_applyExecutorClass(x, cls, now)
   if type(now) == "number" then x.lastReadAt = now end
   x.problem = nil
+  -- KB-29: a static executor is healthy only with its own code's Quickey (or the placeholder when it has no code).
+  if x.code ~= nil or (self._bank and self._bank.spec and self._bank.spec.executors.static) then
+    local want = x.code
+    if (want and cls.state == "assigned" and cls.code == want) or (not want and cls.state == "reserved") then
+      x.state, x.assigned = cls.state, cls.code
+      return x
+    end
+    if cls.state == "assigned" or cls.state == "reserved" then
+      x.state, x.assigned, x.problem = "misassigned", cls.code, string.format("Page %d.%d holds the bank's %s, its static code is %s (not re-assigned here; tear down and provision again)", x.page, x.index, tostring(cls.code or BANK_PLACEHOLDER), tostring(want or BANK_PLACEHOLDER))
+      return x
+    end
+  end
   if cls.state == "reserved" then x.state, x.assigned = "reserved", nil
   elseif cls.state == "assigned" then x.state, x.assigned = "assigned", cls.code
   elseif cls.state == "empty" then x.state, x.assigned, x.problem = "unreserved", nil, string.format("Page %d.%d is empty: the placeholder reservation was removed (not re-assigned here; tear down and provision again)", x.page, x.index)
@@ -2527,6 +2637,8 @@ function Instance:adoptBank(record, now)
   -- cleanup only. A complete record without it predates the executor reservation and is refused.
   if not hasPlaceholder and not partial then return fail("bad-argument", "the record has no reservation placeholder entry; it predates the executor reservation and cannot be adopted (tear down from its own version, or delete the objects by hand)") end
   for i = 0, s.executors.count - 1 do bank.executors[#bank.executors + 1] = { page = s.executors.page, index = s.executors.first + i, state = "unverified" } end
+  local okMap, mapErr = applyStaticMap(bank)
+  if not okMap then return fail("bad-argument", "the record's " .. mapErr) end
   if not record.show or record.show == "" then return fail("bad-argument", "the record carries no show identity") end
   self._bank = bank
   local v, verr = self:verifyBank(now)
@@ -2880,12 +2992,49 @@ function Instance:tap(sessionId, now, spec, holdMs, ctx)
   local plan, perr = self:_planPress(sessionId, now, spec, { kind = "tap", fromSequence = ctx and ctx.fromSequence })
   if not plan then return nil, perr end
   if plan.duplicate then return fail("conflict", "tuple is already held by this session; a tap cannot be layered on a hold", { hold = plan.duplicate.id }) end
+  -- KB-29: a code with direct-tap evidence is tapped with Press Quickey N alone, unless another Quickey record
+  -- is live (a direct tap next to an executor-held key is not qualified; that tap goes through an executor).
+  local caps = plan.route and plan.route.capabilities
+  if plan.tuple.quickkey and type(caps) == "table" and caps.direct and type(self._adapter.tapDirect) == "function"
+     and not (spec and spec.direct == false) and self:_liveQuickkeyCount(tupleKey(plan.tuple)) == 0 then
+    return self:_dispatchDirectTap(s, plan, now)
+  end
   local hold, derr = self:_dispatchPress(s, plan, now)
   if not hold then return nil, derr end
   if hold.kind == "text" then return self:_holdReport(hold, now, { note = "text route: inserted on press, nothing to release at the tap deadline" }) end
   hold.kind = "tap"
   self:_setDeadline(hold, now + holdMs / 1000, "tap")
   return self:_holdReport(hold, now)
+end
+
+-- KB-29: the record of a direct tap is complete when the call returns (nothing to release, nothing left down).
+function Instance:_dispatchDirectTap(s, plan, now)
+  local hold = self:_newHold(s, plan.tuple, plan.route, now, nil, nil)
+  hold.kind = "tap"
+  hold.direct = true
+  self._now = now
+  local ok, aOk, _, err, target = pcall(self._adapter.tapDirect, self._adapter, copyTuple(plan.tuple))
+  if not ok then
+    local msg = type(aOk) == "table" and aOk.message or aOk
+    self:_dropHold(hold)
+    return fail("press-failed", "direct tap raised an error: " .. tostring(msg) .. " (a direct tap leaves nothing down; whether it acted is unknown)")
+  end
+  if aOk == false then
+    self:_dropHold(hold)
+    return fail("press-failed", "direct tap was refused by the backend: " .. tostring(err))
+  end
+  if type(target) == "table" then hold.target = target end
+  hold.dispatch.press = { ok = true, at = now, outcome = "dispatched", direct = true, target = hold.target }
+  hold.dispatch.release = { ok = true, at = now, outcome = "complete", direct = true, note = "a direct tap is one complete activation; no release is issued" }
+  hold.state, hold.releasedAt, hold.deadline = "released", now, nil
+  self._released[#self._released + 1] = hold
+  while #self._released > 32 do
+    local old = table.remove(self._released, 1)
+    if self._holds[old.id] == old then self._holds[old.id] = nil end
+  end
+  if self._byTuple[hold.tupleKey] == hold then self._byTuple[hold.tupleKey] = nil end
+  self._pressCount = self._pressCount + 1
+  return self:_holdReport(hold, now, { note = "direct tap: Press Quickey " .. tostring(target and target.quickeyIndex) .. ", nothing to release" })
 end
 
 -- A combination: several keys pressed in order (e.g. { {key="MA"}, {key="STORE"} }). Every constituent
@@ -3060,7 +3209,7 @@ local TEXT_CONTEXTS = { ["command-line"] = true, ["text-field"] = true }
 
 local function stepSpec(step)
   return { key = step.key, pcKey = step.pcKey, shift = step.shift, ctrl = step.ctrl, alt = step.alt, numlock = step.numlock,
-           display = step.display, executor = step.executor, maxHoldMs = step.maxHoldMs, exclusive = step.exclusive }
+           display = step.display, executor = step.executor, maxHoldMs = step.maxHoldMs, exclusive = step.exclusive, direct = step.direct }
 end
 
 local function codeMessage(err)

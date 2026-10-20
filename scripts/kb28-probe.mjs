@@ -8,6 +8,8 @@
 //   node scripts/kb28-probe.mjs run    [--codes NUM0,NUM2,...] [--out report.json]   command line: taps, holds, rolling pairs, toggles
 //   node scripts/kb28-probe.mjs popup  [--out report.json]                            Edit Command pop-up open and empty (opened by hand)
 //   node scripts/kb28-probe.mjs type   NUM1 DOT NUM5                                  one key per request, nothing read (screenshot check)
+//   --direct (run, popup, type): KB-29, every key as a direct tap (Press Quickey N): one complete activation, no
+//                                                                                    executor, no Unpress; holds and rolled pairs are skipped
 //   node scripts/kb28-probe.mjs cleanup [--unpress]                                   removes the probe objects of an aborted run
 //                                                                                    (--unpress: Unpress them first, if a key may be down)
 //
@@ -28,6 +30,9 @@ const outFile = opt("--out", null);
 const QK = Number(opt("--quickey", 960));
 const [EXP, EXE] = String(opt("--exec", "1.190")).split(".").map(Number);
 const FIXTURE = Number(opt("--fixture", 101));
+// KB-29: --direct presses every key as a direct tap of its Quickey (Press Quickey N, no executor, no Unpress).
+// KB-10 found a directly addressed Quickey is always one complete tap; holds and rolled pairs do not apply.
+const DIRECT = argv.includes("--direct");
 const SHOW_GUARD = /disposable|mcp-test|scratch/i;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -188,6 +193,8 @@ return tostring(q:Get('Code'))`);
   if (back !== name) throw new Error(`Quickey ${s.q} code ${name} reads back ${back}`);
 }
 // Marked pressed BEFORE the request: a request that times out may still have pressed the key.
+// A direct tap: one complete activation, nothing left down (KB-10), so nothing is tracked as pressed.
+const dtapCmd = (s) => `Cmd('Press Quickey ${s.q}')`;
 const press = (conn, s) => { pressed.add(s.name); return lua(conn, `return Cmd('Press Page ${EXP}.${s.e}')`); };
 // Only an accepted Unpress clears the marker: after a refused one the key may still be down, so cleanup must try
 // again before it deletes anything (review 5).
@@ -211,8 +218,20 @@ async function settle(reader, from, ms = 600) {
 }
 
 // One tap through the executor: Press, read in the chunk and on the next request, Unpress, read again.
+// With --direct: Press Quickey N, read in the chunk, on the next request and once more 300 ms later (a direct
+// Unpress would be a second tap, KB-10, so none is issued).
 async function tap(conn, s, name) {
   await code(conn, s, name);
+  if (DIRECT) {
+    const r = await lua(conn, `local before = CmdObj().cmdtext
+local fp = ${dtapCmd(s)}
+local imm = CmdObj().cmdtext
+return { before = before, fp = fp, imm = imm }`);
+    const afterPress = await readCmd(conn);
+    await sleep(300);
+    const afterRelease = await readCmd(conn);
+    return { ...r, afterPress, fu: "OK", afterRelease };
+  }
   pressed.add(s.name);
   const r = await lua(conn, `local before = CmdObj().cmdtext
 local fp = Cmd('Press Page ${EXP}.${s.e}')
@@ -260,7 +279,8 @@ async function runCmdline(A, codes, only) {
       accepted(t.fp) && accepted(t.fu) && t.imm !== "" && t.afterPress === t.imm && t.afterRelease === t.afterPress, t);
   }
   // 2. Holds: Press kept down across requests for 1.5 s inserts once (no auto-repeat), Unpress adds nothing.
-  for (const name of codes) {
+  // A direct tap holds nothing: no hold stage and no rolled pairs in --direct.
+  for (const name of DIRECT ? [] : codes) {
     if (!(await clearLine(A))) { record(`${name}: command line cleared before the hold (stage stopped, nothing more pressed)`, false, await readCmd(A)); return; }
     await code(A, SLOTS.A, name);
     const fp = await press(A, SLOTS.A);
@@ -273,7 +293,7 @@ async function runCmdline(A, codes, only) {
     record(`${name} hold: one token while held 1.5 s, none on release, MA untouched`, accepted(fp) && accepted(fu) && down === tokens[name] && held === down && up === down && ma === false, { down, held, up, ma });
   }
   // 3. Rolling pairs: B down before A up gives the same line as two sequential taps.
-  for (const [a, b] of ROLLING.filter(([a, b]) => pick(a) && pick(b))) {
+  for (const [a, b] of DIRECT ? [] : ROLLING.filter(([a, b]) => pick(a) && pick(b))) {
     if (!(await clearLine(A))) { record(`${a}+${b}: command line cleared (stage stopped, nothing more pressed)`, false, await readCmd(A)); return; }
     await code(A, SLOTS.A, a); await code(A, SLOTS.B, b);
     await press(A, SLOTS.A); await unpress(A, SLOTS.A); await press(A, SLOTS.B); await unpress(A, SLOTS.B);
@@ -293,6 +313,19 @@ async function runCmdline(A, codes, only) {
   for (const [name, reader] of Object.entries(TOGGLE_CODES).filter(([name]) => pick(name))) {
     await code(A, SLOTS.A, name);
     const read = () => fb(A, reader);
+    if (DIRECT) {
+      // A direct tap flips the mode once (nothing more 400 ms later), a second one restores it.
+      const v0 = await read();
+      const fp = await lua(A, `return ${dtapCmd(SLOTS.A)}`);
+      const v1 = await settle(read, v0);
+      await sleep(400);
+      const v2 = await read();
+      const fp2 = await lua(A, `return ${dtapCmd(SLOTS.A)}`);
+      const v3 = await settle(read, v2);
+      const line = await readCmd(A);
+      record(`${name} direct tap toggles ${reader} once, a second one restores it`, accepted(fp) && accepted(fp2) && v0 !== undefined && v1 !== v0 && v2 === v1 && v3 === v0 && line === "", { v0, v1, v2, v3, line });
+      continue;
+    }
     const v0 = await read();
     try {
       const fp = await press(A, SLOTS.A);
@@ -348,6 +381,19 @@ async function runFullStage(A) {
   if (!(await clearLine(A))) { record("FULL: command line cleared", false); return; }
   await lua(A, `Cmd('ClearAll'); Cmd('Fixture ${FIXTURE}'); return true`);
   const sel0 = await lua(A, "return SelectionCount()");
+  if (DIRECT) {
+    const d0 = await dimmer(A);
+    await code(A, SLOTS.A, "FULL");
+    const fp = await lua(A, `return ${dtapCmd(SLOTS.A)}`);
+    await sleep(300);
+    const d1 = await dimmer(A);
+    const line1 = await readCmd(A);
+    await sleep(1500);
+    const d2 = await dimmer(A);
+    record(`FULL direct tap with Fixture ${FIXTURE} selected sets Dimmer 100 once`, sel0 >= 1 && d0 === null && accepted(fp) && d1 === 100 && d2 === 100 && line1 === "", { sel0, d0, d1, line1, d2 });
+    await lua(A, "Cmd('ClearAll'); return true");
+    return;
+  }
   const d0 = await dimmer(A);
   if (sel0 < 1 || d0 !== null) { record(`FULL: Fixture ${FIXTURE} selected with an empty programmer first`, false, { sel0, d0 }); return; }
   await code(A, SLOTS.A, "FULL");
@@ -385,16 +431,17 @@ async function runPopup(A) {
   const clr = async () => { await code(A, SLOTS.B, "CLEAR"); await press(A, SLOTS.B); await unpress(A, SLOTS.B); await sleep(100); return (await readCmd(A)) === ""; };
   for (const seq of POPUP_SEQUENCES) {
     // (a) one chunk: every pair inside a single Lua request (KB-10 35a shape). Each step reads its Code back and
-    // checks both commands' feedback, and the chunk stops at the first problem (review 6); the slot is marked
-    // pressed before the request and cleared only when every Unpress was accepted, so an aborted chunk leaves the
-    // release to cleanup.
+    // checks the commands' feedback, and the chunk stops at the first problem (review 6); for executor presses the
+    // slot is marked pressed before the request and cleared only when every Unpress was accepted, so an aborted
+    // chunk leaves the release to cleanup. --direct: Press Quickey N alone (nothing is left down).
     const E = `${EXP}.${SLOTS.A.e}`;
+    const stepCmds = DIRECT ? `local fp = Cmd('Press Quickey ${SLOTS.A.q}'); local fu = 'OK'` : `local fp = Cmd('Press Page ${E}'); local fu = Cmd('Unpress Page ${E}')`;
     const parts = seq.map((name) => `q:Set('Code', '${name}')
 if tostring(q:Get('Code')) ~= '${name}' then return { failed = 'code ${name} reads back ' .. tostring(q:Get('Code')), steps = res } end
-do local fp = Cmd('Press Page ${E}'); local fu = Cmd('Unpress Page ${E}')
+do ${stepCmds}
 res[#res + 1] = { code = '${name}', fp = tostring(fp), fu = tostring(fu) }
 if tostring(fp):sub(1, 2) ~= 'OK' or tostring(fu):sub(1, 2) ~= 'OK' then return { failed = '${name}: Press ' .. tostring(fp) .. ' / Unpress ' .. tostring(fu), steps = res } end end`);
-    pressed.add(SLOTS.A.name);
+    if (!DIRECT) pressed.add(SLOTS.A.name);
     // The same ownership checks as code(): name, marker Note and the executor holding this Quickey (review 5).
     const chunk = await lua(A, `local q = ObjectList('Quickey ${SLOTS.A.q}')[1]
 if not q or tostring(q.name) ~= '${SLOTS.A.name}' or tostring(q:Get('Note')) ~= '${MARKER}' then return { failed = 'not ours' } end
@@ -413,7 +460,7 @@ return { ok = true, steps = res }`);
     const oneChunk = await readCmd(A);
     if (!(await clr())) { record(`${seq.join(" ")}: CLEAR empties the pop-up line`, false, await readCmd(A)); return; }
     // (b) one key per request, the shape a surface produces (one event per loop pass).
-    for (const name of seq) { await code(A, SLOTS.A, name); await press(A, SLOTS.A); await unpress(A, SLOTS.A); }
+    for (const name of seq) { await code(A, SLOTS.A, name); if (DIRECT) await lua(A, `return ${dtapCmd(SLOTS.A)}`); else { await press(A, SLOTS.A); await unpress(A, SLOTS.A); } }
     await sleep(200);
     const perRequest = await readCmd(A);
     if (!(await clr())) { record(`${seq.join(" ")}: CLEAR empties the pop-up line`, false, await readCmd(A)); return; }
@@ -427,8 +474,8 @@ return { ok = true, steps = res }`);
 async function runType(A, names) {
   for (const name of names) {
     await code(A, SLOTS.A, name);
-    const fp = await press(A, SLOTS.A);
-    const fu = await unpress(A, SLOTS.A);
+    const fp = DIRECT ? await lua(A, `return ${dtapCmd(SLOTS.A)}`) : await press(A, SLOTS.A);
+    const fu = DIRECT ? "OK" : await unpress(A, SLOTS.A);
     record(`${name} typed (one request per key)`, accepted(fp) && accepted(fu), { fp, fu });
     await sleep(120);
   }
@@ -483,7 +530,7 @@ if (isMain) {
     process.exit(2);
   }
   main().then(({ ping }) => {
-    const report = { probe: `kb-28-${mode}`, date: new Date().toISOString(), bridge: { version: ping.bridgeVersion, host: ping.host, port: ping.port, build: ping.build, hostname: ping.hostname, showfile: ping.showfile }, slots: SLOTS, exec: `${EXP}.${EXE}`, passed: steps.filter((s) => s.pass === true).length, failed, steps };
+    const report = { probe: `kb-28-${mode}${DIRECT ? "-direct" : ""}`, date: new Date().toISOString(), bridge: { version: ping.bridgeVersion, host: ping.host, port: ping.port, build: ping.build, hostname: ping.hostname, showfile: ping.showfile }, slots: SLOTS, exec: `${EXP}.${EXE}`, passed: steps.filter((s) => s.pass === true).length, failed, steps };
     if (outFile) { fs.writeFileSync(outFile, JSON.stringify(report, null, 2) + "\n"); console.log(`report written to ${outFile}`); }
     console.log(`${report.passed}/${steps.filter((s) => s.pass !== null).length} passed`);
     process.exit(failed ? 1 : 0);

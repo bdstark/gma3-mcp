@@ -1985,8 +1985,12 @@ do
   r = request("input.open", {}, nil, A)
   local ncmd = #cmds
   r = request("input.tap", { key = "NUM5", holdMs = 20 }, nil, A)
-  check("a tap through the bridge assigns the code's Quickey to the first reserved executor and presses it in the paged form", r.ok and r.result.hold.backend == "quickey" and r.result.hold.target.executor == 190 and r.result.hold.target.quickeyIndex == 902 and cmds[ncmd + 1] == "Assign Quickey 902 At Page 1.190" and cmds[ncmd + 2] == "Press Page 1.190" and #cmds == ncmd + 2, J({ r.result.hold.target, cmds[ncmd + 1], cmds[ncmd + 2] }))
-  check("the executor now holds the code's Quickey", execs[190].object == 902)
+  check("KB-29: a tap of a code with direct-tap evidence is one Press Quickey, no executor, nothing to release", r.ok and r.result.hold.backend == "quickey" and r.result.hold.target.direct == true and r.result.hold.target.quickeyIndex == 902 and r.result.hold.target.executor == nil and cmds[ncmd + 1] == "Press Quickey 902" and #cmds == ncmd + 1 and hk.instance:status().capacity.used == 0, J({ r.result.hold.target, cmds[ncmd + 1], #cmds - ncmd }))
+  ncmd = #cmds
+  r = request("input.tap", { key = "MA1", holdMs = 20 }, nil, A)
+  local maIdx = r.ok and r.result.hold.target.quickeyIndex
+  check("a tap of a code without direct-tap evidence (MA1) assigns its Quickey to the first reserved executor and presses it in the paged form", r.ok and r.result.hold.target.executor == 190 and cmds[ncmd + 1] == ("Assign Quickey " .. tostring(maIdx) .. " At Page 1.190") and cmds[ncmd + 2] == "Press Page 1.190" and #cmds == ncmd + 2, J({ r.result and r.result.hold and r.result.hold.target, cmds[ncmd + 1], cmds[ncmd + 2] }))
+  check("the executor now holds the code's Quickey", execs[190].object == maIdx)
   local savedOffset = _G.FAKE_CLOCK_OFFSET or 0
   _G.FAKE_CLOCK_OFFSET = savedOffset + 1
   local sv = hk.instance:service(require("socket").gettime())
