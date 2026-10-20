@@ -3032,6 +3032,7 @@ function Instance:release(sessionId, now, selector)
     end
   end
   if not self:_orderedFrameOk(hold) then
+    hold.blockedRelease = true  -- recover() picks it up in a later frame (review 20)
     local g = self._groupFrames[hold.group]
     return fail("same-frame", string.format("hold %s (%s) of ordered combo %s: another key of the combo went out in this console frame and %s; release it on a later call", hold.id, tostring(hold.logical), hold.group,
       self:_separatesFrames() and "the frame break raised" or "the backend cannot separate frames"), { hold = hold.id, group = hold.group, after = g and g.hold or nil })
@@ -4003,8 +4004,10 @@ function Instance:service(now)
   end
   -- Quickey bank freshness (KB-12): bounded, reads only the show identity.
   if self._bank then out.bank = self:_serviceBank(now) end
-  -- The frame closes here (review 18): requests after this call are the next console frame's.
+  -- The frame closes here (review 18): requests after this call are the next console frame's. Only events of the
+  -- current frame matter to the gate, so the map starts empty (review 20: it never grows with finished groups).
   self._frame = self._frame + 1
+  self._groupFrames = {}
   return out
 end
 
