@@ -2248,6 +2248,7 @@ end
 -- immediate). args.interaction uses an open interaction, otherwise one is begun for the sequence.
 ops["input.sequence"] = function(args, ctx)
   requireInputEnabled()
+  state.keyFrame = true  -- its first step is dispatched now (review 5 of #75); no further request line this frame
   local client = wantClient(ctx)
   local rec = inputInstance()
   if type(rec.instance.startSequence) ~= "function" then error("[no-module] the loaded hardkeys module has no sequences (KB-05 needs 0.4.0 or newer)", 0) end
@@ -6390,8 +6391,8 @@ local function closeClient(i, reason)
 end
 state._closeClient = closeClient  -- exposed for local testing
 
--- One frame of client servicing: up to 64 request lines per client. KB-29 (review 4 of #75): a request that
--- presses console keys (input.press / input.tap / input.combo) sets state.keyFrame, and no further line of
+-- One frame of client servicing: up to 64 request lines per client. KB-29 (reviews 4 and 5 of #75): a request that
+-- presses console keys (input.press / input.tap / input.combo / input.sequence) sets state.keyFrame, and no further line of
 -- any client is read in that frame; the rest stay in the socket buffers for the next frame. Quickey presses
 -- issued in one console frame reorder in a focused text field, so pipelined key requests are spread out.
 local function serviceClients()

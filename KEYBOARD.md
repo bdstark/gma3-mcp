@@ -1446,7 +1446,7 @@ per key. The operator asked for less noise and work per key, and for a static as
 - Reviews of bdstark/gma3-mcp#75: a direct tap skips the executor preflight; a raised direct tap is `press-uncertain`;
   an exclusive tap (a long-press) and a tap with `holdMs` above the 50 ms default stay executor-held; adoption counts
   `direct` in `requalified`; a sequence sends one direct tap per service call. Bridge 0.37.0 forwards `direct` in key
-  specs, and a key request (`input.press`, `input.tap`, `input.combo`) ends that frame's request reading for every
+  specs, and a key request (`input.press`, `input.tap`, `input.combo`, `input.sequence`) ends that frame's request reading for every
   client, so pipelined key requests reach the console one frame apart.
 
 **Record (2026-10-20):** `scripts/kb28-probe.mjs --direct` on onPC 2.5.1.0 ([record](docs/probes/kb-29-direct-taps-macos-2.5.1.md)):

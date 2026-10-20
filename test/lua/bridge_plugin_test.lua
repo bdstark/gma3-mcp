@@ -2021,6 +2021,17 @@ do
     local second = #sent
     co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
     check("pipelined taps are served one per frame: open + tap, then tap, then ping", first == 2 and second == 3 and #sent == 4 and sent[4]:find('"id":"p"') ~= nil, json.encode({ first, second, #sent }))
+    -- ...and so are pipelined one-step sequences (their first step goes out at start, review 5 of #75).
+    sent = {}
+    for _, req in ipairs({ { id = "s1", op = "input.sequence", args = { steps = { { kind = "tap", key = "NUM5" } } } },
+                           { id = "s2", op = "input.sequence", args = { steps = { { kind = "tap", key = "NUM1" } } } } }) do
+      fakeLines[#fakeLines + 1] = json.encode(req)
+    end
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    local seqFirst = #sent
+    for _ = 1, 3 do hk.instance:service(require("socket").gettime() + 1) end
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    check("pipelined sequences are started one per frame", seqFirst == 1 and #sent == 2, json.encode({ seqFirst, #sent, sent }))
     for i = #state.clients, 1, -1 do if state.clients[i] == cl then table.remove(state.clients, i) end end
   end
   check("input.status reports the backend's limitations and capabilities", r.ok and r.result.status.backend.name == "quickey" and r.result.status.backend.capabilities.keyboard == false and #r.result.status.backend.limitations >= 6 and r.result.status.routing.default == "quickkey", J(r.result.status.backend.capabilities))
