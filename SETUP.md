@@ -863,7 +863,10 @@ show groups sequences for Kill Instant / Kill Delayed and for playback commands 
 - An object's `TAGS` reads `name:protect` by default and `#handle:protect` in the Edit role. Names keep colons and
   lose commas.
 - `tag:GetReferences()` lists every reference; `Children()` lists only the first. `Set("Tags", "")` is ignored.
-- `Go+`/`Off Tag` reach every tagged sequence. Invalid `TagType`/`Action` values are silently ignored.
+- `Go+`/`Off Tag` reach every tagged sequence. Invalid `TagType` values are silently ignored.
+- `Action` ignores every Lua `Set`; `Set Tag N Property "Action" "<token>"` applies each `TagActionToken` (None,
+  Pool Default, Go+, Off, Flash, Temp, Top, Toggle, Pause, List Reference) and answers `Not allowed` to anything else.
+- Not probed: Kill Instant / Kill Delayed and Protect in playback, objects of another data pool, two tags with one name.
 
 **Status:** proposed.
 
@@ -871,19 +874,35 @@ show groups sequences for Kill Instant / Kill Delayed and for playback commands 
 
 - `gma3_tags` lists the tags (number, name, type, Forward Commands, action, appearance, note, reference count) and,
   per tag, the objects that carry it (class, data pool, number, name, address, protect), from `GetReferences()`.
+  It filters by tag (numbers, a range or names) and by referencing class, and pages tags and each tag's references
+  separately (`limit`/`offset`), reporting totals and whether a page is incomplete, so a full show stays within the
+  response budget.
 - `gma3_get_object`, `gma3_list_children` and `gma3_objects` return `TAGS` as a list of `{ tag, name, protect }`
   instead of raw handles.
-- `gma3_store_tag` creates or renames tags in a batch, refusing an occupied number unless asked, and reports names the
-  console changed (commas stripped).
-- `gma3_assign_tag` assigns and unassigns tags on object ranges in a batch (by tag number or name), sets `protect`
-  per reference, and reads every object's `TAGS` back. A cue target is reported as its part.
-- `gma3_configure_tag` sets type, Forward Commands, action, appearance and note, refusing values outside the enum
-  before sending and reading each one back.
-- Deleting a tag reports the objects it was removed from.
+- `gma3_store_tag` creates or renames tags in a batch, refusing an occupied number unless asked. Names go through
+  `objectName()` like every other tool, so a comma (which the console strips) is refused before anything is sent.
+- `gma3_delete_tag` deletes tags in a batch, reporting before and after the objects each was removed from (from
+  `GetReferences()`), and reads back that the slot is empty and no object still carries the tag.
+- `gma3_assign_tag` assigns and unassigns tags on object ranges in a batch, sets `protect` per reference, and reads
+  every object's `TAGS` back. A cue target is reported as its part.
+  - A tag given by name is resolved to its number before dispatch; a name matching more than one tag (or none) is
+    refused, and the command always addresses the tag by number.
+  - Pool targets (sequences, groups, macros) take `data_pool` like the other tools (`src/tools/datapool.ts`). The
+    qualified command form is probed first, and the live test tags same-numbered sequences in two data pools and
+    checks that only the intended one changed.
+- `gma3_configure_tag` sets type, Forward Commands, action, appearance and note, refusing values outside the enums
+  before sending and reading each one back. `Action` is written with `Set Tag N Property "Action" "<token>"`, since
+  Lua `Set` ignores it.
+- Tag playback is verified: `gma3_playback` with a tag target resolves the tag's sequences through `GetReferences()`
+  before dispatch and reads each one's state back a frame later, instead of returning `notRead`.
 - Selecting objects by tag ("every sequence tagged Encore") is answered from the reverse lookup, without the agent
   scanning pools.
-- A live test (`test/live/tags.live.ts`) covers create, assign over a range, protect, unassign, delete and
-  `Go+`/`Off Tag` on reserved objects.
+- Kill behaviour is probed and then tested live with several sequences running: Kill Instant and Kill Delayed (others
+  released at once / after the started sequence's fade), and a protected reference left running. Until that probe,
+  the tools document `TagType` and `protect` as settings whose playback effect is unverified.
+- A live test (`test/live/tags.live.ts`) covers create, assign over a range and in a second data pool, an ambiguous
+  name refused, protect, unassign, delete, `Go+`/`Off Tag` read back per sequence, and the kill scenarios, on
+  reserved objects.
 
 ## Recommended delivery order
 
