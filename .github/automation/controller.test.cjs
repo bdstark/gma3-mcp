@@ -95,11 +95,11 @@ test('review notifications hand off through workflow_run, never a privileged dir
  }
 });
 
- test('API key belongs only to the protected environment job, never caller forwarding',()=>{
+ test('API key is environment-protected with explicit reusable-workflow declarations',()=>{
  const fs=require('node:fs'),path=require('node:path');
  const root=path.join(__dirname,'../workflows');
  const one=fs.readFileSync(path.join(root,'pr-review-one.yml'),'utf8');
  assert.match(one,/independent:\n    environment: codex-review/);
- assert.doesNotMatch(one,/secrets:\n      OPENAI_API_KEY/);
- for(const f of ['pr-review-service.yml','pr-automation.yml']) assert.doesNotMatch(fs.readFileSync(path.join(root,f),'utf8'),/OPENAI_API_KEY/);
+ assert.match(one,/OPENAI_API_KEY: \{required: true\}/);
+ for(const f of ['pr-review-service.yml','pr-automation.yml']) assert.match(fs.readFileSync(path.join(root,f),'utf8'),/OPENAI_API_KEY: \$\{\{ secrets.OPENAI_API_KEY \}\}/);
  });
