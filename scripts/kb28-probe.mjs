@@ -384,18 +384,31 @@ async function runPopup(A) {
   if (line0 !== "") throw new Error(`the pop-up's line is not empty (${JSON.stringify(line0)}); empty it and run again`);
   const clr = async () => { await code(A, SLOTS.B, "CLEAR"); await press(A, SLOTS.B); await unpress(A, SLOTS.B); await sleep(100); return (await readCmd(A)) === ""; };
   for (const seq of POPUP_SEQUENCES) {
-    // (a) one chunk: every pair inside a single Lua request (KB-10 35a shape).
-    const parts = [];
-    for (const name of seq) parts.push(`q:Set('Code', '${name}'); Cmd('Press Page ${EXP}.${SLOTS.A.e}'); Cmd('Unpress Page ${EXP}.${SLOTS.A.e}')`);
+    // (a) one chunk: every pair inside a single Lua request (KB-10 35a shape). Each step reads its Code back and
+    // checks both commands' feedback, and the chunk stops at the first problem (review 6); the slot is marked
+    // pressed before the request and cleared only when every Unpress was accepted, so an aborted chunk leaves the
+    // release to cleanup.
+    const E = `${EXP}.${SLOTS.A.e}`;
+    const parts = seq.map((name) => `q:Set('Code', '${name}')
+if tostring(q:Get('Code')) ~= '${name}' then return { failed = 'code ${name} reads back ' .. tostring(q:Get('Code')), steps = res } end
+do local fp = Cmd('Press Page ${E}'); local fu = Cmd('Unpress Page ${E}')
+res[#res + 1] = { code = '${name}', fp = tostring(fp), fu = tostring(fu) }
+if tostring(fp):sub(1, 2) ~= 'OK' or tostring(fu):sub(1, 2) ~= 'OK' then return { failed = '${name}: Press ' .. tostring(fp) .. ' / Unpress ' .. tostring(fu), steps = res } end end`);
+    pressed.add(SLOTS.A.name);
     // The same ownership checks as code(): name, marker Note and the executor holding this Quickey (review 5).
     const chunk = await lua(A, `local q = ObjectList('Quickey ${SLOTS.A.q}')[1]
-if not q or tostring(q.name) ~= '${SLOTS.A.name}' or tostring(q:Get('Note')) ~= '${MARKER}' then return 'not ours' end
-local h = ObjectList('Page ${EXP}.${SLOTS.A.e}')[1]
+if not q or tostring(q.name) ~= '${SLOTS.A.name}' or tostring(q:Get('Note')) ~= '${MARKER}' then return { failed = 'not ours' } end
+local h = ObjectList('Page ${E}')[1]
 local o = h and h:Get('Object')
-if not o or tostring(o:GetClass()) ~= 'Quickey' or tonumber(o.index) ~= ${SLOTS.A.q} then return 'executor not ours' end
+if not o or tostring(o:GetClass()) ~= 'Quickey' or tonumber(o.index) ~= ${SLOTS.A.q} then return { failed = 'executor not ours' } end
+local res = {}
 ${parts.join("\n")}
-return true`);
-    if (chunk !== true) throw new Error(`probe slot ${SLOTS.A.name}: ${chunk}; nothing pressed`);
+return { ok = true, steps = res }`);
+    if (!chunk || chunk.ok !== true) {
+      // A refused Unpress may leave the key down: the marker stays and cleanup releases it before deleting.
+      throw new Error(`probe slot ${SLOTS.A.name}, one chunk: ${chunk && chunk.failed}; ${JSON.stringify(chunk && chunk.steps)}`);
+    }
+    pressed.delete(SLOTS.A.name);
     await sleep(200);
     const oneChunk = await readCmd(A);
     if (!(await clr())) { record(`${seq.join(" ")}: CLEAR empties the pop-up line`, false, await readCmd(A)); return; }
