@@ -49,7 +49,9 @@ Forks, other authors and stacked bases remain manual in this initial rollout. Pr
 depend on the GitHub plan; the controller's tests/guards are not a substitute for server-side branch protection.
 
 There is no timer. PR events, official review comments/reviews, CI completion and updates to `main` drive reevaluation.
-A manual dispatch can retry an incomplete review or a merged PR's cleanup. Actions-generated approvals/comments do not
+A manual dispatch can retry an incomplete review or a merged PR's cleanup. If resolving discussions is the final
+change, post `/accept` as bdstark to reevaluate the gates without rerunning a completed independent review. GitHub
+Actions does not expose the review-thread-resolution webhook as a supported workflow trigger. Actions-generated approvals/comments do not
 need to trigger another workflow: the current controller performs the merge directly after all gates pass. Native GitHub
 `allow_auto_merge` is not required for this direct, SHA-guarded merge path.
 
