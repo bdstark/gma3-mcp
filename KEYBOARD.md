@@ -1417,6 +1417,36 @@ chord flag, and a pair outside a key's group is refused before dispatch. No MCP 
 The surface half (vendoring 0.11.0, routing every qualified key as a Quickey, at most one Quickey press per plugin
 tick) is done in the surface project against this revision.
 
+## KB-29 — Direct Quickey taps and static executor banks
+
+**Request:** with the NX-K's keys on Quickeys (KB-28), every key press costs an `Assign Quickey N At Page P.E` (the
+first free reserved executor), a `Press Page` and an `Unpress Page`: three command-history lines and a round of reads
+per key. The operator asked for less noise and work per key, and for a static assignment of executors.
+
+**Depends on:** KB-10, KB-13, KB-28.
+
+**Lua changes (hardkeys 0.12.0):**
+
+- `BANK_QUALIFIED` gains `direct`: the code was tapped as `Press Quickey N` alone, one complete activation (KB-10 for
+  NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE and OOPS; KB-29 for the 24 KB-28 codes). MA1 has none: a direct tap
+  holds nothing.
+- `tap()` on a code with `direct` sends that single command through the new `QuickeyBackend:tapDirect()` (the
+  Quickey re-read as the bank's first, `deps.quickeys.press`), and the record completes on the spot: no executor,
+  nothing to release, nothing that can stay down. It falls back to the executor path while another Quickey record is
+  live (a direct tap next to an executor-held key is not qualified) and when the spec says `direct = false`. Sequence
+  tap steps follow the same rule.
+- `executors.static = true` in a bank spec: code *i* of the bank's code list sits on executor `first + i - 1`,
+  assigned once at provisioning (the rest hold the placeholder); `count` must cover the codes (up to 256). A press goes
+  to the code's own executor without any Assign, after checking that it still holds that code's Quickey; a reassigned
+  executor is refused (`misassigned`), never repaired. A static bank has its own id letter (`@q900.s1.301-333`), so a
+  record of one mode is never adopted as the other; adoption rebuilds the map.
+
+**Record (2026-10-20):** `scripts/kb28-probe.mjs --direct` on onPC 2.5.1.0 ([record](docs/probes/kb-29-direct-taps-macos-2.5.1.md)):
+26/26 on the command line (one token or action per tap, nothing more 300 ms later; Highlight toggled once; Full set
+Dimmer 100 once); in the Edit Command pop-up one tap per request kept the order (`1 Thru 5`, `2 +3`, `9 -4`) and one
+chunk reordered, as on the executor path, `At` inserting nothing; `4 2 . 5` and Please typed into the Dimmer
+calculator stored 42.5.
+
 ## Evidence and open questions
 
 - [MA: Plugins](https://help.malighting.com/grandMA3/2.4/HTML/plugins.html) describes `HelpLua`, multiple
