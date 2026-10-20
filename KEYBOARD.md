@@ -1442,6 +1442,11 @@ per key. The operator asked for less noise and work per key, and for a static as
   to the code's own executor without any Assign, after checking that it still holds that code's Quickey; a reassigned
   executor is refused (`misassigned`), never repaired. A static bank has its own id letter (`@q900.s1.301-333`), so a
   record of one mode is never adopted as the other; adoption rebuilds the map.
+- Reviews of bdstark/gma3-mcp#75: a direct tap skips the executor preflight; a raised direct tap is `press-uncertain`;
+  an exclusive tap (a long-press) and a tap with `holdMs` above the 50 ms default stay executor-held; adoption counts
+  `direct` in `requalified`; a sequence sends one direct tap per service call. Bridge 0.37.0 forwards `direct` in key
+  specs, and a key request (`input.press`, `input.tap`, `input.combo`) ends that frame's request reading for every
+  client, so pipelined key requests reach the console one frame apart.
 
 **Record (2026-10-20):** `scripts/kb28-probe.mjs --direct` on onPC 2.5.1.0 ([record](docs/probes/kb-29-direct-taps-macos-2.5.1.md)):
 26/26 on the command line (one token or action per tap, nothing more 300 ms later; Highlight toggled once; Full set
