@@ -46,6 +46,14 @@ local function maybeFail(op)
   return nil
 end
 local function execKey(page, index) return page .. "." .. index end
+-- grandMA3 keeps names unique in a pool: a Name another Quickey already carries is stored as "<name>#2" (#3, ...).
+local function uniqueName(index, name)
+  local function taken(n) for i, q in pairs(console.quickeys) do if i ~= index and q.name == n then return true end end return false end
+  if not taken(name) then return name end
+  local k = 2
+  while taken(name .. "#" .. k) do k = k + 1 end
+  return name .. "#" .. k
+end
 local function assigned(page, index)
   local x = console.executors[execKey(page, index)]
   if type(x) == "table" and x.quickey and console.quickeys[x.quickey] then return x.quickey end
@@ -77,8 +85,14 @@ local deps = {
       tally("quickeys.set")
       local q = console.quickeys[index]
       if not q then return false, "no object" end
-      for k, v in pairs(props) do if k == "Code" then q.code = v elseif k == "Name" then q.name = v elseif k == "Note" then q.note = v end end
+      for k, v in pairs(props) do if k == "Code" then q.code = v elseif k == "Name" then q.name = uniqueName(index, v) elseif k == "Note" then q.note = v end end
       return true
+    end,
+    list = function()
+      tally("quickeys.list")
+      local out = {}
+      for i, q in pairs(console.quickeys) do out[#out + 1] = { index = i, name = q.name } end
+      return out
     end,
     press = function(index)
       tally("quickeys.press")
@@ -1094,6 +1108,23 @@ do
     check("a raised executor press counts as a press (frame gate)", h3 == nil and e3.unresolved and inst3:status(1.01).counters.presses == before3 + 1, J({ e3, inst3:status(1.01).counters }))
     inst3:recover(nil, 2)
   end
+end
+
+-- A static bank provisioned in a show that already has the surface's dynamic bank: the console keeps Quickey names
+-- unique (it would store "MCP MA1#2"), so the preflight refuses on the names and nothing is created.
+do
+  local inst = fresh()
+  pageWithExecutors(1, 290, 20)
+  local before = 0; for _ in pairs(console.quickeys) do before = before + 1 end
+  local creates = console.calls["quickeys.create"]
+  local b, err = newInst():provisionBank({ authorized = true, quickeys = { first = 940 }, executors = { page = 1, first = 290, count = 20, static = true }, codes = "qualified" }, 1)
+  local first
+  for _, f in ipairs(err and err.refusals or {}) do if f.reason == "name-taken" then first = first or f end end
+  local after = 0; for _ in pairs(console.quickeys) do after = after + 1 end
+  check("a static bank at 940 beside a dynamic bank at 900 is refused on the taken names before anything is created",
+    b == nil and err.code == "bank-preflight" and first and first.index == 940 and first.collidesWith == 900 and first.detail:find("'MCP MA1'", 1, true)
+      and console.quickeys[940] == nil and after == before and console.calls["quickeys.create"] == creates and console.executors["1.290"] == "empty", J(err and err.refusals))
+  check("the dynamic bank still verifies", inst:verifyBank(2).state == "ready")
 end
 
 -- KB-28 review 12: a press-order combo keeps its order across dispose/adopt, and the sequence preflight

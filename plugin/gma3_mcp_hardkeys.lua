@@ -639,6 +639,8 @@ end
 --     repaired or overwritten;
 --   * preflight checks the complete reservation before the first object is created, and every target is
 --     re-read right before it is mutated; preflight is not an atomic reservation against other plugins;
+--   * the console keeps Quickey names unique in the pool, so preflight also refuses a Quickey to create whose
+--     name ("MCP <CODE>", "MCP RESERVED") another index already carries (another bank in the same show);
 --   * a bank marked by another owner is refused (no shared arbitration in this version); a bank of the
 --     same owner is reused only after identity, codes and configuration verified;
 --   * codes are discovered from Enums.VirtualKeyCode at provisioning time (not a fixed count), aliases
@@ -773,6 +775,13 @@ local function applyStaticMap(bank, positions, partial)
   return true
 end
 local function bankIsToken(s) return type(s) == "string" and s ~= "" and not s:find("%s") and not s:find("=") end
+-- The console keeps names unique in a pool: a Name already used elsewhere is stored as "<name>#<n>". True when
+-- `name` is `written` itself or `written` with such a console-added suffix.
+local function bankNameAsWritten(name, written)
+  name = tostring(name)
+  if name == written then return true end
+  return name:sub(1, #written) == written and name:sub(#written + 1):match("^#%d+$") ~= nil
+end
 
 -- Validates a provisioning spec and returns a normalised copy, or nil, { code, message }.
 -- spec = { authorized = true, quickeys = { first = n }, executors = { page = p, first = n, count = k, static = bool },
@@ -979,6 +988,16 @@ local function consoleDeps(env)
         local h = env.ObjectList(string.format("Quickey %d", index))[1]
         if h == nil then return nil end
         return { name = tostring(h.name), code = tostring(h:Get("Code")), note = tostring(h:Get("Note")), lock = h:Get("Lock"), class = tostring(h:GetClass()) }
+      end,
+      -- Every Quickey in the pool by pool index and name (the name preflight: the console keeps names unique in the
+      -- pool and stores a duplicate as "<name>#2"). ObjectList returns an empty table when nothing matches (read()
+      -- indexes it on every empty slot), so anything else is an unreadable listing, never an empty pool.
+      list = function()
+        local l = env.ObjectList("Quickey Thru")
+        if type(l) ~= "table" then error("ObjectList(\"Quickey Thru\") returned " .. type(l) .. ", not a list", 0) end
+        local out = {}
+        for _, h in ipairs(l) do out[#out + 1] = { index = tonumber(h.index), name = tostring(h.name) } end
+        return out
       end,
       create = function(index) env.Cmd(string.format("Store Quickey %d /NoConfirmation", index)); return true end,
       set = function(index, props)
@@ -1646,6 +1665,7 @@ end
 -- them; the harness fakes them). Every read is pcall'd; a raise is a failure of that step, never a
 -- guess. Contract:
 --   quickeys.read(index)  -> nil (empty slot) | { name, code, note, lock, class }
+--   quickeys.list()       -> { { index, name }, ... } every Quickey in the pool (needed only to create objects)
 --   quickeys.create(index) / set(index, { Note, Code, Name }) / delete(index) -> true | false, err
 --   executors.read(page, index) -> { exists, class, empty, object = { class, name, index, note, code } | nil }
 --                                  (index/note/code of the assigned object when it is a Quickey)
@@ -2267,6 +2287,29 @@ function Instance:provisionBank(spec, now)
     else refusals[#refusals + 1] = { index = e.index, code = e.name, reason = "unreadable", detail = tostring(cls.error) } end
     plan[#plan + 1] = p
   end
+  -- Names: the console keeps Quickey names unique in the pool, so a Quickey to create whose name is already used at
+  -- another index (another bank of this show, e.g. a dynamic bank at 900 under a static one at 940) would be stored
+  -- as "MCP MA1#2" and fail its readback. Refused here, before anything is created.
+  local toCreate = {}
+  for _, p in ipairs(plan) do if p.action == "create" then toCreate[(BANK_NAME_PREFIX .. p.name):lower()] = p end end
+  if next(toCreate) then
+    if type(d.quickeys.list) ~= "function" then
+      refusals[#refusals + 1] = { reason = "unavailable", detail = "deps.quickeys.list is missing: the Quickey names cannot be checked against the pool (consoleDeps(_G) provides it)" }
+    else
+      local okL, pool, lerr = bankCall(d.quickeys.list)
+      if not okL or type(pool) ~= "table" then
+        refusals[#refusals + 1] = { reason = "unreadable", detail = "the Quickey pool cannot be listed for the name check: " .. tostring(okL and (lerr or ("list returned " .. type(pool))) or lerr) }
+      else
+        for _, q in ipairs(pool) do
+          local p = type(q) == "table" and toCreate[tostring(q.name):lower()]
+          if p and tonumber(q.index) ~= p.index then
+            refusals[#refusals + 1] = { index = p.index, code = p.name, collidesWith = tonumber(q.index), reason = "name-taken",
+              detail = string.format("Quickey %s is already named '%s'; the console keeps names unique and would store the bank's Quickey %d as '%s#2' (a bank already in this show? tear it down or remove that object first)", tostring(q.index), tostring(q.name), p.index, BANK_NAME_PREFIX .. p.name) }
+          end
+        end
+      end
+    end
+  end
   for i = 0, s.executors.count - 1 do
     local index = s.executors.first + i
     local cls = self:_classifyExecutor(s.executors.page, index, bank)
@@ -2322,7 +2365,13 @@ function Instance:provisionBank(spec, now)
       if failure then break end
       local final = self:_classifySlot(p.index, p, owner, id)
       if final.state ~= "owned" then
-        failure = { index = p.index, code = p.name, error = "readback after the writes: " .. final.state .. (final.changed and (" (" .. table.concat(final.changed, "; ") .. ")") or (final.error and (": " .. final.error) or "")) .. "; the console accepted the writes but the object does not read back as expected" }
+        local want = BANK_NAME_PREFIX .. p.name
+        local renamed = final.read and tostring(final.read.name) ~= want and bankNameAsWritten(final.read.name, want)
+        -- The name the console stored in place of ours, read right after the write: the rollback deletes the object only
+        -- while it still carries exactly this name (a later rename by someone else keeps it, review of #79).
+        if renamed and rec.written.Name then rec.storedName = tostring(final.read.name) end
+        failure = { index = p.index, code = p.name, error = "readback after the writes: " .. final.state .. (final.changed and (" (" .. table.concat(final.changed, "; ") .. ")") or (final.error and (": " .. final.error) or "")) .. "; the console accepted the writes but the object does not read back as expected"
+          .. (renamed and ("; the console renamed it because another Quickey is named '" .. want .. "' (created after the preflight?)") or "") }
         break
       end
       rec.verified = true
@@ -2368,7 +2417,10 @@ end
 
 -- Undoes what the current provisionBank() call did after a failure: clears executors it assigned (only
 -- while they still hold the placeholder) and deletes objects it created that still read back as ours
--- (marker written, or still exactly as created with nothing else written) and unchanged.
+-- (marker written, or still exactly as created with nothing else written) and unchanged. A Name the console
+-- stored with a "#<n>" suffix (the name was taken elsewhere in the pool) replaces the written one: the object is ours
+-- only while it carries exactly the name read back right after the write (rec.storedName); the suffix alone proves
+-- nothing, and a later rename (even back to the written name) keeps it.
 function Instance:_rollbackCreated(created, assigned, bank)
   local out = { removed = {}, kept = {}, cleared = {} }
   local d = self._deps
@@ -2418,7 +2470,7 @@ function Instance:_rollbackCreated(created, assigned, bank)
       local ours
       if rec.written.Note then
         ours = m ~= nil and m.owner == bank.owner and m.bank == bank.id and m.code == rec.name
-          and (rec.written.Code == nil or tostring(obj.code) == rec.written.Code) and (rec.written.Name == nil or tostring(obj.name) == rec.written.Name)
+          and (rec.written.Code == nil or tostring(obj.code) == rec.written.Code) and (rec.written.Name == nil or tostring(obj.name) == (rec.storedName or rec.written.Name))
         if not ours then why = "the object no longer reads back as written (marker/code/name differ); kept" end
       else
         -- Nothing was written yet: a freshly created Quickey has an empty Note and no Code.

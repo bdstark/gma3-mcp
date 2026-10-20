@@ -212,6 +212,32 @@ local fakeEnv = setmetatable({}, { __index = function(_, k) touched[#touched + 1
 local cd = HK.consoleDeps(fakeEnv)
 check("hardkeys consoleDeps touches nothing but reads the Keyboard field", type(cd.shortcutRows) == "function" and type(cd.profileName) == "function" and type(cd.displayExists) == "function" and #touched == 1 and touched[1] == "Keyboard", json.encode(touched))
 
+-- Review of #79: the console deps' pool listing. ObjectList returns an empty table when nothing matches, so a nil
+-- "Quickey Thru" is an unreadable listing: the bank preflight refuses and no command reaches the console.
+do
+  local listing, cmds = nil, {}
+  local env = {
+    Enums = { VirtualKeyCode = { MA1 = 1, STORE = 66 } },
+    Root = function() return { MANetSocket = { Get = function(_, k) if k == "ShowFile" then return "disposable" end end } } end,
+    DataPool = function() return { name = "Default" } end,
+    ObjectList = function(ref)
+      if ref == "Quickey Thru" then return listing end
+      if ref == "Page 1" then return { {} } end
+      return {}
+    end,
+    Cmd = function(c) cmds[#cmds + 1] = c; return "OK" end,
+  }
+  local bankSpec = { authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 8 } }
+  local function reason(err, code) for _, f in ipairs(err and err.refusals or {}) do if f.reason == code then return f end end end
+  local r, err = HK.new({ owner = "bridge", deps = HK.consoleDeps(env), config = { requireInteraction = false } }):init():provisionBank(bankSpec, 1)
+  local f = reason(err, "unreadable")
+  check("#79 review: a nil Quickey pool listing refuses the bank preflight; no command is sent", r == nil and err.code == "bank-preflight" and f and f.detail:find("returned nil", 1, true) and #cmds == 0, json.encode({ err = err, cmds = cmds }))
+  listing = { { index = 900, name = "MCP STORE" } }
+  r, err = HK.new({ owner = "bridge", deps = HK.consoleDeps(env), config = { requireInteraction = false } }):init():provisionBank(bankSpec, 2)
+  f = reason(err, "name-taken")
+  check("#79: the console listing's index and name reach the name check", r == nil and err.code == "bank-preflight" and f and f.code == "STORE" and f.index == 901 and f.collidesWith == 900 and #cmds == 0, json.encode({ err = err, cmds = cmds }))
+end
+
 -------------------------------------------------------------------------------
 -- Feedback readers (KB-06: value meaning, partial failures, displays, freshness, bounded polling)
 -------------------------------------------------------------------------------

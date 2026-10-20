@@ -94,6 +94,12 @@ local deps = {
       for k, v in pairs(props) do if k == "Code" then q.code = v elseif k == "Name" then q.name = v elseif k == "Note" then q.note = v end end
       return true
     end,
+    list = function()
+      tally("quickeys.list")
+      local out = {}
+      for i, q in pairs(console.quickeys) do out[#out + 1] = { index = i, name = q.name } end
+      return out
+    end,
     delete = function(index)
       tally("quickeys.delete"); console.cmds[#console.cmds + 1] = "Delete Quickey " .. index
       console.quickeys[index] = nil

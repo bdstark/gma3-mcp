@@ -55,6 +55,14 @@ local function maybeFail(op)
   return nil
 end
 local function execKey(page, index) return page .. "." .. index end
+-- grandMA3 keeps names unique in a pool: a Name another Quickey already carries is stored as "<name>#2" (#3, ...).
+local function uniqueName(index, name)
+  local function taken(n) for i, q in pairs(console.quickeys) do if i ~= index and q.name == n then return true end end return false end
+  if not taken(name) then return name end
+  local k = 2
+  while taken(name .. "#" .. k) do k = k + 1 end
+  return name .. "#" .. k
+end
 local deps = {
   virtualKeyCodes = function() return VK end,
   showIdentity = function() tally("showIdentity"); if console.show == nil then error("no show", 0) end return console.show end,
@@ -79,9 +87,17 @@ local deps = {
       if not q then return false, "no object" end
       for k, v in pairs(props) do
         local f, e = maybeFail("set." .. k); if f == false then return false, e end
-        if k == "Code" then q.code = v elseif k == "Name" then q.name = v elseif k == "Note" then q.note = v end
+        if k == "Code" then q.code = v elseif k == "Name" then q.name = uniqueName(index, v) elseif k == "Note" then q.note = v end
       end
       return true
+    end,
+    list = function()
+      tally("quickeys.list")
+      local f, e = maybeFail("list"); if f == false then error(e, 0) end
+      local out = {}
+      for i, q in pairs(console.quickeys) do out[#out + 1] = { index = i, name = q.name } end
+      table.sort(out, function(a, b) return a.index < b.index end)
+      return out
     end,
     delete = function(index)
       tally("quickeys.delete")
@@ -609,6 +625,95 @@ do
   local inst7 = newInst()
   local ad = inst7:adopt({ { quickkey = "NUM5", quickkeyCode = 72, tupleKey = "quickkey:#72", backend = "fake", logical = "NUM5", unresolved = { reason = "test" } } }, 9)
   check("adopt() accepts an unresolved Quickey record", #ad.adopted == 1 and ad.adopted[1].tupleKey == "quickkey:#72" and ad.adopted[1].state == "unresolved", J(ad))
+end
+
+-------------------------------------------------------------------------------
+-- A second bank in the same show: the console keeps Quickey names unique and stores a duplicate as "MCP MA1#2"
+-------------------------------------------------------------------------------
+do
+  local inst = fresh()
+  assert(inst:provisionBank(spec(), 1))
+  pageWithExecutors(1, 290, 20)
+  local function staticSpec() return { authorized = true, quickeys = { first = 940 }, executors = { page = 1, first = 290, count = 20, static = true } } end
+  local function execsEmpty() for i = 290, 309 do if execHolds(1, i) ~= "empty" then return false end end return true end
+  local before, creates, sets, assigns = countQuickeys(), console.calls["quickeys.create"], console.calls["quickeys.set"], console.calls["executors.assign"]
+  local other = newInst()
+  local r, err = other:provisionBank(staticSpec(), 2)
+  local named = {}
+  for _, f in ipairs(err and err.refusals or {}) do if f.reason == "name-taken" then named[#named + 1] = f end end
+  check("a static bank at 940 beside the dynamic bank at 900 is refused at preflight, naming the colliding index",
+    r == nil and err.code == "bank-preflight" and named[1] and named[1].index == 940 and named[1].code == "MA1" and named[1].collidesWith == 900
+      and named[1].detail:find("Quickey 900 is already named 'MCP MA1'", 1, true) and err.message:find("Quickey 900", 1, true), J(err and { err.message, err.refusals }))
+  check("every taken name is refused, the placeholder's too", #named == NCODES + 1 and named[#named].code == PH and named[#named].collidesWith == 900 + NCODES, J(named))
+  check("the refused provisioning created, wrote and assigned nothing",
+    countQuickeys() == before and console.quickeys[940] == nil and console.calls["quickeys.create"] == creates and console.calls["quickeys.set"] == sets
+      and console.calls["executors.assign"] == assigns and execsEmpty() and other:bankStatus().provisioned == false, J({ countQuickeys(), before }))
+
+  -- The name taken between the preflight and the write (the pool listed without it): the console renames the new
+  -- Quickey to "MCP MA1#2", the readback fails, and the rollback deletes it (marker and Code ours, Name the written one
+  -- plus the console's suffix).
+  local origList = deps.quickeys.list
+  deps.quickeys.list = function() return {} end
+  r, err = other:provisionBank(staticSpec(), 3)
+  deps.quickeys.list = origList
+  check("a Quickey the console renamed '#2' fails its readback, which says so", r == nil and err.code == "bank-partial" and err.failed.index == 940
+    and err.failed.error:find("Name is 'MCP MA1#2'", 1, true) and err.failed.error:find("renamed", 1, true), J(err and err.failed))
+  check("the rollback deletes the renamed Quickey instead of keeping it", #err.removed == 1 and err.removed[1].index == 940 and #err.kept == 0
+    and console.quickeys[940] == nil and countQuickeys() == before and execsEmpty(), J(err and { err.removed, err.kept }))
+  local v = inst:verifyBank(4)
+  check("the first bank is untouched", v.state == "ready" and console.quickeys[900].name == "MCP MA1", J(v.problems))
+
+  -- Review of #79: the suffix alone does not prove the console added it. Once the readback saw "MCP MA1#2", that is
+  -- the only name that is ours: a rename after the readback (and before the rollback reads it) keeps the object,
+  -- whether to another "#<n>" name or back to the written "MCP MA1" (round 3).
+  for _, later in ipairs({ "MCP MA1#3", "MCP MA1" }) do
+    local origRead, reads940 = deps.quickeys.read, 0
+    deps.quickeys.list = function() return {} end
+    deps.quickeys.read = function(index)
+      if index == 940 then
+        reads940 = reads940 + 1
+        -- reads of 940: preflight, the recheck, after create, the readback after the writes, then the rollback's
+        if reads940 == 5 and console.quickeys[940] then console.quickeys[940].name = later end
+      end
+      return origRead(index)
+    end
+    r, err = other:provisionBank(staticSpec(), 4.5)
+    deps.quickeys.read, deps.quickeys.list = origRead, origList
+    check("a Quickey renamed to '" .. later .. "' after the readback saw 'MCP MA1#2' is kept, not deleted", r == nil and err.code == "bank-partial" and err.failed.error:find("MCP MA1#2", 1, true)
+      and #err.removed == 0 and #err.kept == 1 and err.kept[1].index == 940 and console.quickeys[940] and console.quickeys[940].name == later, J(err and { err.failed, err.removed, err.kept }))
+    console.quickeys[940] = nil
+  end
+
+  -- Only a "#<n>" suffix counts as the console's: any other change to the Name keeps the object.
+  local origSet = deps.quickeys.set
+  deps.quickeys.list = function() return {} end
+  deps.quickeys.set = function(index, props)
+    if props.Name then props = { Name = props.Name .. "#2b" } end
+    return origSet(index, props)
+  end
+  r, err = other:provisionBank(staticSpec(), 5)
+  deps.quickeys.set, deps.quickeys.list = origSet, origList
+  check("a Name changed other than by a '#<n>' suffix is kept", r == nil and err.code == "bank-partial" and #err.kept == 1 and err.kept[1].index == 940
+    and #err.removed == 0 and console.quickeys[940] ~= nil, J(err and { err.removed, err.kept }))
+  console.quickeys[940] = nil
+
+  -- The name check needs the pool listing whenever something is to be created; nothing is created without it.
+  newConsole(); pageWithExecutors(1, 190, 8)
+  deps.quickeys.list = nil
+  r, err = newInst():provisionBank(spec(), 6)
+  deps.quickeys.list = origList
+  check("without deps.quickeys.list nothing is created", r == nil and err.code == "bank-preflight" and findReason(err.refusals, "unavailable")
+    and findReason(err.refusals, "unavailable").detail:find("deps.quickeys.list", 1, true) and countQuickeys() == 0, J(err and err.refusals))
+  console.fail.list = { err = "pool locked (fake)", count = 1 }
+  r, err = newInst():provisionBank(spec(), 7)
+  check("an unreadable pool listing refuses the provisioning", r == nil and err.code == "bank-preflight" and findReason(err.refusals, "unreadable")
+    and findReason(err.refusals, "unreadable").detail:find("pool locked", 1, true) and countQuickeys() == 0, J(err and err.refusals))
+  -- Reusing a complete bank creates nothing, so it does not need the listing.
+  assert(newInst():provisionBank(spec(), 8))
+  deps.quickeys.list = nil
+  r, err = newInst():provisionBank(spec(), 9)
+  deps.quickeys.list = origList
+  check("reusing a complete bank needs no pool listing", r and r.created == 0 and r.reused == NCODES + 1, J(err or r))
 end
 
 -------------------------------------------------------------------------------
