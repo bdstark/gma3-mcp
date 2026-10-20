@@ -1800,6 +1800,11 @@ function QuickeyBackend:preflight(tuple, route, ctx)
   if not x then return false, xerr end
   local t, err = self.instance:bankTarget(tuple.quickkey, self.instance._now)
   if not t then return false, err.message, err end
+  -- A direct tap uses no executor: the verified Quickey is all it needs (KB-29).
+  if ctx and ctx.direct and ctx.kind == "tap" then
+    local e = self:_entry(tuple.quickkey)
+    if e and e.qualified and e.qualified.direct then return true end
+  end
   -- Enough reserved executors that are free AND verify right now (placeholder or a bank code on them),
   -- for this key and the ones planned with it in a combo, so a chord never starts without a place for
   -- every key. Each is re-read again right before the press.
@@ -2990,14 +2995,16 @@ function Instance:tap(sessionId, now, spec, holdMs, ctx)
   end
   local s, serr = self:_admit(sessionId, now)
   if not s then return nil, serr end
-  local plan, perr = self:_planPress(sessionId, now, spec, { kind = "tap", fromSequence = ctx and ctx.fromSequence })
+  -- KB-29: a code with direct-tap evidence is tapped with Press Quickey N alone, unless another Quickey record
+  -- is live (a direct tap next to an executor-held key is not qualified; that tap goes through an executor) or
+  -- the spec says direct = false. The candidacy goes into the plan so the backend's preflight checks only what a
+  -- direct tap needs (the Quickey), not an executor it will not use (review 1 of #75).
+  local directCandidate = type(self._adapter.tapDirect) == "function" and not (spec and spec.direct == false) and self:_liveQuickkeyCount() == 0
+  local plan, perr = self:_planPress(sessionId, now, spec, { kind = "tap", fromSequence = ctx and ctx.fromSequence, direct = directCandidate or nil })
   if not plan then return nil, perr end
   if plan.duplicate then return fail("conflict", "tuple is already held by this session; a tap cannot be layered on a hold", { hold = plan.duplicate.id }) end
-  -- KB-29: a code with direct-tap evidence is tapped with Press Quickey N alone, unless another Quickey record
-  -- is live (a direct tap next to an executor-held key is not qualified; that tap goes through an executor).
   local caps = plan.route and plan.route.capabilities
-  if plan.tuple.quickkey and type(caps) == "table" and caps.direct and type(self._adapter.tapDirect) == "function"
-     and not (spec and spec.direct == false) and self:_liveQuickkeyCount(tupleKey(plan.tuple)) == 0 then
+  if directCandidate and plan.tuple.quickkey and type(caps) == "table" and caps.direct then
     return self:_dispatchDirectTap(s, plan, now)
   end
   local hold, derr = self:_dispatchPress(s, plan, now)
@@ -4372,7 +4379,7 @@ function Instance:_planPress(sessionId, now, spec, ctx)
   if type(self._adapter.preflight) == "function" and (tuple.pcKey or tuple.quickkey) then
     -- The operation context lets a backend check per-press requirements (KB-13: one free reserved
     -- executor per key of a combo). detail is the backend's structured reason when it has one.
-    local ok, accepted, reason, detail = pcall(self._adapter.preflight, self._adapter, copyTuple(tuple), route, { kind = ctx.kind, combo = ctx.comboIndex ~= nil, extra = ctx.extra or 0 })
+    local ok, accepted, reason, detail = pcall(self._adapter.preflight, self._adapter, copyTuple(tuple), route, { kind = ctx.kind, combo = ctx.comboIndex ~= nil, extra = ctx.extra or 0, direct = ctx.direct })
     if not ok then return fail("unsupported", "backend preflight failed: " .. tostring(accepted)) end
     if not accepted then return fail("unsupported", "backend refuses " .. tk .. ": " .. tostring(reason), { reason = type(detail) == "table" and detail.code or "backend", detail = type(detail) == "table" and detail or nil }) end
   end

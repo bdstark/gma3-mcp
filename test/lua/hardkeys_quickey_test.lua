@@ -638,6 +638,9 @@ do
   console.cmds = {}
   local h2, err2 = inst:press("s", 2, { key = "STORE" })
   check("a static executor holding another code is refused, nothing assigned or pressed", h2 == nil and #console.cmds == 0 and J(err2):find("its static code is STORE") ~= nil, J(err2))
+  console.cmds = {}
+  local t2, terr2 = inst:tap("s", 2.1, { key = "STORE" }, 50)
+  check("...but a direct tap of STORE needs no executor and is not blocked by it (#75 review 1)", t2 and t2.target.direct == true and J(console.cmds) == J({ "Press Quickey " .. inst:bankTarget("STORE", 2.1).index }), J({ err = terr2, cmds = console.cmds }))
   console.executors["1." .. stExec] = { quickey = inst:bankTarget("STORE", 2).index }
   -- Adoption keeps the static map; a dynamic record is never adopted as static (different id).
   local dis = inst:dispose(3)
