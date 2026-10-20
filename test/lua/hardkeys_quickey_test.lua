@@ -637,5 +637,21 @@ do
   inst3:releaseAll("s", 3)
 end
 
+-- KB-28 review 13: a combo key whose press raised joins the group before the rollback, so recover() keeps the order.
+do
+  local inst = fresh()
+  console.raise.press = nil
+  local origPress, nP = deps.executors.press, 0
+  deps.executors.press = function(...) nP = nP + 1; if nP == 2 then local r = { origPress(...) }; error("console busy", 0) end return origPress(...) end
+  console.fail.unpress = { err = "Object not found", count = 1 }  -- the rollback of NUM1 is refused
+  local c, err = inst:combo("s", 1, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 100 })
+  deps.executors.press = origPress
+  local grouped = 0; for _, h in pairs(inst._holds) do if h.releaseInPressOrder and h.state == "unresolved" then grouped = grouped + 1 end end
+  local before = #console.cmds
+  inst:recover(nil, 2)
+  local unp = {}; for _, cmd in ipairs(cmdsSince(before)) do if cmd:find("^Unpress") then unp[#unp + 1] = cmd end end
+  check("both unresolved combo records are grouped and recover() releases NUM1 before THRU", c == nil and grouped == 2 and #unp == 2 and unp[1] == "Unpress Page 1.190" and unp[2] == "Unpress Page 1.191", J({ err = err and err.message, grouped = grouped, cmds = cmdsSince(before) }))
+end
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) else print("ALL PASSED") end

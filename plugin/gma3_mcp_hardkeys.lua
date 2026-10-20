@@ -2958,6 +2958,10 @@ function Instance:combo(sessionId, now, specs, opts)
   for i, plan in ipairs(plans) do
     local hold, derr = self:_dispatchPress(s, plan, now)
     if not hold then
+      -- A press that raised left an unresolved record (it may be down): it joins the group with its order before
+      -- the rollback, so recover() keeps first down, first up (review 13).
+      local uh = type(derr) == "table" and derr.hold and self._holds[derr.hold] or nil
+      if uh then uh.group, uh.groupIndex, uh.releaseInPressOrder = group, i, pressOrder or nil end
       local rollback = self:_releaseHolds(holds, now, "combo-aborted")
       derr.message = "key " .. i .. " of the combo: " .. tostring(derr.message) .. string.format("; %d key(s) pressed before it were released (%d released, %d unresolved)", #holds, #rollback.released, #rollback.unresolved)
       derr.key = i

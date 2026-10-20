@@ -128,7 +128,7 @@ const MARKER = "kb28-probe";
 // (setup may have failed before the marker write, review 9), so a partial setup can be rolled back.
 const createdHere = new Set();
 const ours = (s, st) => !!st.quickey && ((st.quickey.name === s.name && st.quickey.note === MARKER)
-  || (createdHere.has(s.name) && (st.quickey.note === MARKER || st.quickey.note === "")));
+  || (createdHere.has(s.name) && st.quickey.note === MARKER));  // a partial setup still carries the marker (written first)
 const execOurs = (s, st) => ours(s, st) && !!st.exec && st.exec !== "noobj" && st.exec.class === "Quickey" && st.exec.index === s.q;
 // The ownership guard every press and release runs in the SAME Lua request as its command (review 9): the slot's
 // Quickey (name, marker) and its executor holding exactly that Quickey. Returns a reason string when it fails.
@@ -150,7 +150,7 @@ async function setup(conn) {
 Cmd('Store Quickey ${s.q} /NoConfirmation')
 local q = ObjectList('Quickey ${s.q}')[1]
 if not q then return 'not created' end
-q:Set('Name', '${s.name}'); q:Set('Note', '${MARKER}')
+q:Set('Note', '${MARKER}'); q:Set('Name', '${s.name}')  -- the marker first: it is the identity cleanup relies on (review 13)
 Cmd('Assign Quickey ${s.q} At Page ${EXP}.${s.e}')
 return true`);
     if (st === "occupied") { createdHere.delete(s.name); throw new Error(`Quickey ${s.q} or executor ${EXP}.${s.e} became occupied before setup; nothing created`); }
@@ -167,14 +167,23 @@ return true`);
 const pressed = new Set();
 async function cleanup(conn, unpressAll = false) {
   const out = {};
+  // Slots are released in press order (A, then B): after a refused release of an earlier slot, a later slot that
+  // may be down is kept too, never released ahead of it (review 13).
+  let earlierStuck = false;
   for (const s of Object.values(SLOTS)) {
     const st = await readSlot(conn, s);
+    if (earlierStuck && (pressed.has(s.name) || unpressAll)) {
+      record(`${s.name}: kept for recovery, an earlier slot's release was refused (released first down, first up)`, false, st);
+      out[s.name] = st;
+      continue;
+    }
     if (execOurs(s, st) && (pressed.has(s.name) || unpressAll)) {
       const fu = await lua(conn, `${guardLua(s)}\nreturn Cmd('Unpress Page ${EXP}.${s.e}')`);
       if (!accepted(fu)) {
         // The key may still be down: deleting its assignment would leave it stuck (KB-10). Keep the slot for recovery.
         record(`${s.name}: Unpress refused (${fu}); Quickey ${s.q} and executor ${EXP}.${s.e} left in place for recovery`, false, fu);
         out[s.name] = st;
+        earlierStuck = true;
         continue;
       }
       pressed.delete(s.name);
@@ -184,15 +193,23 @@ async function cleanup(conn, unpressAll = false) {
     const ownQ = `local q = ObjectList('Quickey ${s.q}')[1]
 if not q then return 'no quickey' end
 local note = tostring(q:Get('Note'))
-if not ((tostring(q.name) == '${s.name}' and note == '${MARKER}') or (${createdHere.has(s.name) ? "true" : "false"} and (note == '${MARKER}' or note == ''))) then return 'not ours' end`;
+if not ((tostring(q.name) == '${s.name}' and note == '${MARKER}') or (${createdHere.has(s.name) ? "true" : "false"} and note == '${MARKER}')) then return 'not ours' end`;
     if (execOurs(s, st)) {
       const d = await lua(conn, `${ownQ}
 local h = ObjectList('Page ${EXP}.${s.e}')[1]
 local o = h and h:Get('Object')
 if not o or tostring(o:GetClass()) ~= 'Quickey' or tonumber(o.index) ~= ${s.q} then return 'executor not ours' end
-Cmd('Delete Page ${EXP}.${s.e} /NoConfirmation')
+local fb = Cmd('Delete Page ${EXP}.${s.e} /NoConfirmation')
+local h2 = ObjectList('Page ${EXP}.${s.e}')[1]
+local o2 = h2 and h2:Get('Object')
+if o2 then return 'delete ' .. tostring(fb) .. ', executor still holds ' .. tostring(o2.name) end
 return true`);
-      if (d !== true) note(`executor ${EXP}.${s.e} left in place`, d);
+      if (d !== true) {
+        // The executor may still reference the Quickey: keep the Quickey too (review 13).
+        record(`executor ${EXP}.${s.e} not cleared (${d}); Quickey ${s.q} kept with it`, false, d);
+        out[s.name] = await readSlot(conn, s);
+        continue;
+      }
     }
     else if (st.exec) note(`executor ${EXP}.${s.e} left in place`, st.exec);
     if (ours(s, st) && pressed.has(s.name)) {
@@ -363,6 +380,8 @@ async function runCmdline(A, codes, only) {
     await code(A, SLOTS.A, name);
     const read = () => fb(A, reader);
     const v0 = await read();
+    // Without a readable baseline the mode could not be restored after an abort: nothing is pressed (review 13).
+    if (v0 === undefined) { record(`${name}: ${reader} is not readable, stage stopped before any press`, false); return; }
     try {
       const fp = await press(A, SLOTS.A);
       const v1 = await settle(read, v0);
@@ -414,7 +433,9 @@ async function runFull(A) {
     await runFullStage(A);
   } finally {
     // The selection and the programmer value are cleared whatever happened in the stage (review 4).
-    await lua(A, "Cmd('ClearAll'); return true").catch(() => {});
+    const cleared = await lua(A, `local fb = Cmd('ClearAll'); return { fb = tostring(fb), sel = SelectionCount() }`).catch((e) => ({ error: String(e && e.message) }));
+    const dLeft = await dimmer(A).catch(() => "unreadable");
+    record("FULL: selection and programmer cleared after the stage", cleared && cleared.sel === 0 && dLeft === null, { cleared, dimmer: dLeft });
   }
 }
 async function runFullStage(A) {
@@ -464,7 +485,9 @@ async function runPopup(A) {
     const E = `${EXP}.${SLOTS.A.e}`;
     const parts = seq.map((name) => `q:Set('Code', '${name}')
 if tostring(q:Get('Code')) ~= '${name}' then return { failed = 'code ${name} reads back ' .. tostring(q:Get('Code')), steps = res } end
-do local fp = Cmd('Press Page ${E}'); local fu = Cmd('Unpress Page ${E}')
+do local fp = Cmd('Press Page ${E}')
+if tostring(fp):sub(1, 2) ~= 'OK' then res[#res + 1] = { code = '${name}', fp = tostring(fp), fu = 'not sent' }; return { failed = '${name}: Press ' .. tostring(fp), steps = res } end
+local fu = Cmd('Unpress Page ${E}')
 res[#res + 1] = { code = '${name}', fp = tostring(fp), fu = tostring(fu) }
 if tostring(fp):sub(1, 2) ~= 'OK' or tostring(fu):sub(1, 2) ~= 'OK' then return { failed = '${name}: Press ' .. tostring(fp) .. ' / Unpress ' .. tostring(fu), steps = res } end end`);
     pressed.add(SLOTS.A.name);
