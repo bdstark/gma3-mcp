@@ -1,0 +1,778 @@
+{
+  "probe": "kb-28-run",
+  "date": "2026-10-20T07:57:48.491Z",
+  "bridge": {
+    "version": "0.25.1",
+    "host": "127.0.0.1",
+    "port": 9800,
+    "build": {
+      "hostType": "onPC",
+      "codeType": "Release",
+      "version": "2.5.1.0"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "test-fixture-disposable"
+  },
+  "slots": {
+    "A": {
+      "q": 960,
+      "e": 190,
+      "name": "KB28 A"
+    },
+    "B": {
+      "q": 961,
+      "e": 191,
+      "name": "KB28 B"
+    }
+  },
+  "exec": "1.190",
+  "passed": 72,
+  "failed": 0,
+  "steps": [
+    {
+      "name": "NUM0 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "0",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "0",
+        "fu": "OK",
+        "afterRelease": "0"
+      }
+    },
+    {
+      "name": "NUM2 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "2",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "2",
+        "fu": "OK",
+        "afterRelease": "2"
+      }
+    },
+    {
+      "name": "NUM3 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "3",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "3",
+        "fu": "OK",
+        "afterRelease": "3"
+      }
+    },
+    {
+      "name": "NUM4 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "4",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "4",
+        "fu": "OK",
+        "afterRelease": "4"
+      }
+    },
+    {
+      "name": "NUM6 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "6",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "6",
+        "fu": "OK",
+        "afterRelease": "6"
+      }
+    },
+    {
+      "name": "NUM7 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "7",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "7",
+        "fu": "OK",
+        "afterRelease": "7"
+      }
+    },
+    {
+      "name": "NUM8 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "8",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "8",
+        "fu": "OK",
+        "afterRelease": "8"
+      }
+    },
+    {
+      "name": "NUM9 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "9",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "9",
+        "fu": "OK",
+        "afterRelease": "9"
+      }
+    },
+    {
+      "name": "PLUS tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "+ ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "+ ",
+        "fu": "OK",
+        "afterRelease": "+ "
+      }
+    },
+    {
+      "name": "MINUS tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "- ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "- ",
+        "fu": "OK",
+        "afterRelease": "- "
+      }
+    },
+    {
+      "name": "DOT tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": ".",
+        "before": "",
+        "fp": "OK",
+        "afterPress": ".",
+        "fu": "OK",
+        "afterRelease": "."
+      }
+    },
+    {
+      "name": "SLASH tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "/",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "/",
+        "fu": "OK",
+        "afterRelease": "/"
+      }
+    },
+    {
+      "name": "AT tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "At ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "At ",
+        "fu": "OK",
+        "afterRelease": "At "
+      }
+    },
+    {
+      "name": "UPDATE tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "Update ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "Update ",
+        "fu": "OK",
+        "afterRelease": "Update "
+      }
+    },
+    {
+      "name": "EDIT tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "Edit ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "Edit ",
+        "fu": "OK",
+        "afterRelease": "Edit "
+      }
+    },
+    {
+      "name": "COPY tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "Copy ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "Copy ",
+        "fu": "OK",
+        "afterRelease": "Copy "
+      }
+    },
+    {
+      "name": "MOVE tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "Move ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "Move ",
+        "fu": "OK",
+        "afterRelease": "Move "
+      }
+    },
+    {
+      "name": "DELETE tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "Delete ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "Delete ",
+        "fu": "OK",
+        "afterRelease": "Delete "
+      }
+    },
+    {
+      "name": "CUE tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "Cue ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "Cue ",
+        "fu": "OK",
+        "afterRelease": "Cue "
+      }
+    },
+    {
+      "name": "GROUP tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "Group ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "Group ",
+        "fu": "OK",
+        "afterRelease": "Group "
+      }
+    },
+    {
+      "name": "MACRO tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "Macro ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "Macro ",
+        "fu": "OK",
+        "afterRelease": "Macro "
+      }
+    },
+    {
+      "name": "PREVIEW tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "imm": "Preview ",
+        "before": "",
+        "fp": "OK",
+        "afterPress": "Preview ",
+        "fu": "OK",
+        "afterRelease": "Preview "
+      }
+    },
+    {
+      "name": "NUM0 hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "0",
+        "held": "0",
+        "up": "0",
+        "ma": false
+      }
+    },
+    {
+      "name": "NUM2 hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "2",
+        "held": "2",
+        "up": "2",
+        "ma": false
+      }
+    },
+    {
+      "name": "NUM3 hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "3",
+        "held": "3",
+        "up": "3",
+        "ma": false
+      }
+    },
+    {
+      "name": "NUM4 hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "4",
+        "held": "4",
+        "up": "4",
+        "ma": false
+      }
+    },
+    {
+      "name": "NUM6 hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "6",
+        "held": "6",
+        "up": "6",
+        "ma": false
+      }
+    },
+    {
+      "name": "NUM7 hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "7",
+        "held": "7",
+        "up": "7",
+        "ma": false
+      }
+    },
+    {
+      "name": "NUM8 hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "8",
+        "held": "8",
+        "up": "8",
+        "ma": false
+      }
+    },
+    {
+      "name": "NUM9 hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "9",
+        "held": "9",
+        "up": "9",
+        "ma": false
+      }
+    },
+    {
+      "name": "PLUS hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "+ ",
+        "held": "+ ",
+        "up": "+ ",
+        "ma": false
+      }
+    },
+    {
+      "name": "MINUS hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "- ",
+        "held": "- ",
+        "up": "- ",
+        "ma": false
+      }
+    },
+    {
+      "name": "DOT hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": ".",
+        "held": ".",
+        "up": ".",
+        "ma": false
+      }
+    },
+    {
+      "name": "SLASH hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "/",
+        "held": "/",
+        "up": "/",
+        "ma": false
+      }
+    },
+    {
+      "name": "AT hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "At ",
+        "held": "At ",
+        "up": "At ",
+        "ma": false
+      }
+    },
+    {
+      "name": "UPDATE hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "Update ",
+        "held": "Update ",
+        "up": "Update ",
+        "ma": false
+      }
+    },
+    {
+      "name": "EDIT hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "Edit ",
+        "held": "Edit ",
+        "up": "Edit ",
+        "ma": false
+      }
+    },
+    {
+      "name": "COPY hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "Copy ",
+        "held": "Copy ",
+        "up": "Copy ",
+        "ma": false
+      }
+    },
+    {
+      "name": "MOVE hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "Move ",
+        "held": "Move ",
+        "up": "Move ",
+        "ma": false
+      }
+    },
+    {
+      "name": "DELETE hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "Delete ",
+        "held": "Delete ",
+        "up": "Delete ",
+        "ma": false
+      }
+    },
+    {
+      "name": "CUE hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "Cue ",
+        "held": "Cue ",
+        "up": "Cue ",
+        "ma": false
+      }
+    },
+    {
+      "name": "GROUP hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "Group ",
+        "held": "Group ",
+        "up": "Group ",
+        "ma": false
+      }
+    },
+    {
+      "name": "MACRO hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "Macro ",
+        "held": "Macro ",
+        "up": "Macro ",
+        "ma": false
+      }
+    },
+    {
+      "name": "PREVIEW hold: one token while held 1.5 s, none on release, MA untouched",
+      "pass": true,
+      "detail": {
+        "down": "Preview ",
+        "held": "Preview ",
+        "up": "Preview ",
+        "ma": false
+      }
+    },
+    {
+      "name": "NUM1 then NUM2 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "12",
+        "both": "12",
+        "rolled": "12"
+      }
+    },
+    {
+      "name": "NUM2 then NUM3 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "23",
+        "both": "23",
+        "rolled": "23"
+      }
+    },
+    {
+      "name": "NUM9 then NUM0 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "90",
+        "both": "90",
+        "rolled": "90"
+      }
+    },
+    {
+      "name": "NUM1 then DOT rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "1.",
+        "both": "1.",
+        "rolled": "1."
+      }
+    },
+    {
+      "name": "DOT then NUM5 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": ".5",
+        "both": ".5",
+        "rolled": ".5"
+      }
+    },
+    {
+      "name": "NUM4 then PLUS rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "4 + ",
+        "both": "4 + ",
+        "rolled": "4 + "
+      }
+    },
+    {
+      "name": "MINUS then NUM6 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "- 6",
+        "both": "- 6",
+        "rolled": "- 6"
+      }
+    },
+    {
+      "name": "NUM7 then SLASH rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "7/",
+        "both": "7/",
+        "rolled": "7/"
+      }
+    },
+    {
+      "name": "NUM1 then THRU rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "1 Thru ",
+        "both": "1 Thru ",
+        "rolled": "1 Thru "
+      }
+    },
+    {
+      "name": "THRU then NUM8 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "Thru 8",
+        "both": "Thru 8",
+        "rolled": "Thru 8"
+      }
+    },
+    {
+      "name": "NUM1 then AT rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "1 At ",
+        "both": "1 At ",
+        "rolled": "1 At "
+      }
+    },
+    {
+      "name": "AT then NUM2 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "At 2",
+        "both": "At 2",
+        "rolled": "At 2"
+      }
+    },
+    {
+      "name": "NUM1 then UPDATE rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "Update ",
+        "both": "Update ",
+        "rolled": "Update "
+      }
+    },
+    {
+      "name": "UPDATE then NUM2 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "Update Cue 2",
+        "both": "Update Cue 2",
+        "rolled": "Update Cue 2"
+      }
+    },
+    {
+      "name": "NUM1 then EDIT rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "Edit ",
+        "both": "Edit ",
+        "rolled": "Edit "
+      }
+    },
+    {
+      "name": "EDIT then NUM2 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "Edit Cue 2",
+        "both": "Edit Cue 2",
+        "rolled": "Edit Cue 2"
+      }
+    },
+    {
+      "name": "NUM1 then CUE rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "1 Cue ",
+        "both": "1 Cue ",
+        "rolled": "1 Cue "
+      }
+    },
+    {
+      "name": "CUE then NUM2 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "Cue 2",
+        "both": "Cue 2",
+        "rolled": "Cue 2"
+      }
+    },
+    {
+      "name": "NUM1 then GROUP rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "1 Group ",
+        "both": "1 Group ",
+        "rolled": "1 Group "
+      }
+    },
+    {
+      "name": "GROUP then NUM2 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "Group 2",
+        "both": "Group 2",
+        "rolled": "Group 2"
+      }
+    },
+    {
+      "name": "NUM1 then PREVIEW rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "1 Preview ",
+        "both": "1 Preview ",
+        "rolled": "1 Preview "
+      }
+    },
+    {
+      "name": "PREVIEW then NUM2 rolled (B down before A up) equals two sequential taps",
+      "pass": true,
+      "detail": {
+        "sequential": "Preview Cue 2",
+        "both": "Preview Cue 2",
+        "rolled": "Preview Cue 2"
+      }
+    },
+    {
+      "name": "HIGHLIGHT hold: down 1.5 s flips highlight once and keeps it, Unpress leaves it",
+      "pass": true,
+      "detail": {
+        "h0": false,
+        "h1": true,
+        "h2": true,
+        "h3": true,
+        "h4": false
+      }
+    },
+    {
+      "name": "HIGHLIGHT: Press toggles highlight once, Unpress leaves it, a second tap restores it",
+      "pass": true,
+      "detail": {
+        "v0": false,
+        "v1": true,
+        "v2": true,
+        "v3": false,
+        "line": ""
+      }
+    },
+    {
+      "name": "FULL with Fixture 101 selected sets Dimmer 100 on Press, nothing more on Unpress",
+      "pass": true,
+      "detail": {
+        "sel0": 1,
+        "d0": null,
+        "d1": 100,
+        "line1": "",
+        "d2": 100,
+        "line2": ""
+      }
+    },
+    {
+      "name": "FULL hold: down 1.5 s with Fixture 101 selected sets Dimmer 100 once, nothing on Unpress",
+      "pass": true,
+      "detail": {
+        "e1": 100,
+        "e2": 100,
+        "lineH": "",
+        "maH": false,
+        "e3": 100
+      }
+    },
+    {
+      "name": "probe objects removed, slots empty",
+      "pass": true,
+      "detail": {
+        "KB28 A": {
+          "exec": false,
+          "quickey": false
+        },
+        "KB28 B": {
+          "exec": false,
+          "quickey": false
+        }
+      }
+    },
+    {
+      "name": "MASTATE false at the end",
+      "pass": true
+    }
+  ]
+}

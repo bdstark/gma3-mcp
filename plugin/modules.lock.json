@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/bdstark/gma3-mcp",
-  "revision": "4cbbb899ffbcf5572a4ec76feb85b7d193d0591b",
+  "revision": "dc4498d6cb868128d9b45ffaf412b7ef03b58122",
   "license": "MIT",
   "modules": [
     {
       "name": "gma3_mcp_hardkeys",
       "path": "plugin/gma3_mcp_hardkeys.lua",
-      "version": "0.10.0",
+      "version": "0.11.0",
       "apiVersion": 1,
-      "sha256": "a57ebd29af3b2c7e9e06ef3dcd8b7059c775db83b0dc61760f49e75973cc7dc3"
+      "sha256": "a2039cb1fba29d34d97804e4f059bc1178869a01bf8d281d3acf4c2dd7018d7a"
     },
     {
       "name": "gma3_mcp_feedback",

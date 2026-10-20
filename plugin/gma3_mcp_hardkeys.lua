@@ -149,7 +149,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.10.0"
+local VERSION     = "0.11.0"
 local API_VERSION = 1
 
 -- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
@@ -192,11 +192,11 @@ local KEYBOARD_LIMITATIONS = {
 -- What the owned-Quickey backend can and cannot promise (KB-10/KB-12/KB-13 evidence, onPC 2.5.1.0).
 local QUICKEY_LIMITATIONS = {
   "every event goes through the KB-12 bank: a code is dispatched only when its owned Quickey re-reads as the bank's (show identity, marker, Code, Name) right before the press; a missing, changed or replaced object refuses and nothing is repaired",
-  "only codes with KB-10 evidence are dispatched (NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS), each only for the operations evidenced for it (tap / hold / chord); discovered-only codes are refused before dispatch",
+  "only codes with KB-10/KB-28 evidence are dispatched (KB-10: NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS; KB-28: NUM0-NUM9, PLUS, MINUS, DOT, SLASH, AT, FULL, UPDATE, EDIT, COPY, MOVE, DELETE, CUE, GROUP, MACRO, PREVIEW, HIGHLIGHT), each only for the operations evidenced for it (tap / hold / chord); discovered-only codes are refused before dispatch",
   "a Quickey addressed directly is always a complete tap (KB-10), so every tap, hold and chord is an executor press: the code's Quickey is assigned to a reserved executor and Press / Unpress Page P.E is issued; one reserved executor per concurrently held key",
   "no per-key readback exists: a press and a release are reported as dispatched, never confirmed; only the aggregate MASTATE is observable (MA1)",
   "a release is issued only on the recorded executor and only while it still holds the recorded Quickey; an executor emptied, reassigned or deleted during a hold leaves the key down on the console and the record unresolved until the operator restores the assignment and recovery runs; a direct Unpress Quickey is never issued (it re-activates non-latching keys)",
-  "effects are synchronous in the issuing chunk, except that with the Edit Command pop-up or another text field focused digits land one frame after keywords and all text keys go to the focused field (KB-10); nothing here reads the command line",
+  "effects are synchronous in the issuing chunk, except that with the Edit Command pop-up or another text field focused digits land one frame after keywords and all text keys go to the focused field (KB-10); keys pressed in separate requests (separate frames) kept their order in the pop-up (KB-28: 1 Thru 5, 2 + 3, 9 - 4), so a consumer that needs order in text fields dispatches at most one press per frame; nothing here reads the command line",
   "OOPS on an empty command line is Undo (it reverts show data) and PLEASE executes the command line; neither is checked or prevented here",
   "no PC-key or text dispatch and no mode change (capabilities.keyboard = false, char = false, modeChange = false): the shortcut, shortcutOrType and type methods are unavailable on this backend",
 }
@@ -667,19 +667,49 @@ local BANK_EXECUTOR_FUNCTIONS = { FLASH = true, BLACK = true, KILL = true, RATE1
 -- aliases are deduplicated by value with the alphabetically first name and reported.
 local BANK_ALIASES = { UNDO = "OOPS" }
 
--- KB-10 evidence per code (onPC 2.5.1.0, macOS, executor path for holds). Everything else is
--- discovered only. `tap` is a direct Press Quickey or an executor press/release pair; `hold` is an
--- executor Press kept down until Unpress; `chord` is a hold next to another held bank key.
+-- KB-10 evidence per code (onPC 2.5.1.0, macOS, executor path for holds), extended by KB-28 (the NX-K's
+-- remaining keys: docs/probes/kb-28-quickey-codes-macos-2.5.1.md). Everything else is discovered only.
+-- `tap` is a direct Press Quickey or an executor press/release pair; `hold` is an executor Press kept
+-- down until Unpress; `chord` is a hold next to another held bank key (KB-28: the second key goes down
+-- before the first comes up and the line equals two sequential taps). Every KB-28 code is qualified on
+-- the executor path only; stuck-key recovery (a direct Unpress Quickey) stays qualified for MA1 alone.
+-- chordWith = "probed" limits a chord to the exact DIRECTED pairs the KB-28 probe rolled (review 9): "A>B" is B
+-- going down while A is held. A pair with a "probed" code on either side is allowed only when it is listed; a code
+-- without chordWith (NUM5, STORE, MA1: KB-10) chords with any chord-capable peer that is unrestricted too.
+local CHORD_PAIRS = {}
+for _, pair in ipairs({ "NUM1>NUM2", "NUM2>NUM3", "NUM9>NUM0", "NUM1>DOT", "DOT>NUM5", "NUM4>PLUS", "MINUS>NUM6", "NUM7>SLASH",
+                        "NUM1>THRU", "THRU>NUM8" }) do CHORD_PAIRS[pair] = true end
+for _, k in ipairs({ "AT", "UPDATE", "EDIT", "CUE", "GROUP", "PREVIEW" }) do CHORD_PAIRS["NUM1>" .. k] = true; CHORD_PAIRS[k .. ">NUM2"] = true end
+local KB28_DIGIT = { tap = true, hold = true, chord = true, chordWith = "probed" }
 local BANK_QUALIFIED = {
-  NUM1    = { tap = true, hold = true,  chord = false },
+  NUM1    = { tap = true, hold = true,  chord = true, chordWith = "probed" },
   NUM5    = { tap = true, hold = true,  chord = true, note = "a direct Unpress Quickey re-activates it: stuck-key recovery is NOT qualified for NUM5" },
-  THRU    = { tap = true, hold = true,  chord = false },
+  THRU    = { tap = true, hold = true,  chord = true, chordWith = "probed" },
   FIXTURE = { tap = true, hold = true,  chord = false },
   PLEASE  = { tap = true, hold = true,  chord = false, note = "executes the command line; immediately after digits it is accepted in the same chunk outside a text pop-up" },
   CLEAR   = { tap = true, hold = true,  chord = false },
   STORE   = { tap = true, hold = true,  chord = true, note = "a 2 s executor hold did not open the Store Settings pop-up" },
   MA1     = { tap = false, hold = true, chord = true, note = "a direct tap holds nothing; qualified as an executor hold (MA1+STORE gave Record); the only code whose stuck-key recovery (direct Unpress Quickey) is qualified" },
   OOPS    = { tap = true, hold = false, chord = false, note = "Undo on an empty command line: it can revert show data, never use it as a clear" },
+  -- KB-28
+  NUM0 = KB28_DIGIT, NUM2 = KB28_DIGIT, NUM3 = KB28_DIGIT, NUM4 = KB28_DIGIT,
+  NUM6 = KB28_DIGIT, NUM7 = KB28_DIGIT, NUM8 = KB28_DIGIT, NUM9 = KB28_DIGIT,
+  PLUS    = { tap = true, hold = true,  chord = true, chordWith = "probed" },
+  MINUS   = { tap = true, hold = true,  chord = true, chordWith = "probed" },
+  DOT     = { tap = true, hold = true,  chord = true, chordWith = "probed" },
+  SLASH   = { tap = true, hold = true,  chord = true, chordWith = "probed" },
+  AT      = { tap = true, hold = true,  chord = true, chordWith = "probed", note = "in the Edit Command pop-up it inserted nothing (at the start and mid-line)" },
+  UPDATE  = { tap = true, hold = true,  chord = true, chordWith = "probed" },
+  EDIT    = { tap = true, hold = true,  chord = true, chordWith = "probed" },
+  CUE     = { tap = true, hold = true,  chord = true, chordWith = "probed" },
+  GROUP   = { tap = true, hold = true,  chord = true, chordWith = "probed" },
+  PREVIEW = { tap = true, hold = true,  chord = true, chordWith = "probed", note = "the Preview keyword on the command line, not the preview-mode toggle" },
+  COPY    = { tap = true, hold = true,  chord = false, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
+  MOVE    = { tap = true, hold = true,  chord = false, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
+  DELETE  = { tap = true, hold = true,  chord = false, note = "a digit rolled into it opened the delete confirmation for the sheet's selected object: chord not tested further" },
+  MACRO   = { tap = true, hold = true,  chord = false, note = "not rolled: a digit before it would run a show macro" },
+  FULL    = { tap = true, hold = true,  chord = false, note = "executes At Full on the selection (Dimmer 100) on Press; nothing on an empty selection" },
+  HIGHLIGHT = { tap = true, hold = true, chord = false, note = "toggles Highlight once per Press (the mode reads a frame later); Unpress leaves it" },
 }
 -- Discovered codes with evidence that they do NOT behave as command-area keys through a Quickey.
 local BANK_UNQUALIFIED_NOTES = { ESC = "as a Quickey, ESC never touched the command line (direct and executor path)" }
@@ -1700,7 +1730,7 @@ function QuickeyBackend:quickkeyCapabilities(code)
   if not e.qualified then return { tap = false, hold = false, chord = false, note = "discovered only: no KB-10 evidence for this code" .. (e.note and ("; " .. e.note) or "") } end
   -- A tap on this backend IS a bounded executor hold (Press, then Unpress at the deadline), so a code
   -- qualified for holds is qualified for taps here (MA1: a direct tap holds nothing, an executor pair does).
-  return { tap = (e.qualified.tap or e.qualified.hold) and true or false, hold = e.qualified.hold and true or false, chord = e.qualified.chord and true or false, note = e.qualified.note }
+  return { tap = (e.qualified.tap or e.qualified.hold) and true or false, hold = e.qualified.hold and true or false, chord = e.qualified.chord and true or false, chordWith = e.qualified.chord and e.qualified.chordWith or nil, note = e.qualified.note }
 end
 
 -- Named requirements a route through this backend is missing right now (reported by describeRoute()).
@@ -2458,13 +2488,39 @@ function Instance:adoptBank(record, now)
                  codes = {}, byName = {}, byIndex = {}, executors = {}, exclusions = record.exclusions or {}, aliases = record.aliases or {}, unresolvedAliases = record.unresolvedAliases or {},
                  enumEntries = record.enumEntries, counters = { created = 0, reused = 0, verifications = 0, targetChecks = 0, refusedTargets = 0 } }
   local hasPlaceholder = false
+  -- A record kept by an older module carries that module's qualification. The flags are evidence about the
+  -- code, not about the objects, so they are recomputed from this module's table (KB-28 qualified codes a
+  -- 0.10.0 record lists as discovered); requalified names the codes whose flags changed.
+  local requalified = {}
   for _, c in ipairs(record.codes) do
     if type(c) == "table" and type(c.name) == "string" and type(c.index) == "number" then
       local e = { name = c.name, value = c.value, index = c.index, qualified = c.qualified, note = c.note, placeholder = c.placeholder and true or nil, state = "unverified" }
-      if e.placeholder then hasPlaceholder = true end
+      if e.placeholder then hasPlaceholder = true else
+        local q = BANK_QUALIFIED[e.name]
+        local now_ = q and shallowCopy(q) or false
+        local was = type(c.qualified) == "table" and c.qualified or false
+        if (now_ == false) ~= (was == false) or (now_ and (now_.tap ~= was.tap or now_.hold ~= was.hold or now_.chord ~= was.chord or now_.chordWith ~= was.chordWith)) then requalified[#requalified + 1] = e.name end
+        e.qualified, e.note = now_, (q and q.note) or BANK_UNQUALIFIED_NOTES[e.name]
+      end
       bank.codes[#bank.codes + 1] = e; bank.byName[e.name], bank.byIndex[e.index] = e, e
     end
   end
+  -- Qualified codes the kept bank does not contain (a "qualified" bank provisioned before they had evidence):
+  -- adoption creates nothing, so they stay unavailable until the operator tears the bank down and provisions it
+  -- again. An explicit code list is the operator's choice and is not reported.
+  local missing = {}
+  if s.codes == "qualified" then
+    -- Only codes this console has (Enums.VirtualKeyCode, read best-effort: unreadable means nothing is reported).
+    local d = self:_bankDeps()
+    local okV, vk = pcall(function() return d and d.virtualKeyCodes() end)
+    if okV and type(vk) == "table" then
+      local q = discoverBankCodes(vk, "qualified")
+      for _, c in ipairs(q and q.codes or {}) do if not bank.byName[c.name] then missing[#missing + 1] = c.name end end
+      table.sort(missing)
+    end
+  end
+  bank.requalified = #requalified > 0 and requalified or nil
+  bank.missingQualified = #missing > 0 and missing or nil
   if #bank.codes == 0 then return fail("bad-argument", "the record lists no codes") end
   -- A partially torn-down bank legitimately lacks the placeholder (deleted with the rest): it is adopted for
   -- cleanup only. A complete record without it predates the executor reservation and is refused.
@@ -2529,8 +2585,9 @@ function Instance:_bankSummary(now, extra)
                 codeCount = #codes, qualifiedCount = qualified, discoveredCount = discovered, problemCount = problems,
                 codes = codes, placeholder = placeholder, executors = executors, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries,
                 createdAt = bank.createdAt, adoptedAt = bank.adoptedAt, verifiedAt = bank.verifiedAt, checkedAt = bank.checkedAt, counters = shallowCopy(bank.counters), problems = bank.problems,
-                record = self:_bankRecord(),
-                note = "qualified = KB-10 evidence per code (tap/hold/chord); discovered codes are provisioned but a backend must not advertise them; reserved executors hold the bank's code-less placeholder Quickey so the claim is visible to other consumers; every dispatch re-reads the show identity and its Quickey (bankTarget) and nothing is ever repaired" }
+                record = self:_bankRecord(), requalified = bank.requalified, missingQualified = bank.missingQualified,
+                reprovision = bank.missingQualified and ("this bank lacks " .. #bank.missingQualified .. " qualified code(s) (" .. table.concat(bank.missingQualified, " ") .. "): tear it down and provision it again to route them as Quickeys") or nil,
+                note = "qualified = KB-10/KB-28 evidence per code (tap/hold/chord); discovered codes are provisioned but a backend must not advertise them; reserved executors hold the bank's code-less placeholder Quickey so the claim is visible to other consumers; every dispatch re-reads the show identity and its Quickey (bankTarget) and nothing is ever repaired" }
   if extra then for k, v in pairs(extra) do out[k] = v end end
   return out
 end
@@ -2757,6 +2814,7 @@ function Instance:_endInteraction(ia, now, reason, finalState, keepHolds)
     end
     local rel = self:_releaseHolds(list, now, reason)
     result.released, result.unresolved, result.attempted = rel.released, rel.unresolved, rel.attempted
+    result.blocked = rel.blocked  -- later keys of an ordered combo kept down behind an unresolved earlier one (review 14)
   end
   -- Finished interactions are kept briefly for status(); the ids are never reused.
   self._endedInteractions[#self._endedInteractions + 1] = ia.id
@@ -2830,6 +2888,26 @@ function Instance:tap(sessionId, now, spec, holdMs, ctx)
   return self:_holdReport(hold, now)
 end
 
+-- KB-28 review 7: a combo with a peer-restricted code (chordWith) releases in PRESS order, the order its rolled
+-- pairs were qualified in (first down, first up); every other list stays newest first. Only the positions the
+-- group's members already occupy are reordered, so the rest of the list keeps its order.
+local function pressOrderGroups(list)
+  local members = {}
+  for i, h in ipairs(list) do
+    if h.releaseInPressOrder and h.group then
+      local g = members[h.group]
+      if not g then g = { positions = {}, holds = {} }; members[h.group] = g end
+      g.positions[#g.positions + 1] = i
+      g.holds[#g.holds + 1] = h
+    end
+  end
+  for _, g in pairs(members) do
+    table.sort(g.holds, function(a, b) return a.seq < b.seq end)
+    for k, pos in ipairs(g.positions) do list[pos] = g.holds[k] end
+  end
+  return list
+end
+
 -- A combination: several keys pressed in order (e.g. { {key="MA"}, {key="STORE"} }). Every constituent
 -- key is resolved, admitted and preflighted by the backend BEFORE the first event goes out; one failure
 -- means nothing is dispatched. A press that fails midway releases what was already pressed (newest
@@ -2849,10 +2927,10 @@ function Instance:combo(sessionId, now, specs, opts)
   local s, serr = self:_admit(sessionId, now)
   if not s then return nil, serr end
   -- Preflight every key: resolution, routes, ownership, capacity, exclusivity, backend checks.
-  local plans, seen = {}, {}
+  local plans, seen, plannedQuickkeys = {}, {}, {}
   for i, spec in ipairs(specs) do
     if type(spec) == "table" and spec.exclusive then return fail("bad-argument", "key " .. i .. ": a combo cannot be exclusive; a long-press is a single exclusive press/tap") end
-    local plan, perr = self:_planPress(sessionId, now, spec, { comboIndex = i, reserved = seen, extra = #plans,
+    local plan, perr = self:_planPress(sessionId, now, spec, { comboIndex = i, reserved = seen, extra = #plans, planned = plannedQuickkeys,
       kind = holdMs and "tap" or "hold", interaction = opts.interaction, fromSequence = opts.fromSequence })
     if not plan then
       perr.key = i
@@ -2864,16 +2942,41 @@ function Instance:combo(sessionId, now, specs, opts)
     end
     seen[plan.tupleKey] = i
     plans[#plans + 1] = plan
+    -- Earlier keys of the combo are not live yet; the pair check of the next key includes them (review 4).
+    if plan.tuple.quickkey then plannedQuickkeys[plan.tupleKey] = { quickkey = plan.tuple.quickkey, capabilities = plan.route and plan.route.capabilities } end
+  end
+  -- The release order is decided from the plans before anything goes down, so a rollback after a later key fails
+  -- already releases in the qualified order (review 8): press order when any key is peer-restricted (KB-28).
+  local pressOrder = false
+  for _, plan in ipairs(plans) do
+    local c = plan.route and plan.route.capabilities
+    if type(c) == "table" and c.chordWith then pressOrder = true end
   end
   -- Dispatch in order. A failure releases what went down and reports everything.
   self._seq = self._seq + 1
   local group = string.format("g%d", self._seq)
   local holds = {}
   for i, plan in ipairs(plans) do
-    local hold, derr = self:_dispatchPress(s, plan, now)
+    local hold, derr
+    -- Review 14: each key of an ordered (probed) pair goes out in its own console frame.
+    if pressOrder and i > 1 then
+      local okF, ferr = pcall(self._adapter.separateFrames, self._adapter)
+      if not okF then
+        local _, e = fail("dispatch-failed", "the frame break before it raised (" .. tostring(ferr) .. "); it was not pressed")
+        derr = e
+      end
+    end
+    if not derr then hold, derr = self:_dispatchPress(s, plan, now) end
     if not hold then
+      -- A press that raised left an unresolved record (it may be down): it joins the group with its order before
+      -- the rollback, so recover() keeps first down, first up (review 13).
+      local uh = type(derr) == "table" and derr.hold and self._holds[derr.hold] or nil
+      if uh then uh.group, uh.groupIndex, uh.releaseInPressOrder = group, i, pressOrder or nil; self:_markGroupFrame(uh) end
+      -- Reviews 16-18: the rollback goes through the frame gate: the failed press went out in this frame, so a
+      -- release needs a frame break; when it raises (or no separator exists) the earlier keys stay down (blocked)
+      -- for a later frame's release, service() or recover().
       local rollback = self:_releaseHolds(holds, now, "combo-aborted")
-      derr.message = "key " .. i .. " of the combo: " .. tostring(derr.message) .. string.format("; %d key(s) pressed before it were released (%d released, %d unresolved)", #holds, #rollback.released, #rollback.unresolved)
+      derr.message = "key " .. i .. " of the combo: " .. tostring(derr.message) .. string.format("; %d key(s) pressed before it were released (%d released, %d unresolved, %d still held for a later release)", #holds, #rollback.released, #rollback.unresolved, rollback.blocked and #rollback.blocked or 0)
       derr.key = i
       derr.pressed = {}
       for _, h in ipairs(holds) do derr.pressed[#derr.pressed + 1] = self:_holdReport(h, now) end
@@ -2882,6 +2985,8 @@ function Instance:combo(sessionId, now, specs, opts)
     end
     hold.group = group
     hold.groupIndex = i
+    hold.releaseInPressOrder = pressOrder or nil
+    self:_markGroupFrame(hold)
     if holdMs then
       hold.kind = "combo-tap"
       self:_setDeadline(hold, now + holdMs / 1000, "combo")
@@ -2890,10 +2995,17 @@ function Instance:combo(sessionId, now, specs, opts)
     end
     holds[#holds + 1] = hold
   end
+  -- Review 14: an ordered group comes up first down, first up, so a later key cannot come up before an earlier
+  -- one: every member takes the group's EARLIEST deadline, which no member's own maximum hold then exceeds.
+  if pressOrder and not holdMs then
+    local first
+    for _, h in ipairs(holds) do if h.deadline and (first == nil or h.deadline < first) then first = h.deadline end end
+    if first then for _, h in ipairs(holds) do if h.deadline ~= first then self:_setDeadline(h, first, h.deadlineReason or "max-hold") end end end
+  end
   local reports = {}
   for _, h in ipairs(holds) do reports[#reports + 1] = self:_holdReport(h, now) end
   return { group = group, holds = reports, count = #reports,
-           releaseOrder = "newest first" .. (holdMs and (" at the deadline in " .. holdMs .. " ms") or " on release/releaseAll") }
+           releaseOrder = (pressOrder and "press order (KB-28: qualified first down, first up)" or "newest first") .. (holdMs and (" at the deadline in " .. holdMs .. " ms") or " on release/releaseAll") }
 end
 
 -- selector: { hold = <id> } or a spec (key / pcKey + modifiers) owned by the session. Releasing an
@@ -2909,6 +3021,21 @@ function Instance:release(sessionId, now, selector)
   if hold.state == "retained" or hold.state == "quarantined" or hold.kind == "text" then
     -- Nothing is down: a text route inserts on press and nothing on release; a retained key is already up.
     return self:_holdReport(hold, now, { alreadyReleased = true, note = hold.kind == "text" and "text route: nothing on release" or "already released; the record waits for the mode restoration" })
+  end
+  -- A press-order combo (KB-28 review 9) is released first down, first up: a key whose earlier group member is
+  -- still down is refused, never released out of the qualified order (releaseAll releases the group in order).
+  if hold.releaseInPressOrder and hold.group then
+    for _, other in pairs(self._holds) do
+      if other ~= hold and other.group == hold.group and other.seq < hold.seq and (other.state == "held" or other.state == "releasing" or other.state == "unresolved") then
+        return fail("out-of-order", string.format("hold %s (%s) belongs to combo %s, which is released in press order: release %s (%s) first, or releaseAll", hold.id, tostring(hold.logical), hold.group, other.id, tostring(other.logical)), { hold = hold.id, first = other.id, group = hold.group })
+      end
+    end
+  end
+  if not self:_orderedFrameOk(hold) then
+    hold.blockedRelease = true  -- recover() picks it up in a later frame (review 20)
+    local g = self._groupFrames[hold.group]
+    return fail("same-frame", string.format("hold %s (%s) of ordered combo %s: another key of the combo went out in this console frame and %s; release it on a later call", hold.id, tostring(hold.logical), hold.group,
+      self:_separatesFrames() and "the frame break raised" or "the backend cannot separate frames"), { hold = hold.id, group = hold.group, after = g and g.hold or nil })
   end
   local r = self:_attemptRelease(hold, now, "client-release")
   return self:_holdReport(hold, now, { attempt = r })
@@ -2930,7 +3057,8 @@ function Instance:recover(sessionId, now)
   checkNow(now, "recover")
   local list = {}
   for _, h in ipairs(self:_orderedHolds()) do
-    if (h.state == "unresolved" or h.state == "releasing") and (sessionId == nil or h.session == sessionId) then list[#list + 1] = h end
+    -- A later combo key held back behind an unresolved earlier one is released by the same recovery, in order.
+    if (h.state == "unresolved" or h.state == "releasing" or (h.state == "held" and h.blockedRelease)) and (sessionId == nil or h.session == sessionId) then list[#list + 1] = h end
   end
   local result = self:_releaseHolds(list, now, "recover")
   result.scope = sessionId or "all"
@@ -2954,7 +3082,16 @@ function Instance:adopt(records, now, sessionId)
   checkNow(now, "adopt")
   sessionId = sessionId or "previous-run"
   local adopted, rejected = {}, {}
-  for _, rec in ipairs(records or {}) do
+  -- Adopted in their original press order where known (orderSeq, review 12), so the new records keep it.
+  local ordered, pos = {}, {}
+  for k, r in ipairs(records or {}) do ordered[k] = r; pos[r] = k end
+  table.sort(ordered, function(a, b)
+    local sa = type(a) == "table" and tonumber(a.orderSeq) or math.huge
+    local sb = type(b) == "table" and tonumber(b.orderSeq) or math.huge
+    if sa ~= sb then return sa < sb end
+    return pos[a] < pos[b]  -- otherwise the order they were handed in
+  end)
+  for _, rec in ipairs(ordered) do
     if type(rec) ~= "table" or ((type(rec.pcKey) ~= "string" or rec.pcKey == "") and (type(rec.quickkey) ~= "string" or rec.quickkey == "")) then
       rejected[#rejected + 1] = { record = rec, reason = "no pcKey or quickkey" }
     else
@@ -2979,6 +3116,7 @@ function Instance:adopt(records, now, sessionId)
         hold.pressedAt = rec.pressedAt or now
         hold.dispatch = shallowCopy(rec.dispatch) or hold.dispatch
         hold.adopted = true
+        if type(rec.orderGroup) == "string" then hold.group, hold.releaseInPressOrder = "adopted:" .. rec.orderGroup, true end
         self:_markUnresolved(hold, now, rec.unresolved and rec.unresolved.reason or "adopted from a previous run with an unresolved release")
         adopted[#adopted + 1] = self:_holdReport(hold, now)
       end
@@ -3166,6 +3304,25 @@ function Instance:_validateSequence(sessionId, steps)
   local out, estimate = {}, 0
   local pressed = {}
   local heldQuickkeys = {}  -- Quickey tuples a press/combo step leaves down for later steps (chord capability)
+  local orderedGroups = {}  -- tupleKey -> { list = { tk... }, index } for unbounded combos released in press order (review 10)
+  -- Press-order combos this session already holds count too (review 12): their keys are down now.
+  local liveOrdered = {}
+  do
+    local groups = {}
+    for _, h in pairs(self._holds) do
+      if h.session == sessionId and h.releaseInPressOrder and h.group and (h.state == "held" or h.state == "releasing" or h.state == "unresolved") then
+        groups[h.group] = groups[h.group] or {}
+        local g = groups[h.group]
+        g[#g + 1] = h
+      end
+    end
+    for _, list in pairs(groups) do
+      table.sort(list, function(a, b) return a.seq < b.seq end)
+      local tks = {}
+      for _, h in ipairs(list) do tks[#tks + 1] = h.tupleKey; liveOrdered[h.tupleKey] = true end
+      for idx, h in ipairs(list) do orderedGroups[h.tupleKey] = { list = tks, index = idx } end
+    end
+  end
   local heldPcKeys = {}     -- PC-key tuples a press/combo step leaves down (KB-15: never next to a Quickey)
   -- The instance's live key records by tuple (held, releasing, unresolved; text records own no key), as a
   -- simulated state the steps update: a release step of a key this session holds removes it, so a later
@@ -3228,7 +3385,7 @@ function Instance:_validateSequence(sessionId, steps)
         if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
         if others then
           -- Every key already down when this one goes down (live holds and earlier steps) must chord too.
-          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple)
+          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple, route and route.capabilities)
           if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities, heldKey = cerr.heldKey }) end
         end
         if kind == "press" then heldQuickkeys[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities } end
@@ -3256,6 +3413,10 @@ function Instance:_validateSequence(sessionId, steps)
       if step.holdMs ~= nil and (type(step.holdMs) ~= "number" or step.holdMs <= 0 or step.holdMs > self._config.maxTapMs) then return stepFail(i, "bad-argument", "holdMs must be a number in (0, " .. self._config.maxTapMs .. "]") end
       s.specs, s.keyNames = {}, {}
       local seen, comboKind = {}, nil
+      -- Keys of this combo checked so far: a bounded combo's keys never enter heldQuickkeys, yet they are down
+      -- together (review 5), so each next key is pair-checked against them too.
+      local comboPeers = {}
+      local comboOrder = {}
       for k, ks in ipairs(step.keys) do
         if type(ks) ~= "table" then return stepFail(i, "bad-argument", "keys[" .. k .. "] must be a key spec table") end
         if ks.exclusive then return stepFail(i, "bad-argument", "key " .. k .. ": a combo cannot be exclusive") end
@@ -3283,14 +3444,28 @@ function Instance:_validateSequence(sessionId, steps)
         if tuple.quickkey then
           local cerr = self:_quickkeyCapabilityError(tuple, route, step.holdMs and "tap" or "hold", true, true)
           if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
-          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple)
+          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple, route and route.capabilities, comboPeers)
           if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities, heldKey = cerr.heldKey }) end
-          if not step.holdMs then heldQuickkeys[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities } end
+          comboPeers[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities }
+          comboOrder[#comboOrder + 1] = { tk = tk, probed = route.capabilities and route.capabilities.chordWith ~= nil }
         end
         s.specs[k] = spec
         s.keyNames[k] = route.logical or tuple.pcKey
         pressed[tk] = i
         if route.logical then pressed[route.logical] = i end
+      end
+      -- An unbounded combo leaves its keys down for later steps (added after its own keys were checked against
+      -- each other as one group, review 10).
+      if not step.holdMs then for tk, peer in pairs(comboPeers) do heldQuickkeys[tk] = peer end end
+      -- An unbounded combo with a probed code is released in press order: later release steps must keep it.
+      if not step.holdMs then
+        local probed = false
+        for _, o in ipairs(comboOrder) do if o.probed then probed = true end end
+        if probed then
+          local list = {}
+          for _, o in ipairs(comboOrder) do list[#list + 1] = o.tk end
+          for idx, o in ipairs(comboOrder) do orderedGroups[o.tk] = { list = list, index = idx } end
+        end
       end
       s.holdMs = step.holdMs
       estimate = estimate + (step.holdMs or 20)
@@ -3312,6 +3487,16 @@ function Instance:_validateSequence(sessionId, steps)
         return stepFail(i, terr.code, terr.message)
       end
       if not known then return stepFail(i, "bad-argument", "release of a key that no earlier step of this sequence presses and this session does not hold") end
+      local og = s.tupleKey and orderedGroups[s.tupleKey]
+      if og then
+        for idx = 1, og.index - 1 do
+          if heldQuickkeys[og.list[idx]] or liveOrdered[og.list[idx]] then
+            return stepFail(i, "out-of-order", string.format("release of %s before %s: the combo of an earlier step is released in press order (KB-28), release the earlier key first", tostring(s.logical), tostring(og.list[idx])))
+          end
+        end
+        orderedGroups[s.tupleKey] = nil
+        liveOrdered[s.tupleKey] = nil
+      end
       if s.tupleKey then heldQuickkeys[s.tupleKey] = nil; heldPcKeys[s.tupleKey] = nil end
       s.spec = spec
       estimate = estimate + 20
@@ -3359,7 +3544,13 @@ function Instance:_serviceSequence(job, now)
       ev.waitingFor = "restoration " .. self._mode.id
       break
     end
-    if ev.state == "pending" then self:_startStep(job, st, ev, now) end
+    -- Review 18: a release step of an ordered combo whose group already had a key event in this frame waits for the
+    -- next service() call unless the backend can separate frames.
+    if ev.state == "pending" and st.kind == "release" and not self:_separatesFrames() then
+      local held = self:_findHold(job.session, st.spec)
+      if held and self:_groupFrameTaken(held) then ev.waitingFor = "a later console frame (ordered combo)"; break end
+    end
+    if ev.state == "pending" then ev.waitingFor = nil; self:_startStep(job, st, ev, now) end
     if job.state ~= "running" then break end
     if ev.state == "waiting" then self:_pollStep(job, st, ev, now) end
     if ev.state == "typing" or ev.state == "readback" then
@@ -3406,8 +3597,9 @@ local function stepError(ev, err)
   if type(err) == "table" and err.unresolved then ev.state = "uncertain"; ev.hold = err.hold else ev.state = "failed" end
   if type(err) == "table" and err.pressed then
     ev.pressed = #err.pressed
-    ev.rollback = err.rollback and { released = #(err.rollback.released or {}), unresolved = #(err.rollback.unresolved or {}) } or nil
-    if err.rollback and #(err.rollback.unresolved or {}) > 0 then ev.state = "uncertain" end
+    ev.rollback = err.rollback and { released = #(err.rollback.released or {}), unresolved = #(err.rollback.unresolved or {}), blocked = #(err.rollback.blocked or {}) } or nil
+    -- A key the rollback kept down (blocked behind the frame gate, review 19) is as uncertain as an unresolved one.
+    if err.rollback and (#(err.rollback.unresolved or {}) > 0 or #(err.rollback.blocked or {}) > 0) then ev.state = "uncertain" end
   end
 end
 
@@ -3447,7 +3639,11 @@ function Instance:_startStep(job, st, ev, now)
   elseif st.kind == "combo" then
     local r, err = self:combo(job.session, now, st.specs, { holdMs = st.holdMs, interaction = job.interaction, fromSequence = true })
     if job.state ~= "running" then return end
-    if not r then stepError(ev, err); return end
+    if not r then
+      -- Keys the rollback kept down stay this sequence's, so its cleanup report names them (review 19).
+      for _, b in ipairs(type(err) == "table" and err.rollback and err.rollback.blocked or {}) do self:_trackHold(job, b.hold) end
+      stepError(ev, err); return
+    end
     ev.holds, ev.group = {}, r.group
     for _, h in ipairs(r.holds) do ev.holds[#ev.holds + 1] = h.id; self:_trackHold(job, h.id) end
     ev.pressOutcome = "dispatched"
@@ -3620,6 +3816,13 @@ function Instance:_finishSequence(job, now, reason, keepHolds)
     local rel = self:_releaseHolds(list, now, reason)
     job.cleanup = { attempted = rel.attempted, released = #rel.released, unresolved = #rel.unresolved,
                     unresolvedHolds = (#rel.unresolved > 0) and (function() local t = {} for _, a in ipairs(rel.unresolved) do t[#t + 1] = a.hold end return t end)() or nil }
+    -- Review 14: a later key of an ordered combo kept down behind an unresolved earlier one is still down and
+    -- awaits recover(), so it is reported with the unresolved ones.
+    if rel.blocked and #rel.blocked > 0 then
+      job.cleanup.blocked = #rel.blocked
+      job.cleanup.blockedHolds = {}
+      for _, b in ipairs(rel.blocked) do job.cleanup.blockedHolds[#job.cleanup.blockedHolds + 1] = b.hold end
+    end
   end
   job.finishedAt = now
   if job.autoInteraction then
@@ -3696,6 +3899,7 @@ function Instance:service(now)
       out.interactionsExpired[#out.interactionsExpired + 1] = ia.id
       for _, a in ipairs(r.released or {}) do out.released[#out.released + 1] = a end
       for _, a in ipairs(r.unresolved or {}) do out.unresolved[#out.unresolved + 1] = a end
+      for _, b in ipairs(r.blocked or {}) do out.blocked = out.blocked or {}; out.blocked[#out.blocked + 1] = b end
     end
   end
   -- Due hold deadlines, oldest deadline first.
@@ -3703,12 +3907,42 @@ function Instance:service(now)
   for _, h in pairs(self._holds) do
     if h.state == "held" and h.deadline and now >= h.deadline then due[#due + 1] = h end
   end
+  -- Review 14: a due later key of an ordered combo brings the earlier held keys of its group due with it (their
+  -- deadline moves up to its own), so the group comes up in press order without exceeding the later key's bound.
+  local isDue = {}
+  for _, h in ipairs(due) do isDue[h] = true end
+  for i = 1, #due do
+    local h = due[i]
+    if h.releaseInPressOrder and h.group then
+      for _, other in pairs(self._holds) do
+        if not isDue[other] and other.group == h.group and other.seq < h.seq and other.state == "held" then
+          self:_setDeadline(other, h.deadline, h.deadlineReason or "max-hold")
+          isDue[other] = true
+          due[#due + 1] = other
+        end
+      end
+    end
+  end
   table.sort(due, function(a, b) if a.deadline == b.deadline then return a.seq > b.seq end return a.deadline < b.deadline end)
+  pressOrderGroups(due)
   for _, h in ipairs(due) do
     if out.work >= budget then break end
-    out.work = out.work + 1
-    local r = self:_attemptRelease(h, now, h.deadlineReason or "deadline")
-    if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
+    -- A later key of an ordered combo waits (still held, deadline kept) while an earlier one may be down, and for a
+    -- later frame after another key of its group went out in this one.
+    local blocker = self:_blockedByEarlier(h)
+    if blocker then
+      h.blockedRelease = true
+      out.blocked = out.blocked or {}
+      out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = blocker.id }
+    elseif not self:_orderedFrameOk(h) then
+      h.blockedRelease = true
+      out.blocked = out.blocked or {}
+      out.blocked[#out.blocked + 1] = self:_frameBlocked(h)
+    else
+      out.work = out.work + 1
+      local r = self:_attemptRelease(h, now, h.deadlineReason or "deadline")
+      if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
+    end
   end
   out.pending = math.max(0, #due - out.work)
   -- KB-14: text-route readbacks and the temporary shortcut mode (interference check, delayed restore).
@@ -3770,6 +4004,10 @@ function Instance:service(now)
   end
   -- Quickey bank freshness (KB-12): bounded, reads only the show identity.
   if self._bank then out.bank = self:_serviceBank(now) end
+  -- The frame closes here (review 18): requests after this call are the next console frame's. Only events of the
+  -- current frame matter to the gate, so the map starts empty (review 20: it never grows with finished groups).
+  self._frame = self._frame + 1
+  self._groupFrames = {}
   return out
 end
 
@@ -3905,6 +4143,9 @@ function Instance:dispose(now)
       rec.exclusive = h.exclusive or nil
       rec.unresolved = h.unresolved or { reason = "instance disposed without a release attempt (no clock or adapter)", since = now }
       rec.tupleKey = h.tupleKey
+      -- A press-order combo keeps its group and press order across a restart (review 12): adopt() restores them,
+      -- so recover() releases first down, first up.
+      if h.releaseInPressOrder and h.group then rec.orderGroup, rec.orderSeq = h.group, h.seq end
       records[#records + 1] = rec
     end
   end
@@ -4074,8 +4315,8 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     if cerr then return nil, cerr end
     -- A chord needs the flag on EVERY participating key: a held Quickey without chord evidence must not
     -- get a neighbour either (the hold's own stored flags decide, never the current policy).
-    if simultaneous then
-      cerr = self:_heldQuickkeyChordError(tupleKey(tuple), nil, tuple)
+    if simultaneous or (ctx.planned and next(ctx.planned)) then
+      cerr = self:_heldQuickkeyChordError(tupleKey(tuple), nil, tuple, route and route.capabilities, ctx.planned)
       if cerr then return nil, cerr end
     end
   end
@@ -4583,7 +4824,55 @@ end
 -- adapter never changes that). Checks the live records (held, releasing, unresolved) and, for the sequence
 -- validator, the tuples earlier steps leave down (extraHeld: tupleKey -> { quickkey, capabilities }).
 -- Returns the structured error for the first held key without chord, or nil.
-function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming)
+-- Whether a chord-capable code may go down while another is held: with a "probed" code on either side, only a
+-- directed pair the KB-28 probe rolled (held>incoming) is qualified (review 9).
+local function chordPairAllowed(heldName, heldCaps, incomingName, incomingCaps)
+  if (heldCaps and heldCaps.chordWith) or (incomingCaps and incomingCaps.chordWith) then
+    return CHORD_PAIRS[tostring(heldName) .. ">" .. tostring(incomingName)] == true
+  end
+  return true
+end
+
+-- groupPeers: keys of the SAME combo (planned or earlier in the combo step); a probed pair is admitted only among
+-- them, because only a combo releases in the qualified order. Against a separately held key (live holds,
+-- extraHeld) any pair with a probed code is refused (review 10).
+function Instance:_separatesFrames()
+  return self._adapter ~= nil and type(self._adapter.separateFrames) == "function"
+end
+
+-- Review 16/18: the probed pairs were pressed AND released one request (console frame) per key. Every key event of an
+-- ordered group records the frame it went out in (self._frame, advanced at the end of each service(), which the
+-- consumer calls once per plugin loop iteration after its requests). A second event of the same group in the same
+-- frame needs a frame break from a separating backend; without one (or when the break raises) the key waits for a
+-- later frame (blocked, released by the next service(), release or recover call).
+function Instance:_groupFrameTaken(h)
+  if not (h.releaseInPressOrder and h.group) then return nil end
+  local g = self._groupFrames[h.group]
+  return (g and g.frame == self._frame) and g or nil
+end
+function Instance:_orderedFrameOk(h)
+  if not self:_groupFrameTaken(h) then return true end
+  if not self:_separatesFrames() then return false end
+  local ok = pcall(self._adapter.separateFrames, self._adapter)
+  if ok then self._groupFrames[h.group] = nil end
+  return ok
+end
+function Instance:_markGroupFrame(h)
+  if h.releaseInPressOrder and h.group then self._groupFrames[h.group] = { frame = self._frame, hold = h.id } end
+end
+function Instance:_frameBlocked(h)
+  local g = self._groupFrames[h.group]
+  return { hold = h.id, logical = h.logical, after = g and g.hold or nil,
+           reason = self:_separatesFrames() and "the frame break before its release raised" or "no frame separator: released in a later frame (the next service, release or recover call)" }
+end
+
+function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming, incomingCaps, groupPeers)
+  local function pairErrorFor(name, caps, state)
+    local _, e = fail("unsupported", string.format("Quickey %s is %s; %s going down next to it (%s>%s) is not a pair the KB-28 probe qualified, refused before dispatch, nothing is substituted",
+        tostring(name), state, tostring(incoming and incoming.quickkey), tostring(name), tostring(incoming and incoming.quickkey)),
+      { reason = "capability", missing = { "chord" }, capabilities = caps, heldKey = name, kind = "hold", pair = true })
+    return e
+  end
   local function errorFor(name, caps, state)
     local _, e = fail("unsupported", string.format("Quickey %s is %s and does not advertise chord (capabilities.quickkey = { tap = %s, hold = %s, chord = %s }); pressing %s next to it is refused before dispatch, nothing is substituted",
         tostring(name), state, tostring(caps.tap or false), tostring(caps.hold or false), tostring(caps.chord or false), tostring(incoming and incoming.quickkey or "another Quickey")),
@@ -4594,12 +4883,44 @@ function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming)
     if h.quickkey and h.state ~= "released" and h.tupleKey ~= exceptTupleKey then
       local caps = h.route and h.route.capabilities or {}
       if not caps.chord then return errorFor(h.quickkey, caps, h.state == "held" and "held" or h.state) end
+      if incoming and incoming.quickkey and (caps.chordWith or (incomingCaps and incomingCaps.chordWith)) then return pairErrorFor(h.quickkey, caps, h.state == "held" and "held" or h.state) end
     end
   end
   for tk, held in pairs(extraHeld or {}) do
     if tk ~= exceptTupleKey and type(held) == "table" then
       local caps = held.capabilities or {}
       if not caps.chord then return errorFor(held.quickkey, caps, "left down by an earlier step") end
+      if incoming and incoming.quickkey and (caps.chordWith or (incomingCaps and incomingCaps.chordWith)) then return pairErrorFor(held.quickkey, caps, "left down by an earlier step") end
+    end
+  end
+  -- Only TWO-key pairs were rolled (review 11): a combo with a probed code takes at most two keys.
+  local peerCount, peerProbed = 0, false
+  for tk, peer in pairs(groupPeers or {}) do
+    if tk ~= exceptTupleKey and type(peer) == "table" then
+      peerCount = peerCount + 1
+      if peer.capabilities and peer.capabilities.chordWith then peerProbed = true end
+    end
+  end
+  if peerCount >= 2 and (peerProbed or (incomingCaps and incomingCaps.chordWith)) then
+    local _, e = fail("unsupported", string.format("%s would be the %dth key of a combo with a probed KB-28 code; only two-key pairs were qualified, refused before dispatch, nothing is substituted", tostring(incoming and incoming.quickkey), peerCount + 1),
+      { reason = "capability", missing = { "chord" }, kind = "hold", pair = true })
+    return e
+  end
+  for tk, peer in pairs(groupPeers or {}) do
+    if tk ~= exceptTupleKey and type(peer) == "table" then
+      local caps = peer.capabilities or {}
+      if not caps.chord then return errorFor(peer.quickkey, caps, "an earlier key of this combo") end
+      if incoming and incoming.quickkey and not chordPairAllowed(peer.quickkey, caps, incoming.quickkey, incomingCaps) then return pairErrorFor(peer.quickkey, caps, "an earlier key of this combo") end
+      -- Review 14: the KB-28 pairs were rolled one request (console frame) per key; pressed in one frame, keyword-like
+      -- keys land before the digits pressed ahead of them (the pop-up record: NUM1 THRU NUM5 gave ' Thru 15'). A probed
+      -- pair goes down only through a backend that puts each press in its own frame (adapter.separateFrames); no
+      -- shipped backend has one, so on the console such a combo is refused until frame-separated dispatch is qualified.
+      if incoming and incoming.quickkey and (caps.chordWith or (incomingCaps and incomingCaps.chordWith)) and not self:_separatesFrames() then
+        local _, e = fail("unsupported", string.format("%s>%s was qualified with each key in its own console frame, and backend '%s' presses a combo in one frame (keywords would land before the digit); refused before dispatch, nothing is substituted",
+            tostring(peer.quickkey), tostring(incoming.quickkey), tostring(self._adapter and self._adapter.name or "none")),
+          { reason = "same-frame", missing = { "frame separation" }, heldKey = peer.quickkey, kind = "hold", pair = true })
+        return e
+      end
     end
   end
   return nil
@@ -4889,6 +5210,7 @@ end
 --   ok, confirmed == false, or confirmed == nil with a route mismatch -> unresolved: a return without
 --   error is not evidence that the key came up after a remap/disable (KB-01/KB-03 macOS probes).
 function Instance:_attemptRelease(hold, now, reason)
+  self:_markGroupFrame(hold)  -- the release goes out in this frame (review 18)
   self._releaseAttempts = self._releaseAttempts + 1
   hold.dispatch.attempts = hold.dispatch.attempts + 1
   if hold.logical then self:_checkRoutes() end  -- recheck the route right before using the stored tuple
@@ -4978,12 +5300,33 @@ function Instance:_maybeForgetSession(id)
   if s and s.state == "closed" and self:_sessionHoldCount(id) == 0 then self._sessions[id] = nil end
 end
 
--- Releases a list of holds (most recent press first). Returns { released = {...}, unresolved = {...}, skipped = n }.
+-- An ordered (press-order) combo key is not released while an earlier key of its group may still be down: after a
+-- refused or raised release the rest of the group stays held until recover() resolves the earlier one (review 10).
+function Instance:_blockedByEarlier(h)
+  if not (h.releaseInPressOrder and h.group) then return nil end
+  for _, other in pairs(self._holds) do
+    if other ~= h and other.group == h.group and other.seq < h.seq and (other.state == "held" or other.state == "releasing" or other.state == "unresolved") then return other end
+  end
+  return nil
+end
+
+-- Releases a list of holds (most recent press first, press order inside a pressOrderGroups combo).
+-- Returns { released = {...}, unresolved = {...}, skipped = n }.
 function Instance:_releaseHolds(list, now, reason)
   table.sort(list, function(a, b) return a.seq > b.seq end)
+  pressOrderGroups(list)
   local out = { released = {}, unresolved = {}, attempted = 0 }
   for _, h in ipairs(list) do
-    if h.state == "held" or h.state == "unresolved" or h.state == "releasing" then
+    local blocker = (h.state == "held" or h.state == "unresolved" or h.state == "releasing") and self:_blockedByEarlier(h)
+    if blocker then
+      h.blockedRelease = true  -- recover() releases it once the earlier key is resolved (review 11)
+      out.blocked = out.blocked or {}
+      out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = blocker.id }
+    elseif (h.state == "held" or h.state == "unresolved" or h.state == "releasing") and not self:_orderedFrameOk(h) then
+      h.blockedRelease = true
+      out.blocked = out.blocked or {}
+      out.blocked[#out.blocked + 1] = self:_frameBlocked(h)
+    elseif h.state == "held" or h.state == "unresolved" or h.state == "releasing" then
       out.attempted = out.attempted + 1
       local r = self:_attemptRelease(h, now, reason)
       if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
@@ -5131,7 +5474,7 @@ local function new(opts)
     _state = "created", _holds = {}, _byTuple = {}, _released = {}, _sessions = {}, _pendingExpired = {},
     _interactions = {}, _endedInteractions = {}, _interactionSeq = 0,
     _sequence = nil, _sequences = {}, _sequenceSeq = 0,
-    _seq = 0, _pressCount = 0, _releaseAttempts = 0, _serviced = 0, _lastServiced = nil, _observed = nil,
+    _seq = 0, _pressCount = 0, _releaseAttempts = 0, _serviced = 0, _frame = 0, _groupFrames = {}, _lastServiced = nil, _observed = nil,
     _bank = nil,
     _mode = nil, _lastMode = nil, _modeSeq = 0,  -- KB-14 temporary shortcut-mode operation
   }, Instance)

@@ -1382,6 +1382,61 @@ mode change while a Quickey is down (refused, so never exercised), the NX-K surf
 `modules.lock.json` pin names the 0.10.0 bytes of this revision for vendoring; it does not grant platform coverage.
 
 
+## KB-28 — Qualify the NX-K's remaining keys as Quickeys
+
+**Request:** The NX-K surface sends every key without KB-10 evidence through the keyboard shortcut table, which does not
+reach pop-ups and dialogs (calculators, Edit Command). Qualify those codes on the executor-held Quickey path so the
+surface can route them as Quickeys.
+
+**Depends on:** KB-10, KB-13, KB-15.
+
+**Lua changes: Yes — evidence only.** `gma3_mcp_hardkeys` 0.11.0 adds the probed codes to `BANK_QUALIFIED` with their
+tap/hold/chord flags and notes, upgrades NUM1 and THRU to chord, and names the per-frame ordering rule in the Quickey
+backend's limitations. `adoptBank()` recomputes a kept record's qualification from the loaded table (`requalified`) and,
+for a `codes = "qualified"` bank, names the qualified codes the bank lacks with the remedy (`missingQualified`,
+`reprovision`: tear down and provision again; adoption creates nothing). Chord evidence is the exact directed pairs
+the probe rolled (`CHORD_PAIRS`, `chordWith = "probed"`, reviews 3 and 9): `A>B` is B going down while A is held, and
+a pair with a KB-28 code (NUM1 and THRU included) on either side is allowed only when it is listed; KB-10's NUM5, STORE
+and MA1 keep their unrestricted chord flag between themselves, and every other pair is refused before dispatch. A
+combo that contains a probed code releases in press order (first down, first up), the order the pairs were qualified
+in (review 7); releasing one of its keys before an earlier one is refused (`out-of-order`, review 9), by the sequence
+preflight as well, and a later key stays down while an earlier one's release is unresolved (review 10); other combos
+keep newest first. A probed pair is admitted only between keys of the same combo: next to a separately held key it is
+refused, because only a combo releases in the qualified order (review 10). Such a combo takes at most two keys (only
+pairs were rolled), and recover() also releases a later key held back behind a refused release (review 11). The
+pairs were rolled one request, so one console frame, per key, and the pop-up record shows a keyword pressed in the same
+frame as a digit landing before it (review 14): a probed pair goes down only through a backend that breaks the frame
+between its presses (`adapter.separateFrames`). No shipped backend has one, so on the console a combo with a probed
+code is refused before dispatch (`reason = "same-frame"`) until frame-separated dispatch is qualified; KB-10's
+MA1 + STORE chord is unaffected. An ordered group's keys share its earliest deadline, a due later key brings the
+earlier keys of its group due with it, and the sequence and interaction cleanup reports carry the keys held back
+behind an unresolved release (`blocked`, review 14). The pairs were released one frame per key as well, so a separating backend also
+breaks the frame between an ordered group's releases and before a rollback; a break that raises keeps the later key
+down as `blocked` (review 16). `gma3_hardkeys_release_all`, sequence warnings and the bridge log name blocked keys,
+and adoption reports a changed `chordWith` in `requalified`. Every key event of an ordered group records its console frame (`service()`
+closes a frame; a consumer that services before reading its requests is only more conservative): a second event of
+the group in the same frame, from any path (release, releaseAll, recover, a sequence release step, a rollback, an
+interaction's end), needs a frame break, and without one or when it raises the key waits for a later frame
+(reviews 17 and 18). No MCP tool or TypeScript contract changed.
+
+### Record (2026-10-20)
+
+[Probe record](docs/probes/kb-28-quickey-codes-macos-2.5.1.md), script `scripts/kb28-probe.mjs` (gate tests in
+`test/kb28-probe.test.ts`). On onPC 2.5.1.0 with the probe's own Quickeys on executors 1.190/1.191:
+
+- Tap and hold qualified for NUM0, NUM2–NUM4, NUM6–NUM9, PLUS, MINUS, DOT, SLASH, AT, UPDATE, EDIT, COPY, MOVE,
+  DELETE, CUE, GROUP, MACRO, PREVIEW, FULL and HIGHLIGHT: one token or action on Press, nothing on Unpress, no repeat.
+- Chord (rolled pairs equal sequential taps) for the digits, PLUS, MINUS, DOT, SLASH, AT, UPDATE, EDIT, CUE, GROUP,
+  PREVIEW, NUM1 and THRU. Not for COPY, MOVE, DELETE (a digit rolled into DELETE opened the delete confirmation for the
+  sheet's selected cue and stalled the bridge until cancelled), MACRO, FULL or HIGHLIGHT.
+- Text fields: keys reach the focused Edit Command pop-up and the encoder calculator (`75.5` + Please stored Dimmer
+  75.5). One key per request kept the order (`1 Thru 5`); one Lua chunk reproduced the KB-10 reordering (` Thru 15`).
+  AT inserted nothing in the Edit Command pop-up.
+- NEXT, PREV and MENU were not probed.
+
+The surface half (vendoring 0.11.0, routing every qualified key as a Quickey, at most one Quickey press per plugin
+tick) is done in the surface project against this revision.
+
 ## Evidence and open questions
 
 - [MA: Plugins](https://help.malighting.com/grandMA3/2.4/HTML/plugins.html) describes `HelpLua`, multiple

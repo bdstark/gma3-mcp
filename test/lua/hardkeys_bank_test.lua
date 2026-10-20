@@ -32,6 +32,8 @@ local VK = { [""] = 0, UNKNOWN = 0, MA1 = 1, MA2 = 2, PREV = 3, XKEYS = 15, X1 =
              PLEASE = 84, FULL = 85, OOPS = 86, UNDO = 86, CLEAR = 87, ESC = 88, ENCODER_INSIDE1 = 89, FLASH = 101, RECORD = 114,
              ONPC_SCREEN2 = 127, LOCATE = 146 }
 local NCODES = 19   -- command-area codes in VK above; the bank adds one placeholder slot after them
+-- Codes in VK with evidence: KB-10 (MA1 FIXTURE STORE NUM1 NUM5 THRU PLEASE OOPS CLEAR) and KB-28 (EDIT NUM0 NUM9 PLUS FULL).
+local NQUAL = 14
 
 -- Fake console -------------------------------------------------------------------
 -- quickeys[i] = { name, code, note }; executors["page.index"] = "empty" | { quickey = i } (a bank object by
@@ -179,7 +181,7 @@ do
   check("command-area codes are kept, MA1/MA2 included", #d.codes == NCODES and names.MA1 and names.MA2 and names.GO and names.LOCATE and names.NUM0 and names.FULL, J(names))
   check("codes are ordered by value and carry KB-10 qualification", d.codes[1].name == "MA1" and names.NUM5.qualified.hold == true and names.MA1.qualified.tap == false and names.OOPS.qualified.hold == false and names.GO.qualified == false and names.ESC.qualified == false and names.ESC.note:find("never touched"), J({ names.NUM5, names.ESC }))
   local q = HK.discoverBankCodes(VK, "qualified")
-  check("\"qualified\" keeps only codes with evidence and reports the rest as exclusions", #q.codes == 9 and findReason(q.exclusions, "no KB-10 evidence") and findReason(q.exclusions, "no KB-10 evidence").name ~= nil, J(q.codes))
+  check("\"qualified\" keeps only codes with evidence and reports the rest as exclusions", #q.codes == NQUAL and findReason(q.exclusions, "no KB-10 evidence") and findReason(q.exclusions, "no KB-10 evidence").name ~= nil, J(q.codes))
   local l = HK.discoverBankCodes(VK, { "NUM5", "THRU", "PLEASE" })
   check("an explicit list provisions exactly those codes", #l.codes == 3 and l.codes[1].name == "NUM5" and l.codes[2].name == "THRU", J(l.codes))
   local m = HK.parseBankMarker(HK.bankMarkerText("bridge", "bridge@q900.e1.190-197", "NUM5", { page = 1, first = 190, count = 8 }))
@@ -242,7 +244,7 @@ do
   for i = 190, 197 do if execHolds(1, i) ~= 900 + NCODES then allReserved = false end end
   check("every reserved executor holds the placeholder (the claim is visible on the console)", allReserved and console.calls["executors.assign"] == 8 and #r.executors == 8 and r.executors[1].state == "reserved" and r.executors[1].reservedNow == true, J(r.executors))
   check("exclusions and aliases reported with the bank", #r.exclusions > 0 and r.aliases[1].alias == "UNDO" and r.enumEntries > 0)
-  check("qualified and discovered counts exclude the placeholder", r.qualifiedCount == 9 and r.discoveredCount == NCODES - 9 and r.problemCount == 0, J({ r.qualifiedCount, r.discoveredCount }))
+  check("qualified and discovered counts exclude the placeholder", r.qualifiedCount == NQUAL and r.discoveredCount == NCODES - NQUAL and r.problemCount == 0, J({ r.qualifiedCount, r.discoveredCount }))
   local st = inst:status(1)
   check("status carries the bank summary and a record for adoption (placeholder flagged)", st.bank.provisioned and st.bank.id == r.id and st.bank.record.codes[1].name == "MA1" and st.bank.record.codes[NCODES + 1].placeholder == true and st.bank.record.spec.executors.count == 8, J(st.bank.record.spec))
   local r2, err2 = inst:provisionBank(spec(), 2)
@@ -272,7 +274,15 @@ do
   newConsole(); pageWithExecutors(1, 190, 8)
   local inst6 = newInst()
   local r7 = inst6:provisionBank(spec({ codes = "qualified" }), 7)
-  check("codes=qualified provisions the nine evidenced codes plus the placeholder", r7 and r7.codeCount == 9 and r7.discoveredCount == 0 and console.quickeys[908] ~= nil and console.quickeys[909].code == "" and console.quickeys[910] == nil, J(r7 and r7.codeCount))
+  check("codes=qualified provisions the evidenced codes plus the placeholder", r7 and r7.codeCount == NQUAL and r7.discoveredCount == 0 and console.quickeys[900 + NQUAL - 1] ~= nil and console.quickeys[900 + NQUAL].code == "" and console.quickeys[900 + NQUAL + 1] == nil, J(r7 and r7.codeCount))
+  -- A "qualified" bank provisioned before a code had evidence lacks it: adoption names it and the remedy.
+  local rec7 = inst6:dispose(7.1).bank
+  local kept = {}
+  for _, c in ipairs(rec7.codes) do if c.name ~= "NUM9" then kept[#kept + 1] = c end end
+  rec7.codes = kept
+  local inst7 = newInst()
+  local a7 = inst7:adoptBank(rec7, 7.2)
+  check("adopting a qualified bank that lacks a qualified code reports it with the reprovision remedy, creating nothing", a7 and J(a7.missingQualified) == J({ "NUM9" }) and a7.reprovision:find("tear it down and provision it again") and console.quickeys[900 + NQUAL + 1] == nil, J(a7 and { a7.missingQualified, a7.reprovision }))
 end
 
 -------------------------------------------------------------------------------
@@ -529,6 +539,24 @@ do
   local a, err = inst2:adoptBank(dis.bank, 3)
   check("adoptBank verifies and reuses the objects without creating", a and a.adopted and a.state == "ready" and a.codeCount == NCODES and console.calls["quickeys.create"] == creates, J(err or a.problems))
   check("adopted bank serves targets and executors", inst2:bankTarget("STORE", 3) ~= nil and inst2:bankExecutor(190, 3).state == "reserved")
+  -- KB-28 review: a record kept by an older module carries that module's flags. Adoption recomputes them and
+  -- reports qualified codes a "qualified" bank lacks (it creates nothing).
+  local instC = newInst(); instC:adoptBank(dis.bank, 3.05)
+  local oldRec = instC:dispose(3.1).bank
+  for _, c in ipairs(oldRec.codes) do if c.name == "EDIT" then c.qualified = false end if c.name == "NUM1" then c.qualified = { tap = true, hold = true, chord = false } end end
+  local instR = newInst()
+  local ar = instR:adoptBank(oldRec, 3.2)
+  local edit; for _, c in ipairs(ar.codes) do if c.name == "EDIT" then edit = c end end
+  check("adoption recomputes each code's qualification from the loaded module and names the changed codes", ar.state == "ready" and edit.qualified and edit.qualified.hold == true and J(ar.requalified) == J({ "EDIT", "NUM1" }) and ar.missingQualified == nil and ar.reprovision == nil, J({ ar.requalified, edit }))
+  instR:dispose(3.3)
+  -- Review 16: only chordWith changed (a pre-review-9 record's "digit"): the code is requalified too.
+  local recW = newInst(); recW:adoptBank(dis.bank, 3.31)
+  local oldW = recW:dispose(3.32).bank
+  local hadThru = false
+  for _, c in ipairs(oldW.codes) do if c.name == "THRU" then hadThru = true; c.qualified = { tap = true, hold = true, chord = true, chordWith = "digit" } end end
+  local arW = newInst():adoptBank(oldW, 3.33)
+  local listed = false; for _, n in ipairs(arW.requalified or {}) do if n == "THRU" then listed = true end end
+  check("a code whose chordWith changed is named in requalified", hadThru and listed, J({ hadThru = hadThru, requalified = arW.requalified }))
   local inst3 = newInst("surface")
   a, err = inst3:adoptBank(dis.bank, 4)
   check("a record of another owner is not adopted", a == nil and err.code == "bank-foreign-owner", J(err))

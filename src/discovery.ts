@@ -25,6 +25,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "recipes", tools: ["gma3_recipes", "gma3_edit_recipe", "gma3_cook_recipes"] },
   { task: "macros", tools: ["gma3_store_macro", "gma3_edit_macro_line", "gma3_run_macro", "gma3_macros"] },
   { task: "console variables ($name in macros and cue commands)", tools: ["gma3_variables", "gma3_set_variable"] },
+  { task: "tags: tag sequences, groups, macros and cues, kill types, and which objects carry a tag", tools: ["gma3_tags", "gma3_assign_tag", "gma3_store_tag", "gma3_delete_tag", "gma3_configure_tag", "gma3_playback"] },
   { task: "timecode shows", tools: ["gma3_build_timecode", "gma3_timecode_transport", "gma3_timecodes"] },
   { task: "DMX output: universes, grants, Art-Net and sACN (why output is missing)", tools: ["gma3_dmx_output", "gma3_configure_dmx_output", "gma3_dmx", "gma3_fixture_output"] },
   { task: "OSC input and output (external controllers and helpers sending commands)", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
@@ -52,6 +53,10 @@ export const BATCH_TOOLS: ReadonlyArray<{ tool: string; list: string }> = [
   { tool: "gma3_configure_sequence", list: "sequences, with ranges" },
   { tool: "gma3_set_variable", list: "variables" },
   { tool: "gma3_store_cues", list: "sequences" },
+  { tool: "gma3_store_tag", list: "tags" },
+  { tool: "gma3_delete_tag", list: "tags" },
+  { tool: "gma3_assign_tag", list: "assignments" },
+  { tool: "gma3_configure_tag", list: "tags" },
 ];
 
 const BATCH_NOTE = `Many objects at once: ${BATCH_TOOLS.map((b) => `${b.tool} (${b.list})`).join(", ")} take a list in one call, with per-item checks, read-back and one result line per item; never loop over them in Lua.`;

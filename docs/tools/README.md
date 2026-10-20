@@ -39,6 +39,9 @@ sequences) and `gma3_executors`; read-back in `gma3_goto_cue` and `gma3_playback
 ReSync and the tempo-sync plugin (SU-17, no bridge change): `gma3_playback` `resync`, `gma3_tempo_sync_status`,
 `gma3_configure_tempo_sync` ([tempo-sync.md](tempo-sync.md)).
 
+Tags (SU-21, bridge 0.36.0): `gma3_tags`, `gma3_store_tag`, `gma3_delete_tag`, `gma3_assign_tag`,
+`gma3_configure_tag`, and `gma3_playback` on a tag ([tags.md](tags.md)).
+
 Saving the show (SU-20, bridge 0.35.0; `exclusive: true`, another show's file needs `overwrite: true`):
 `gma3_show_files`, `gma3_save_show` ([show.md](show.md)).
 
