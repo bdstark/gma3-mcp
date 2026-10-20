@@ -2971,19 +2971,11 @@ function Instance:combo(sessionId, now, specs, opts)
       -- A press that raised left an unresolved record (it may be down): it joins the group with its order before
       -- the rollback, so recover() keeps first down, first up (review 13).
       local uh = type(derr) == "table" and derr.hold and self._holds[derr.hold] or nil
-      if uh then uh.group, uh.groupIndex, uh.releaseInPressOrder = group, i, pressOrder or nil end
-      -- Review 16: an ordered pair's rollback goes out in a later frame than the press that failed. When that break
-      -- raises (review 17), the earlier keys stay down (blocked) for a later release, service() or recover().
-      local rollback
-      if pressOrder and #holds > 0 and not (self:_separatesFrames() and pcall(self._adapter.separateFrames, self._adapter)) then
-        rollback = { released = {}, unresolved = {}, attempted = 0, blocked = {} }
-        for _, h in ipairs(holds) do
-          h.blockedRelease = true
-          rollback.blocked[#rollback.blocked + 1] = { hold = h.id, logical = h.logical, after = uh and uh.id or nil, reason = "the frame break before the rollback raised" }
-        end
-      else
-        rollback = self:_releaseHolds(holds, now, "combo-aborted")
-      end
+      if uh then uh.group, uh.groupIndex, uh.releaseInPressOrder = group, i, pressOrder or nil; self:_markGroupFrame(uh) end
+      -- Reviews 16-18: the rollback goes through the frame gate: the failed press went out in this frame, so a
+      -- release needs a frame break; when it raises (or no separator exists) the earlier keys stay down (blocked)
+      -- for a later frame's release, service() or recover().
+      local rollback = self:_releaseHolds(holds, now, "combo-aborted")
       derr.message = "key " .. i .. " of the combo: " .. tostring(derr.message) .. string.format("; %d key(s) pressed before it were released (%d released, %d unresolved, %d still held for a later release)", #holds, #rollback.released, #rollback.unresolved, rollback.blocked and #rollback.blocked or 0)
       derr.key = i
       derr.pressed = {}
@@ -2994,6 +2986,7 @@ function Instance:combo(sessionId, now, specs, opts)
     hold.group = group
     hold.groupIndex = i
     hold.releaseInPressOrder = pressOrder or nil
+    self:_markGroupFrame(hold)
     if holdMs then
       hold.kind = "combo-tap"
       self:_setDeadline(hold, now + holdMs / 1000, "combo")
@@ -3037,6 +3030,11 @@ function Instance:release(sessionId, now, selector)
         return fail("out-of-order", string.format("hold %s (%s) belongs to combo %s, which is released in press order: release %s (%s) first, or releaseAll", hold.id, tostring(hold.logical), hold.group, other.id, tostring(other.logical)), { hold = hold.id, first = other.id, group = hold.group })
       end
     end
+  end
+  if not self:_orderedFrameOk(hold) then
+    local g = self._groupFrames[hold.group]
+    return fail("same-frame", string.format("hold %s (%s) of ordered combo %s: another key of the combo went out in this console frame and %s; release it on a later call", hold.id, tostring(hold.logical), hold.group,
+      self:_separatesFrames() and "the frame break raised" or "the backend cannot separate frames"), { hold = hold.id, group = hold.group, after = g and g.hold or nil })
   end
   local r = self:_attemptRelease(hold, now, "client-release")
   return self:_holdReport(hold, now, { attempt = r })
@@ -3545,7 +3543,13 @@ function Instance:_serviceSequence(job, now)
       ev.waitingFor = "restoration " .. self._mode.id
       break
     end
-    if ev.state == "pending" then self:_startStep(job, st, ev, now) end
+    -- Review 18: a release step of an ordered combo whose group already had a key event in this frame waits for the
+    -- next service() call unless the backend can separate frames.
+    if ev.state == "pending" and st.kind == "release" and not self:_separatesFrames() then
+      local held = self:_findHold(job.session, st.spec)
+      if held and self:_groupFrameTaken(held) then ev.waitingFor = "a later console frame (ordered combo)"; break end
+    end
+    if ev.state == "pending" then ev.waitingFor = nil; self:_startStep(job, st, ev, now) end
     if job.state ~= "running" then break end
     if ev.state == "waiting" then self:_pollStep(job, st, ev, now) end
     if ev.state == "typing" or ev.state == "readback" then
@@ -3915,18 +3919,20 @@ function Instance:service(now)
   end
   table.sort(due, function(a, b) if a.deadline == b.deadline then return a.seq > b.seq end return a.deadline < b.deadline end)
   pressOrderGroups(due)
-  local prevDue
   for _, h in ipairs(due) do
     if out.work >= budget then break end
-    -- A later key of an ordered combo waits (still held, deadline kept) while an earlier one may be down.
+    -- A later key of an ordered combo waits (still held, deadline kept) while an earlier one may be down, and for a
+    -- later frame after another key of its group went out in this one.
     local blocker = self:_blockedByEarlier(h)
-    if not blocker and not self:_orderedFrameBreak(prevDue, h) then blocker = prevDue end
     if blocker then
       h.blockedRelease = true
       out.blocked = out.blocked or {}
       out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = blocker.id }
+    elseif not self:_orderedFrameOk(h) then
+      h.blockedRelease = true
+      out.blocked = out.blocked or {}
+      out.blocked[#out.blocked + 1] = self:_frameBlocked(h)
     else
-      prevDue = h
       out.work = out.work + 1
       local r = self:_attemptRelease(h, now, h.deadlineReason or "deadline")
       if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
@@ -3992,6 +3998,8 @@ function Instance:service(now)
   end
   -- Quickey bank freshness (KB-12): bounded, reads only the show identity.
   if self._bank then out.bank = self:_serviceBank(now) end
+  -- The frame closes here (review 18): requests after this call are the next console frame's.
+  self._frame = self._frame + 1
   return out
 end
 
@@ -4824,16 +4832,30 @@ function Instance:_separatesFrames()
   return self._adapter ~= nil and type(self._adapter.separateFrames) == "function"
 end
 
--- Review 16: the probed pairs were also RELEASED one request (frame) per key, so consecutive releases inside one
--- ordered group are separated the same way. Returns true when the next release may go out (no break needed, or the
--- break went through), false when the break raised (the caller keeps the key down, reported as blocked).
--- Without a separator (an ordered group adopted onto a plain backend, review 17) the later key is not released in the
--- same call: it stays blocked and the next release call (a later frame) releases it.
-function Instance:_orderedFrameBreak(prev, h)
-  if not (prev and h.releaseInPressOrder and h.group and prev.group == h.group) then return true end
+-- Review 16/18: the probed pairs were pressed AND released one request (console frame) per key. Every key event of an
+-- ordered group records the frame it went out in (self._frame, advanced at the end of each service(), which the
+-- consumer calls once per plugin loop iteration after its requests). A second event of the same group in the same
+-- frame needs a frame break from a separating backend; without one (or when the break raises) the key waits for a
+-- later frame (blocked, released by the next service(), release or recover call).
+function Instance:_groupFrameTaken(h)
+  if not (h.releaseInPressOrder and h.group) then return nil end
+  local g = self._groupFrames[h.group]
+  return (g and g.frame == self._frame) and g or nil
+end
+function Instance:_orderedFrameOk(h)
+  if not self:_groupFrameTaken(h) then return true end
   if not self:_separatesFrames() then return false end
   local ok = pcall(self._adapter.separateFrames, self._adapter)
+  if ok then self._groupFrames[h.group] = nil end
   return ok
+end
+function Instance:_markGroupFrame(h)
+  if h.releaseInPressOrder and h.group then self._groupFrames[h.group] = { frame = self._frame, hold = h.id } end
+end
+function Instance:_frameBlocked(h)
+  local g = self._groupFrames[h.group]
+  return { hold = h.id, logical = h.logical, after = g and g.hold or nil,
+           reason = self:_separatesFrames() and "the frame break before its release raised" or "no frame separator: released in a later frame (the next service, release or recover call)" }
 end
 
 function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming, incomingCaps, groupPeers)
@@ -5180,6 +5202,7 @@ end
 --   ok, confirmed == false, or confirmed == nil with a route mismatch -> unresolved: a return without
 --   error is not evidence that the key came up after a remap/disable (KB-01/KB-03 macOS probes).
 function Instance:_attemptRelease(hold, now, reason)
+  self:_markGroupFrame(hold)  -- the release goes out in this frame (review 18)
   self._releaseAttempts = self._releaseAttempts + 1
   hold.dispatch.attempts = hold.dispatch.attempts + 1
   if hold.logical then self:_checkRoutes() end  -- recheck the route right before using the stored tuple
@@ -5285,19 +5308,17 @@ function Instance:_releaseHolds(list, now, reason)
   table.sort(list, function(a, b) return a.seq > b.seq end)
   pressOrderGroups(list)
   local out = { released = {}, unresolved = {}, attempted = 0 }
-  local prev
   for _, h in ipairs(list) do
     local blocker = (h.state == "held" or h.state == "unresolved" or h.state == "releasing") and self:_blockedByEarlier(h)
     if blocker then
       h.blockedRelease = true  -- recover() releases it once the earlier key is resolved (review 11)
       out.blocked = out.blocked or {}
       out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = blocker.id }
-    elseif (h.state == "held" or h.state == "unresolved" or h.state == "releasing") and not self:_orderedFrameBreak(prev, h) then
+    elseif (h.state == "held" or h.state == "unresolved" or h.state == "releasing") and not self:_orderedFrameOk(h) then
       h.blockedRelease = true
       out.blocked = out.blocked or {}
-      out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = prev.id, reason = self:_separatesFrames() and "the frame break before its release raised" or "no frame separator: released by the next release call (a later frame)" }
+      out.blocked[#out.blocked + 1] = self:_frameBlocked(h)
     elseif h.state == "held" or h.state == "unresolved" or h.state == "releasing" then
-      prev = h
       out.attempted = out.attempted + 1
       local r = self:_attemptRelease(h, now, reason)
       if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
@@ -5445,7 +5466,7 @@ local function new(opts)
     _state = "created", _holds = {}, _byTuple = {}, _released = {}, _sessions = {}, _pendingExpired = {},
     _interactions = {}, _endedInteractions = {}, _interactionSeq = 0,
     _sequence = nil, _sequences = {}, _sequenceSeq = 0,
-    _seq = 0, _pressCount = 0, _releaseAttempts = 0, _serviced = 0, _lastServiced = nil, _observed = nil,
+    _seq = 0, _pressCount = 0, _releaseAttempts = 0, _serviced = 0, _frame = 0, _groupFrames = {}, _lastServiced = nil, _observed = nil,
     _bank = nil,
     _mode = nil, _lastMode = nil, _modeSeq = 0,  -- KB-14 temporary shortcut-mode operation
   }, Instance)
