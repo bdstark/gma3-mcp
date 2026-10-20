@@ -7,7 +7,7 @@ licence and repository guidance. No product implementation is transferred betwee
 
 ## Setup and rollout
 
-1. In each repository, add **Settings → Secrets and variables → Actions → New repository secret** named
+1. In each repository, add **Settings → Environments → codex-review → Add environment secret** named
    `OPENAI_API_KEY`. This is separately billed OpenAI API usage; do not put the key in a file or comment.
 2. Add Actions variables `PR_AUTOMATION_ENABLED=true` and `PR_MERGE_ENABLED=false` to start in review-only mode.
 3. Merge the workflow PRs manually after review. Workflow/policy changes deliberately cannot merge themselves.
@@ -85,3 +85,7 @@ Controller tests: `node --test .github/automation/controller.test.cjs`. Workflow
 use a current release or ignore only that known syntax diagnostic).
 When changing the controller, commit it first and bump the immutable controller ref in both reusable workflows; then
 commit the workflows and bump each consumer's reusable-workflow ref. Review those changes manually.
+
+## Protected API key
+
+Add `OPENAI_API_KEY` under Settings → Environments → **codex-review** → Environment secrets. This environment permits only the **main branch** (custom branch policy, no tag rules), rejecting PR merge refs and feature branches. The independent job receives this environment secret directly; callers do not forward a repository secret. Remove the repository-level OPENAI_API_KEY copy: repository secrets remain available to PR-authored same-repository workflows regardless of the intended listener permissions. Do not enable reviews until the environment secret is populated. Missing credentials fail closed. Workflow/policy changes require review before reaching main.

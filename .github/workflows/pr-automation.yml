@@ -25,5 +25,3 @@ permissions:
 jobs:
   service:
     uses: ./.github/workflows/pr-review-service.yml
-    secrets:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

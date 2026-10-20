@@ -8,8 +8,6 @@ on:
       base: {type: string, required: true}
       review: {type: boolean, required: true}
       cleanup: {type: boolean, required: true}
-    secrets:
-      OPENAI_API_KEY: {required: false}
 permissions:
   contents: read
 concurrency:
@@ -17,6 +15,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   independent:
+    environment: codex-review
     if: '!inputs.cleanup'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -51,7 +50,7 @@ jobs:
           REVIEW_KEY: ${{ secrets.OPENAI_API_KEY }}
         with:
           script: |
-            if (!process.env.REVIEW_KEY) throw new Error('Configure OPENAI_API_KEY in repository Actions secrets');
+            if (!process.env.REVIEW_KEY) throw new Error('Configure OPENAI_API_KEY in the main-only codex-review environment');
             const pr = (await github.rest.pulls.get({...context.repo, pull_number:Number(process.env.PR_NUMBER)})).data;
             if (pr.head.sha !== process.env.HEAD_SHA || pr.base.sha !== process.env.BASE_SHA) throw new Error('Review head/base changed');
             const cp = require('node:child_process');

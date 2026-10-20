@@ -2,9 +2,6 @@
 name: Reusable PR review service
 on:
   workflow_call:
-    secrets:
-      OPENAI_API_KEY:
-        required: false
 permissions:
   contents: read
 jobs:
@@ -45,8 +42,6 @@ jobs:
       base: ${{ matrix.pr.base }}
       review: ${{ matrix.pr.review }}
       cleanup: ${{ matrix.pr.cleanup }}
-    secrets:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     permissions:
       contents: write
       pull-requests: write
