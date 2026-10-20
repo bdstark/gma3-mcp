@@ -34,6 +34,7 @@ import { registerDmxOutputTools } from "./tools/dmxoutput.js";
 import { registerVariableTools } from "./tools/variables.js";
 import { registerOscTools } from "./tools/osc.js";
 import { registerShowTools } from "./tools/show.js";
+import { registerTagTools, tagPlayback, tagTarget } from "./tools/tags.js";
 import { registerTempoSyncTools, resyncPlayback, RESYNC_NOTE } from "./tools/temposync.js";
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 
@@ -327,7 +328,8 @@ server.registerTool(
     title: "Read a show object",
     description:
       "Read an object from the show data: name, class, address, all properties (as display text), optionally the property schema and a listing of its children. " +
-      "Use this to inspect sequences, cues, executors, fixtures, presets, groups, macros, pages, settings, etc.",
+      "Use this to inspect sequences, cues, executors, fixtures, presets, groups, macros, pages, settings, etc. " +
+      "TAGS reads as a list of {tag, name, protect} (bridge 0.36.0; gma3_tags lists the tags and the objects that carry them).",
     inputSchema: {
       ref: refSchema,
       children: z.boolean().optional().describe("Include a listing of child objects (default false)"),
@@ -441,6 +443,7 @@ server.registerTool(
       "Trigger a playback function on a sequence or executor. Equivalent to commands like 'Go+ Sequence 1', 'Off Executor 201', 'Load Sequence 1 Cue 5'. " +
       "Targets: 'Sequence 3', 'Executor 201', 'Page 2.201', 'Sequence 1 Cue 4' (for load/go to a cue), 'Master 3.1', 'Macro 5', 'Group 2'. " +
       "For a Sequence or Executor target the playback state is read back a frame after the command (playbackState: active, currentCue {no, name}, or lastCue after Off; needs bridge 0.32.0 for the cue). " +
+      "A tag target ('Tag 5' or 'Tag \"Encore\"') reaches every sequence the tag carries when its Forward Commands is on: the tag is resolved first (an unknown tag or a name more than one tag has sends nothing), the command addresses it by number, and each tagged sequence's state is read back (playbackState.sequences; bridge 0.36.0). " +
       `resync: ReSync for 'Sequence 1', 'Sequence 1 + 11 Thru 19' (every sequence must exist; each one's state is read back) or an executor. ${RESYNC_NOTE}`,
     inputSchema: {
       action: z.enum(Object.keys(playbackActions) as [keyof typeof playbackActions, ...(keyof typeof playbackActions)[]]),
@@ -452,7 +455,9 @@ server.registerTool(
     // SU-17: ReSync checks every sequence of a list or range, and reads each one back (its own result model).
     action === "resync"
       ? operation(() => resyncPlayback(toolContext, target))
-      : run(() =>
+      : tagTarget(target) !== undefined
+        ? run(() => mutations.run(() => tagPlayback(toolContext, playbackActions[action], target, fade)))
+        : run(() =>
         mutations.run(async () => {
         const cmd = `${playbackActions[action]} ${target}${fade !== undefined ? ` Fade ${fade}` : ""}`;
         const res = (await bridge.request("cmd", { command: cmd })) as Record<string, unknown>;
@@ -674,6 +679,7 @@ registerVariableTools(server, toolContext);
 registerLiveStateTools(server, toolContext);
 registerOscTools(server, toolContext);
 registerShowTools(server, toolContext);
+registerTagTools(server, toolContext);
 registerTempoSyncTools(server, toolContext);
 
 server.registerResource(

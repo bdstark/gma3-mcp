@@ -49,6 +49,7 @@ Guard rails, enforced by `test/live/live.ts`:
 | A fixture with cells (`GMA3_LIVE_SU19_STRING`, default 401) and one whose type has a colour wheel (`GMA3_LIVE_SU19_WHEEL`, default 301), read only; the layout and the group are previews (the layout check skips while the patch copy is open) | SU-19 fixture-type data test (bridge 0.34.0) |
 | Show file mcp-save-live-1.show (must not exist; left in the shows folder), and at the end the show the console started on (or `GMA3_LIVE_SAVE_RESTORE`) saved under its own name; the current show name changes during the test (also needs `GMA3_LIVE_EXCLUSIVE=1` and `GMA3_LIVE_SAVE=1`) | SU-20 save-show test (bridge 0.35.0) |
 | Sequence 946 (must not exist; a three-cue chase on `GMA3_LIVE_SU17_FID`, default 101, plays a few seconds; deleted), global variables BeatSync.Quantum and BeatSync.Action16 (restored); the tempo-sync plugin is only read | SU-17 ReSync and tempo-sync test (bridge 0.35.0) |
+| Tags 950–952, Sequences 950–952 (empty cues; started and stopped; Sequence 952 Cue 1 gets a 2 s in-fade), Group 950, Macro 950 and DataPool 2 with its Sequence 950 (all must be absent; deleted at the end); Appearance 1 assigned to Tag 952 and cleared | SU-21 tags test (bridge 0.36.0) |
 | Fixture types Generic Fog and Fan (imported, then removed; their attributes stay), fixture FID 994 from the first free block at 3.001 (also needs `GMA3_LIVE_EXCLUSIVE=1`) | SU-03 fixture-type import tests (bridge 0.26.0; committed with no undo) |
 
 Each live test file documents the exact objects it creates at the top of the file.
