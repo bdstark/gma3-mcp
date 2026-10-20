@@ -52,3 +52,4 @@ jobs:
       issues: write
       actions: write
       checks: read
+      statuses: read

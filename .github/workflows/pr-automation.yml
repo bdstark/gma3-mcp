@@ -22,6 +22,7 @@ permissions:
   issues: write
   actions: write
   checks: read
+  statuses: read
 jobs:
   service:
     uses: ./.github/workflows/pr-review-service.yml
