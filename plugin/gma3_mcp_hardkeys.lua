@@ -990,10 +990,13 @@ local function consoleDeps(env)
         return { name = tostring(h.name), code = tostring(h:Get("Code")), note = tostring(h:Get("Note")), lock = h:Get("Lock"), class = tostring(h:GetClass()) }
       end,
       -- Every Quickey in the pool by pool index and name (the name preflight: the console keeps names unique in the
-      -- pool and stores a duplicate as "<name>#2").
+      -- pool and stores a duplicate as "<name>#2"). ObjectList returns an empty table when nothing matches (read()
+      -- indexes it on every empty slot), so anything else is an unreadable listing, never an empty pool.
       list = function()
+        local l = env.ObjectList("Quickey Thru")
+        if type(l) ~= "table" then error("ObjectList(\"Quickey Thru\") returned " .. type(l) .. ", not a list", 0) end
         local out = {}
-        for _, h in ipairs(env.ObjectList("Quickey Thru") or {}) do out[#out + 1] = { index = tonumber(h.index), name = tostring(h.name) } end
+        for _, h in ipairs(l) do out[#out + 1] = { index = tonumber(h.index), name = tostring(h.name) } end
         return out
       end,
       create = function(index) env.Cmd(string.format("Store Quickey %d /NoConfirmation", index)); return true end,

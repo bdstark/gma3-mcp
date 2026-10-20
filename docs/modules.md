@@ -417,7 +417,8 @@ local rec = inst:dispose(now).bank          -- keep it; inst2:adoptBank(rec, now
 
 Console deps (`consoleDeps(_G)`): `showIdentity()` = show name plus data pool name; `quickeys.read/create/set/delete`
 over `ObjectList("Quickey N")` and `Store`/`Delete Quickey N /NoConfirmation`; `quickeys.list` over
-`ObjectList("Quickey Thru")` (index and name of every Quickey, for the name check; needed only when something is created); `executors.read/assign/clear` over
+`ObjectList("Quickey Thru")` (index and name of every Quickey, for the name check; needed only when something is created; a
+result that is not a table is an unreadable listing, never an empty pool); `executors.read/assign/clear` over
 `ObjectList("Page P.N")` (the assigned object's pool index, Note and Code are read), `Assign Quickey N At Page P.N` and
 `Delete Page P.N /NoConfirmation`. Every write is verified by a readback, never by the
 command's return text. On 2.5.1 an empty executor has no object under `Page P.N` (the deps report `empty` when the page
