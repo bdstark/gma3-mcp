@@ -1,0 +1,129 @@
+{
+  "probe": "kb-28-popup-direct",
+  "date": "2026-10-20T08:36:32.712Z",
+  "bridge": {
+    "version": "0.25.1",
+    "host": "127.0.0.1",
+    "port": 9800,
+    "build": {
+      "hostType": "onPC",
+      "version": "2.5.1.0",
+      "codeType": "Release"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "test-fixture-disposable"
+  },
+  "slots": {
+    "A": {
+      "q": 960,
+      "e": 190,
+      "name": "KB28 A"
+    },
+    "B": {
+      "q": 961,
+      "e": 191,
+      "name": "KB28 B"
+    }
+  },
+  "exec": "1.190",
+  "passed": 2,
+  "failed": 0,
+  "steps": [
+    {
+      "name": "NUM1 THRU NUM5 in the focused pop-up",
+      "pass": null,
+      "detail": {
+        "seq": [
+          "NUM1",
+          "THRU",
+          "NUM5"
+        ],
+        "oneChunk": " Thru 15",
+        "perRequest": "1 Thru 5"
+      }
+    },
+    {
+      "name": "NUM1 DOT NUM5 in the focused pop-up",
+      "pass": null,
+      "detail": {
+        "seq": [
+          "NUM1",
+          "DOT",
+          "NUM5"
+        ],
+        "oneChunk": "1.5",
+        "perRequest": "1.5"
+      }
+    },
+    {
+      "name": "NUM2 PLUS NUM3 in the focused pop-up",
+      "pass": null,
+      "detail": {
+        "seq": [
+          "NUM2",
+          "PLUS",
+          "NUM3"
+        ],
+        "oneChunk": " +23",
+        "perRequest": "2 +3"
+      }
+    },
+    {
+      "name": "NUM9 MINUS NUM4 in the focused pop-up",
+      "pass": null,
+      "detail": {
+        "seq": [
+          "NUM9",
+          "MINUS",
+          "NUM4"
+        ],
+        "oneChunk": " -94",
+        "perRequest": "9 -4"
+      }
+    },
+    {
+      "name": "NUM8 SLASH NUM2 in the focused pop-up",
+      "pass": null,
+      "detail": {
+        "seq": [
+          "NUM8",
+          "SLASH",
+          "NUM2"
+        ],
+        "oneChunk": "8/2",
+        "perRequest": "8/2"
+      }
+    },
+    {
+      "name": "AT NUM5 NUM0 in the focused pop-up",
+      "pass": null,
+      "detail": {
+        "seq": [
+          "AT",
+          "NUM5",
+          "NUM0"
+        ],
+        "oneChunk": "50",
+        "perRequest": "50"
+      }
+    },
+    {
+      "name": "probe objects removed, slots empty",
+      "pass": true,
+      "detail": {
+        "KB28 A": {
+          "quickey": false,
+          "exec": false
+        },
+        "KB28 B": {
+          "quickey": false,
+          "exec": false
+        }
+      }
+    },
+    {
+      "name": "MASTATE false at the end",
+      "pass": true
+    }
+  ]
+}

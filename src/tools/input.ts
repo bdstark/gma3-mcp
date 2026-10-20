@@ -407,7 +407,7 @@ export const registerInputTools: RegisterTools = (server, ctx) => {
       description:
         "Press, release or tap a logical MA hardkey (PLEASE, STORE, ESC, CLEAR, OOPS, NUM0-9, EXEC with executor, MA) on the console through the bridge's keyboard backend: REAL console keys are pressed " +
         "through the operator's shortcut table or a verified native route (MA = LeftShift, PLEASE = Enter redirect); unmapped, ambiguous or colliding routes are refused before dispatch. " +
-        "tap presses and releases with hold_ms (default 50, max 5000) and returns once the release was attempted; exclusive: true is the intended long-press (every other input is refused meanwhile). " +
+        "tap presses and releases with hold_ms (default 50, max 5000) and returns once the release was attempted; exclusive: true is the intended long-press (every other input is refused meanwhile). On the Quickey backend a tap of a code with direct-tap evidence, without exclusive and with hold_ms 50 or less, is one Press Quickey (nothing held; KB-29, bridge 0.37.0). " +
         "keys (2-4 logical keys) presses a combination in order and releases newest first (chord tap with action tap; a hold with action press). " +
         "press holds the key until release or the interaction/lease ends and REQUIRES an interaction id (gma3_input_interaction acquire). " +
         "While any key is held, an interaction is open or a release stayed unresolved, the bridge refuses commands/property/playback/fader/Lua from every client with [busy]. " +

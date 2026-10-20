@@ -227,7 +227,7 @@ do
   local inst2 = fresh({ noBank = true, routing = POLICY })
   d = inst2:describeRoute("NUM5")
   check("without a bank the Quickey route names the KB-12 requirement; the shortcut override still works", d.dispatchable == false and has(d.unavailable, "no Quickey bank") and inst2:describeRoute("NUM0").dispatchable == true, J(d.unavailable))
-  x, err = inst2:tap("s", 1, { key = "NUM5" }, 50)
+  x, err = inst2:tap("s", 1, { key = "NUM5", direct = false }, 50)
   check("a Quickey press without a bank is refused, nothing goes to Keyboard()", x == nil and err.code == "unavailable" and kbEvents() == 0, J(err))
 end
 
@@ -237,7 +237,7 @@ end
 do
   local inst = fresh()
   local n5 = idx("NUM5")
-  local h, err = inst:tap("s", 1, { key = "NUM5" }, 50)
+  local h, err = inst:tap("s", 1, { key = "NUM5", direct = false }, 50)
   check("a Quickey tap goes through the executors and records backend quickey", h and h.backend == "quickey" and h.target and h.target.executor == 190 and console.cmds[1] == string.format("Assign Quickey %d At Page 1.190", n5) and console.cmds[2] == "Press Page 1.190" and kbEvents() == 0, J(err or h))
   inst:service(1.06)
   check("the tap is released on the recorded executor", console.cmds[#console.cmds] == "Unpress Page 1.190" and pressedCount() == 0)
@@ -247,13 +247,13 @@ do
   inst:service(2.06)
   check("released through the keyboard part", kbEvents("release") == 1 and not kbPart:isDown({ pcKey = "0" }) and #console.cmds == n)
   -- A text override inserts once through the keyboard part (shortcuts on -> temporarily off).
-  h, err = inst:tap("s", 3, { key = "THRU" }, 50)
+  h, err = inst:tap("s", 3, { key = "THRU", direct = false }, 50)
   check("a type override inserts its text through the keyboard part under a temporary mode change", h and h.kind == "text" and h.backend == "fake" and h.state == "retained" and kbPart:typedText() == "Thru " and console.writes[1] == false and #console.cmds == n, J(err or h))
   inst:service(3 + DELAY + 0.001)
   check("the mode is restored by service", console.shortcutsActive == true and inst:status(4).modeChange == nil)
   -- A sequence mixing kinds one after another (nothing down at once) runs each step on its part.
   n = #console.cmds
-  local q; q, err = inst:startSequence("s", 5, { { kind = "tap", key = "NUM5", holdMs = 20 }, { kind = "tap", key = "NUM0", holdMs = 20 }, { kind = "tap", key = "NUM5", holdMs = 20 } })
+  local q; q, err = inst:startSequence("s", 5, { { kind = "tap", key = "NUM5", holdMs = 20, direct = false }, { kind = "tap", key = "NUM0", holdMs = 20 }, { kind = "tap", key = "NUM5", holdMs = 20, direct = false } })
   check("a sequence of taps alternating the kinds is accepted", q and q.state == "running", J(err or q))
   for t = 5.0, 5.3, 0.025 do inst:service(t) end
   local sq = inst:sequenceStatus(q.id, 5.3)
@@ -299,7 +299,7 @@ do
   check("a PC key while a Quickey is held is refused as unqualified-mix, nothing dispatched", x == nil and err.code == "unqualified-mix" and err.reason == "held" and err.heldKind == "quickkey" and err.hold == h.id and kbEvents() == 0 and #console.cmds == n, J(err))
   x, err = inst:tap("s", 1, { pcKey = "F3" }, 50)
   check("a raw PC key too", x == nil and err.code == "unqualified-mix" and kbEvents() == 0, J(err))
-  x, err = inst:tap("s", 1, { key = "THRU" }, 50)
+  x, err = inst:tap("s", 1, { key = "THRU", direct = false }, 50)
   check("a text route next to the held Quickey is refused (conflict), no mode write", x == nil and err.code == "conflict" and #console.writes == 0 and kbPart:typedText() == "", J(err))
   inst:release("s", 2, { hold = h.id })
   h = inst:press("s", 3, { key = "NUM0" })
@@ -316,7 +316,7 @@ do
   inst:service(6.06)
   local q; q, err = inst:startSequence("s", 7, { { kind = "press", key = "NUM5" }, { kind = "tap", key = "NUM0" } })
   check("a sequence putting a Quickey down then tapping a PC key is refused in preflight", q == nil and err.code == "unqualified-mix" and err.step == 2 and err.heldKind == "quickkey", J(err))
-  q, err = inst:startSequence("s", 7, { { kind = "press", key = "NUM0" }, { kind = "tap", key = "NUM5" } })
+  q, err = inst:startSequence("s", 7, { { kind = "press", key = "NUM0" }, { kind = "tap", key = "NUM5", direct = false } })
   check("...and the reverse", q == nil and err.code == "unqualified-mix" and err.step == 2 and err.heldKind == "pckey", J(err))
   q, err = inst:startSequence("s", 7, { { kind = "combo", keys = { { key = "NUM5" }, { key = "NUM0" } }, holdMs = 20 } })
   check("a combo step mixing kinds is refused", q == nil and err.code == "unqualified-mix" and err.step == 1 and err.key == 2, J(err))
@@ -337,7 +337,7 @@ do
   for t = 8.0, 8.3, 0.025 do inst:service(t) end
   check("...it completed: Unpress on the executor, then the Keyboard() tap", inst:sequenceStatus(q.id, 8.3).state == "completed" and holdById(inst, h.id).state == "released" and kbEvents("press") >= 3, J(inst:sequenceStatus(q.id, 8.3)))
   inst:endInteraction("s", ia.id, 8.35)
-  q, err = inst:startSequence("s", 8.4, { { kind = "press", key = "NUM0" }, { kind = "release", key = "NUM0" }, { kind = "tap", key = "NUM5", holdMs = 20 } })
+  q, err = inst:startSequence("s", 8.4, { { kind = "press", key = "NUM0" }, { kind = "release", key = "NUM0" }, { kind = "tap", key = "NUM5", holdMs = 20, direct = false } })
   check("a PC key pressed and released by earlier steps no longer blocks a Quickey step", q and q.state == "running", J(err or q))
   for t = 8.4, 8.7, 0.025 do inst:service(t) end
   check("...completed", inst:sequenceStatus(q.id, 8.7).state == "completed", J(inst:sequenceStatus(q.id, 8.7)))
@@ -373,7 +373,7 @@ do
   x, err = inst:press("s", 4, { key = "NUM5" })
   check("still refused while the released PC key is retained for the restoration", x == nil and err.code == "unqualified-mix" and err.reason == "mode" and holdById(inst, h.id).state == "retained", J(err))
   -- A sequence with a Quickey step waits for the restoration instead of failing.
-  local q; q, err = inst:startSequence("s", 4.01, { { kind = "tap", key = "NUM5", holdMs = 20 } })
+  local q; q, err = inst:startSequence("s", 4.01, { { kind = "tap", key = "NUM5", holdMs = 20, direct = false } })
   check("a sequence with a Quickey step starts and waits for the restoration", q and q.state == "running", J(err or q))
   inst:service(4.02)
   check("...the step is waiting, nothing issued", inst:sequenceStatus(q.id, 4.02).events[1].waitingFor == "restoration m1" and #console.cmds == n, J(inst:sequenceStatus(q.id, 4.02)))
@@ -383,16 +383,16 @@ do
   check("...and the Quickey step ran afterwards", inst:sequenceStatus(q.id, 4.3).state == "completed" and #console.cmds == n + 2, J(inst:sequenceStatus(q.id, 4.3)))
   -- Text routes (mode off while typing) interplay with a Quickey.
   console.shortcutsActive = true
-  h = inst:tap("s", 6, { key = "THRU" }, 50)
+  h = inst:tap("s", 6, { key = "THRU", direct = false }, 50)
   check("a text route changes the mode and is retained", h and h.state == "retained" and console.shortcutsActive == false, J(h))
   x, err = inst:press("s", 6, { key = "NUM5" })
   check("a Quickey while the text route's restoration is pending is refused", x == nil and err.code == "unqualified-mix" and err.reason == "mode", J(err))
   inst:service(6 + DELAY + 0.001)
-  x, err = inst:tap("s", 7, { key = "NUM5" }, 50)
+  x, err = inst:tap("s", 7, { key = "NUM5", direct = false }, 50)
   check("after the restore the Quickey dispatches again", x and x.backend == "quickey", J(err or x))
   inst:service(7.06)
   -- An unresolved restoration (profile switched) blocks Quickeys with the KB-14 busy refusal.
-  h = inst:tap("s", 8, { key = "THRU" }, 50)
+  h = inst:tap("s", 8, { key = "THRU", direct = false }, 50)
   console.profile = "Other"
   inst:service(8 + DELAY + 0.001)
   x, err = inst:press("s", 9, { key = "NUM5" })
@@ -400,7 +400,7 @@ do
   console.profile = "Default"
   local rec = inst:recover("s", 10)
   check("recover restores the mode on the original profile", rec.restoration and rec.restoration.state == "restored" and console.shortcutsActive == true, J(rec.restoration))
-  check("...and Quickeys are admitted again", inst:tap("s", 11, { key = "NUM5" }, 50) ~= nil)
+  check("...and Quickeys are admitted again", inst:tap("s", 11, { key = "NUM5", direct = false }, 50) ~= nil)
 end
 
 -------------------------------------------------------------------------------

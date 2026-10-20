@@ -543,11 +543,15 @@ do
   -- reports qualified codes a "qualified" bank lacks (it creates nothing).
   local instC = newInst(); instC:adoptBank(dis.bank, 3.05)
   local oldRec = instC:dispose(3.1).bank
-  for _, c in ipairs(oldRec.codes) do if c.name == "EDIT" then c.qualified = false end if c.name == "NUM1" then c.qualified = { tap = true, hold = true, chord = false } end end
+  for _, c in ipairs(oldRec.codes) do
+    if c.name == "EDIT" then c.qualified = false end
+    if c.name == "NUM1" then c.qualified = { tap = true, hold = true, chord = false } end
+    if c.name == "STORE" then c.qualified = { tap = true, hold = true, chord = true } end  -- a 0.11 record: no direct flag
+  end
   local instR = newInst()
   local ar = instR:adoptBank(oldRec, 3.2)
   local edit; for _, c in ipairs(ar.codes) do if c.name == "EDIT" then edit = c end end
-  check("adoption recomputes each code's qualification from the loaded module and names the changed codes", ar.state == "ready" and edit.qualified and edit.qualified.hold == true and J(ar.requalified) == J({ "EDIT", "NUM1" }) and ar.missingQualified == nil and ar.reprovision == nil, J({ ar.requalified, edit }))
+  check("adoption recomputes each code's qualification from the loaded module and names the changed codes", ar.state == "ready" and edit.qualified and edit.qualified.hold == true and J(ar.requalified) == J({ "EDIT", "STORE", "NUM1" }) and ar.missingQualified == nil and ar.reprovision == nil, J({ ar.requalified, edit }))
   instR:dispose(3.3)
   -- Review 16: only chordWith changed (a pre-review-9 record's "digit"): the code is requalified too.
   local recW = newInst(); recW:adoptBank(dis.bank, 3.31)

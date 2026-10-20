@@ -1437,6 +1437,48 @@ interaction's end), needs a frame break, and without one or when it raises the k
 The surface half (vendoring 0.11.0, routing every qualified key as a Quickey, at most one Quickey press per plugin
 tick) is done in the surface project against this revision.
 
+## KB-29 — Direct Quickey taps and static executor banks
+
+**Request:** with the NX-K's keys on Quickeys (KB-28), every key press costs an `Assign Quickey N At Page P.E` (the
+first free reserved executor), a `Press Page` and an `Unpress Page`: three command-history lines and a round of reads
+per key. The operator asked for less noise and work per key, and for a static assignment of executors.
+
+**Depends on:** KB-10, KB-13, KB-28.
+
+**Lua changes (hardkeys 0.12.0):**
+
+- `BANK_QUALIFIED` gains `direct`: the code was tapped as `Press Quickey N` alone, one complete activation (KB-10 for
+  NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE and OOPS; KB-29 for the 24 KB-28 codes). MA1 has none: a direct tap
+  holds nothing.
+- `tap()` on a code with `direct` sends that single command through the new `QuickeyBackend:tapDirect()` (the
+  Quickey re-read as the bank's first, `deps.quickeys.press`), and the record completes on the spot: no executor,
+  nothing to release, nothing that can stay down. It falls back to the executor path while another Quickey record is
+  live (a direct tap next to an executor-held key is not qualified) and when the spec says `direct = false`. Sequence
+  tap steps follow the same rule.
+- `executors.static = true` in a bank spec: code *i* of the bank's code list sits on executor `first + i - 1`,
+  assigned once at provisioning (the rest hold the placeholder); `count` must cover the codes (up to 256). A press goes
+  to the code's own executor without any Assign, after checking that it still holds that code's Quickey; a reassigned
+  executor is refused (`misassigned`), never repaired. A static bank has its own id letter (`@q900.s1.301-333`), so a
+  record of one mode is never adopted as the other; adoption rebuilds the map. Through the bridge:
+  `Plugin "gma3_mcp_bridge" "bank=940/1.301-340 bankexec=static"` (review 13).
+- Reviews of bdstark/gma3-mcp#75: a direct tap skips the executor preflight; a raised direct tap is `press-uncertain`;
+  an exclusive tap (a long-press) and a tap with `holdMs` above the 50 ms default stay executor-held; adoption counts
+  `direct` in `requalified`; a sequence sends one direct tap per service call. Bridge 0.37.0 forwards `direct` in key
+  specs, and a key request (`input.press`, `input.tap`, `input.combo`, `input.sequence`) ends that frame's request reading for every
+  client, so pipelined key requests reach the console one frame apart. Any press that raised (direct or executor) counts
+  for that gate (review 10). Teardown and a failed provisioning's rollback keep every bank Quickey still referenced by
+  an executor that was not confirmed empty: a refused clear, or an unreadable executor or readback (reviews 6, 8, 9, 10),
+  and after a returned clear the Quickey a readable readback shows (review 11). A static bank's record carries each
+  code's executor, so a partially torn-down bank is adopted with its original layout; a partial static record
+  without it is refused (review 11), unless only the placeholder is left (review 12). A code Quickey kept on another code's executor is recorded there and
+  the displaced code keeps no position (reviews 15 to 17).
+
+**Record (2026-10-20):** `scripts/kb28-probe.mjs --direct` on onPC 2.5.1.0 ([record](docs/probes/kb-29-direct-taps-macos-2.5.1.md)):
+26/26 on the command line (one token or action per tap, nothing more 300 ms later; Highlight toggled once; Full set
+Dimmer 100 once); in the Edit Command pop-up one tap per request kept the order (`1 Thru 5`, `2 +3`, `9 -4`) and one
+chunk reordered, as on the executor path, `At` inserting nothing; `4 2 . 5` and Please typed into the Dimmer
+calculator stored 42.5.
+
 ## Evidence and open questions
 
 - [MA: Plugins](https://help.malighting.com/grandMA3/2.4/HTML/plugins.html) describes `HelpLua`, multiple

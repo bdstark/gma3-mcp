@@ -1555,7 +1555,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.36.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.37.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1668,7 +1668,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.36.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.37.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -1948,6 +1948,10 @@ do
   check("a bank range without executors is refused", lastLog():find("bank=<quickey>/<page>"), lastLog())
   Main(nil, "bankcodes=qualified"); Cleanup()
   check("bankcodes needs a range", lastLog():find("needs a bank="), lastLog())
+  Main(nil, "bankexec=static"); Cleanup()
+  check("#75 review 13: bankexec needs a range", lastLog():find("\"bankexec\" needs a bank="), lastLog())
+  Main(nil, "bank=900/1.190-197 bankexec=fixed"); Cleanup()
+  check("...and takes static or dynamic only", lastLog():find("expected bankexec=static or bankexec=dynamic"), lastLog())
   state.input.bank = nil
   local before = #logs
   start("9800 input=fake bank=900/1.190-197")
@@ -1976,6 +1980,14 @@ do
   before = #logs
   Main(nil, "bank=900/1.190-197"); Cleanup()
   check("re-provisioning while a bank exists is refused as bank-exists", logFound("bank provision refused %[bank%-exists%]", before), lastLog())
+  -- #75 review 13: bankexec=static reaches the module's executor spec.
+  do
+    local realProvision, seen = hk.instance.provisionBank, nil
+    hk.instance.provisionBank = function(self, spec, t) seen = spec; return realProvision(self, spec, t) end
+    Main(nil, "bank=900/1.190-197 bankexec=static"); Cleanup()
+    hk.instance.provisionBank = realProvision
+    check("bankexec=static forwards executors.static = true", seen and seen.executors.static == true and seen.executors.first == 190, J(seen and seen.executors))
+  end
   -- KB-13: the owned-Quickey backend through the bridge argument "input=quickey".
   before = #logs
   Main(nil, "input=quickey"); Cleanup()
@@ -1985,8 +1997,12 @@ do
   r = request("input.open", {}, nil, A)
   local ncmd = #cmds
   r = request("input.tap", { key = "NUM5", holdMs = 20 }, nil, A)
-  check("a tap through the bridge assigns the code's Quickey to the first reserved executor and presses it in the paged form", r.ok and r.result.hold.backend == "quickey" and r.result.hold.target.executor == 190 and r.result.hold.target.quickeyIndex == 902 and cmds[ncmd + 1] == "Assign Quickey 902 At Page 1.190" and cmds[ncmd + 2] == "Press Page 1.190" and #cmds == ncmd + 2, J({ r.result.hold.target, cmds[ncmd + 1], cmds[ncmd + 2] }))
-  check("the executor now holds the code's Quickey", execs[190].object == 902)
+  check("KB-29: a tap of a code with direct-tap evidence is one Press Quickey, no executor, nothing to release", r.ok and r.result.hold.backend == "quickey" and r.result.hold.target.direct == true and r.result.hold.target.quickeyIndex == 902 and r.result.hold.target.executor == nil and cmds[ncmd + 1] == "Press Quickey 902" and #cmds == ncmd + 1 and hk.instance:status().capacity.used == 0, J({ r.result.hold.target, cmds[ncmd + 1], #cmds - ncmd }))
+  ncmd = #cmds
+  r = request("input.tap", { key = "MA1", holdMs = 20 }, nil, A)
+  local maIdx = r.ok and r.result.hold.target.quickeyIndex
+  check("a tap of a code without direct-tap evidence (MA1) assigns its Quickey to the first reserved executor and presses it in the paged form", r.ok and r.result.hold.target.executor == 190 and cmds[ncmd + 1] == ("Assign Quickey " .. tostring(maIdx) .. " At Page 1.190") and cmds[ncmd + 2] == "Press Page 1.190" and #cmds == ncmd + 2, J({ r.result and r.result.hold and r.result.hold.target, cmds[ncmd + 1], cmds[ncmd + 2] }))
+  check("the executor now holds the code's Quickey", execs[190].object == maIdx)
   local savedOffset = _G.FAKE_CLOCK_OFFSET or 0
   _G.FAKE_CLOCK_OFFSET = savedOffset + 1
   local sv = hk.instance:service(require("socket").gettime())
@@ -1999,6 +2015,82 @@ do
   r = request("input.tap", { key = "MA" }, nil, A)
   check("the keyboard-only logical key MA is not a Quickey code", r.ok == false and r.code == "unsupported" and r.error:find("VirtualKeyCode"), J(r))
   r = request("input.status", {}, nil, A)
+  -- KB-29 (#75 review 4): a key request ends the frame's request reading for every client; pipelined taps are
+  -- served one per frame and the lines behind them wait in the socket.
+  do
+    local fakeLines, sent = {}, {}
+    local sock = { receive = function() local l = table.remove(fakeLines, 1); if l then return l end return nil, "timeout", "" end,
+                   send = function(_, data) sent[#sent + 1] = data; return #data end }
+    local cl = { sock = sock, buf = "", id = 999 }
+    table.insert(state.clients, cl)
+    for _, req in ipairs({ { id = "o", op = "input.open", args = {} }, { id = "t1", op = "input.tap", args = { key = "NUM5" } },
+                           { id = "t2", op = "input.tap", args = { key = "NUM1" } }, { id = "p", op = "ping", args = {} } }) do
+      fakeLines[#fakeLines + 1] = json.encode(req)
+    end
+    local co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    local first = #sent
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    local second = #sent
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    check("pipelined taps are served one per frame: open + tap, then tap + ping (non-key requests are not held back)", first == 2 and second == 4 and #sent == 4 and sent[4]:find('"id":"p"') ~= nil, json.encode({ first, second, #sent }))
+    -- ...and so are pipelined one-step sequences (their first step goes out at start, review 5 of #75).
+    sent = {}
+    for _, req in ipairs({ { id = "s1", op = "input.sequence", args = { steps = { { kind = "tap", key = "NUM5" } } } },
+                           { id = "s2", op = "input.sequence", args = { steps = { { kind = "tap", key = "NUM1" } } } } }) do
+      fakeLines[#fakeLines + 1] = json.encode(req)
+    end
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    local seqFirst = #sent
+    for _ = 1, 3 do hk.instance:service(require("socket").gettime() + 1) end
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    check("pipelined sequences are started one per frame", seqFirst == 1 and #sent == 2, json.encode({ seqFirst, #sent, sent }))
+    -- Review 6: a key the hardkeys service pressed this frame (a sequence's next step) takes the frame too; a
+    -- queued tap waits, a ping is still answered.
+    sent = {}
+    state.serviceKeyFrame = true
+    fakeLines[#fakeLines + 1] = json.encode({ id = "t3", op = "input.tap", args = { key = "NUM5" } })
+    fakeLines[#fakeLines + 1] = json.encode({ id = "p2", op = "ping", args = {} })
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    local held = #sent
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    check("after a service-pressed key the queued tap waits a frame (and the ping behind it with it)", held == 0 and #sent == 2 and sent[1]:find('"id":"t3"') ~= nil, json.encode({ held, sent }))
+    -- Review 6: rotating start, so a second client's key request is not starved by the first one's stream.
+    local lines2, sent2 = {}, {}
+    local cl2 = { sock = { receive = function() local l = table.remove(lines2, 1); if l then return l end return nil, "timeout", "" end,
+                           send = function(_, data) sent2[#sent2 + 1] = data; return #data end }, buf = "", id = 998 }
+    table.insert(state.clients, cl2)
+    lines2[1] = json.encode({ id = "o2", op = "input.open", args = {} })
+    lines2[2] = json.encode({ id = "u1", op = "input.tap", args = { key = "NUM5" } })
+    sent = {}
+    for k = 1, 3 do fakeLines[#fakeLines + 1] = json.encode({ id = "a" .. k, op = "input.tap", args = { key = "NUM1" } }) end
+    for _ = 1, 3 do co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co)) end
+    check("two clients with queued taps both get theirs within three frames", #sent2 == 2 and sent2[2]:find('"id":"u1"') ~= nil and #sent >= 1, json.encode({ sent2 = #sent2, sent = #sent }))
+    for i = #state.clients, 1, -1 do if state.clients[i] == cl2 then table.remove(state.clients, i) end end
+    fakeLines = {}
+    -- Review 7: the gate classifies the decoded op, so an escaped spelling of input.tap is held back too.
+    sent = {}
+    state.serviceKeyFrame = true
+    fakeLines = {}
+    local esc = '{"id":"e1","op":"input\\u002etap","args":{"key":"NUM5"}}'
+    cl.pending, cl.buf = nil, ""
+    table.insert(state.clients, cl)
+    local lines3 = { esc }
+    cl.sock.receive = function() local l = table.remove(lines3, 1); if l then return l end return nil, "timeout", "" end
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    check("an escaped input.tap is held back while the frame is taken", #sent == 0 and cl.pending ~= nil, json.encode({ sent = #sent, pending = cl.pending }))
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    check("...and runs on the next frame", #sent == 1 and sent[1]:find('"id":"e1"') ~= nil, json.encode(sent))
+    for i = #state.clients, 1, -1 do if state.clients[i] == cl then table.remove(state.clients, i) end end
+    -- serviceModules() raises the flag when the hardkeys service itself pressed a key.
+    local realService = hk.instance.service
+    hk.instance.service = function(self, t) self._pressCount = (self._pressCount or 0) + 1; return realService(self, t) end
+    state.serviceKeyFrame = false
+    state._serviceModules(require("socket").gettime())
+    hk.instance.service = realService
+    check("a key the hardkeys service pressed sets the frame flag for serviceClients", state.serviceKeyFrame == true)
+    state.serviceKeyFrame = false
+    for i = #state.clients, 1, -1 do if state.clients[i] == cl then table.remove(state.clients, i) end end
+  end
   check("input.status reports the backend's limitations and capabilities", r.ok and r.result.status.backend.name == "quickey" and r.result.status.backend.capabilities.keyboard == false and #r.result.status.backend.limitations >= 6 and r.result.status.routing.default == "quickkey", J(r.result.status.backend.capabilities))
   -- KB-15: the mixed backend through "input=mixed": the quickkey default plus Keyboard() overrides.
   before = #logs

@@ -1,0 +1,337 @@
+{
+  "probe": "kb-28-run-direct",
+  "date": "2026-10-20T08:36:16.842Z",
+  "bridge": {
+    "version": "0.25.1",
+    "host": "127.0.0.1",
+    "port": 9800,
+    "build": {
+      "hostType": "onPC",
+      "version": "2.5.1.0",
+      "codeType": "Release"
+    },
+    "hostname": "bdsmbpm401",
+    "showfile": "test-fixture-disposable"
+  },
+  "slots": {
+    "A": {
+      "q": 960,
+      "e": 190,
+      "name": "KB28 A"
+    },
+    "B": {
+      "q": 961,
+      "e": 191,
+      "name": "KB28 B"
+    }
+  },
+  "exec": "1.190",
+  "passed": 26,
+  "failed": 0,
+  "steps": [
+    {
+      "name": "NUM0 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "0",
+        "afterPress": "0",
+        "fu": "OK",
+        "afterRelease": "0"
+      }
+    },
+    {
+      "name": "NUM2 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "2",
+        "afterPress": "2",
+        "fu": "OK",
+        "afterRelease": "2"
+      }
+    },
+    {
+      "name": "NUM3 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "3",
+        "afterPress": "3",
+        "fu": "OK",
+        "afterRelease": "3"
+      }
+    },
+    {
+      "name": "NUM4 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "4",
+        "afterPress": "4",
+        "fu": "OK",
+        "afterRelease": "4"
+      }
+    },
+    {
+      "name": "NUM6 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "6",
+        "afterPress": "6",
+        "fu": "OK",
+        "afterRelease": "6"
+      }
+    },
+    {
+      "name": "NUM7 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "7",
+        "afterPress": "7",
+        "fu": "OK",
+        "afterRelease": "7"
+      }
+    },
+    {
+      "name": "NUM8 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "8",
+        "afterPress": "8",
+        "fu": "OK",
+        "afterRelease": "8"
+      }
+    },
+    {
+      "name": "NUM9 tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "9",
+        "afterPress": "9",
+        "fu": "OK",
+        "afterRelease": "9"
+      }
+    },
+    {
+      "name": "PLUS tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "+ ",
+        "afterPress": "+ ",
+        "fu": "OK",
+        "afterRelease": "+ "
+      }
+    },
+    {
+      "name": "MINUS tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "- ",
+        "afterPress": "- ",
+        "fu": "OK",
+        "afterRelease": "- "
+      }
+    },
+    {
+      "name": "DOT tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": ".",
+        "afterPress": ".",
+        "fu": "OK",
+        "afterRelease": "."
+      }
+    },
+    {
+      "name": "SLASH tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "/",
+        "afterPress": "/",
+        "fu": "OK",
+        "afterRelease": "/"
+      }
+    },
+    {
+      "name": "AT tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "At ",
+        "afterPress": "At ",
+        "fu": "OK",
+        "afterRelease": "At "
+      }
+    },
+    {
+      "name": "UPDATE tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "Update ",
+        "afterPress": "Update ",
+        "fu": "OK",
+        "afterRelease": "Update "
+      }
+    },
+    {
+      "name": "EDIT tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "Edit ",
+        "afterPress": "Edit ",
+        "fu": "OK",
+        "afterRelease": "Edit "
+      }
+    },
+    {
+      "name": "COPY tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "Copy ",
+        "afterPress": "Copy ",
+        "fu": "OK",
+        "afterRelease": "Copy "
+      }
+    },
+    {
+      "name": "MOVE tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "Move ",
+        "afterPress": "Move ",
+        "fu": "OK",
+        "afterRelease": "Move "
+      }
+    },
+    {
+      "name": "DELETE tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "Delete ",
+        "afterPress": "Delete ",
+        "fu": "OK",
+        "afterRelease": "Delete "
+      }
+    },
+    {
+      "name": "CUE tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "Cue ",
+        "afterPress": "Cue ",
+        "fu": "OK",
+        "afterRelease": "Cue "
+      }
+    },
+    {
+      "name": "GROUP tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "Group ",
+        "afterPress": "Group ",
+        "fu": "OK",
+        "afterRelease": "Group "
+      }
+    },
+    {
+      "name": "MACRO tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "Macro ",
+        "afterPress": "Macro ",
+        "fu": "OK",
+        "afterRelease": "Macro "
+      }
+    },
+    {
+      "name": "PREVIEW tap: Press puts a token on the line synchronously, Unpress adds nothing",
+      "pass": true,
+      "detail": {
+        "fp": "OK",
+        "before": "",
+        "imm": "Preview ",
+        "afterPress": "Preview ",
+        "fu": "OK",
+        "afterRelease": "Preview "
+      }
+    },
+    {
+      "name": "HIGHLIGHT direct tap toggles highlight once, a second one restores it",
+      "pass": true,
+      "detail": {
+        "v0": false,
+        "v1": true,
+        "v2": true,
+        "v3": false,
+        "line": ""
+      }
+    },
+    {
+      "name": "FULL direct tap with Fixture 101 selected sets Dimmer 100 once",
+      "pass": true,
+      "detail": {
+        "sel0": 1,
+        "d0": null,
+        "d1": 100,
+        "line1": "",
+        "d2": 100
+      }
+    },
+    {
+      "name": "probe objects removed, slots empty",
+      "pass": true,
+      "detail": {
+        "KB28 A": {
+          "quickey": false,
+          "exec": false
+        },
+        "KB28 B": {
+          "quickey": false,
+          "exec": false
+        }
+      }
+    },
+    {
+      "name": "MASTATE false at the end",
+      "pass": true
+    }
+  ]
+}

@@ -82,7 +82,10 @@
 --                                               "bank=900/1.190" reserves 8 executors from 190.
 --                                               Add "bankcodes=qualified" to provision only the codes
 --                                               with KB-10 evidence (default: every command-area code,
---                                               each reported qualified or discovered).
+--                                               each reported qualified or discovered). Add
+--                                               "bankexec=static" for a static bank (KB-29): code i on
+--                                               executor first + i - 1, assigned once; the range must
+--                                               cover every code.
 --   Plugin "gma3_mcp_bridge" "bank status"      print the bank: codes, slots, executors, problems
 --   Plugin "gma3_mcp_bridge" "bank verify"      re-read every owned object and report what changed
 --   Plugin "gma3_mcp_bridge" "bank teardown"    delete the verified owned Quickeys and clear their
@@ -154,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.36.0"
+local VERSION      = "0.37.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -1803,7 +1806,10 @@ end
 local function serviceModules(now)
   for key, rec in pairs(state.modules) do
     if rec.instance then
+      local pressesBefore = key == "hardkeys" and rec.instance._pressCount or nil
       local ok, res = pcall(rec.instance.service, rec.instance, now)
+      -- A key the service pressed (a running sequence's next step) counts for this frame's key gate (review 6 of #75).
+      if ok and pressesBefore and rec.instance and (rec.instance._pressCount or 0) > pressesBefore then state.serviceKeyFrame = true end
       if not ok then
         rec.error = "service: " .. tostring(res)
         logerr("module %s failed in service(): %s", key, tostring(res))
@@ -2203,7 +2209,7 @@ end
 local function pressSpec(args)
   return { key = args.key, pcKey = args.pcKey, shift = args.shift, ctrl = args.ctrl, alt = args.alt, numlock = args.numlock,
            display = args.display, executor = args.executor, maxHoldMs = args.maxHoldMs, exclusive = args.exclusive, interaction = args.interaction,
-           prefer = args.prefer }
+           prefer = args.prefer, direct = args.direct }
 end
 
 -- Opens the connection's session on demand (the KB-05 entry points do this so one call suffices).
@@ -2253,6 +2259,7 @@ end
 -- immediate). args.interaction uses an open interaction, otherwise one is begun for the sequence.
 ops["input.sequence"] = function(args, ctx)
   requireInputEnabled()
+  state.keyFrame = true  -- its first step is dispatched now (review 5 of #75); no further request line this frame
   local client = wantClient(ctx)
   local rec = inputInstance()
   if type(rec.instance.startSequence) ~= "function" then error("[no-module] the loaded hardkeys module has no sequences (KB-05 needs 0.4.0 or newer)", 0) end
@@ -2282,6 +2289,7 @@ end
 
 ops["input.press"] = function(args, ctx)
   requireInputEnabled()
+  state.keyFrame = true  -- KB-29: no further request line is read this frame (see serviceClients)
   local _, sid = ownSession(ctx, true)
   local h, err = inputInstance().instance:press(sid, now(), pressSpec(args))
   if not h then raise(err) end
@@ -2290,6 +2298,7 @@ end
 
 ops["input.tap"] = function(args, ctx)
   requireInputEnabled()
+  state.keyFrame = true
   local _, sid = ownSession(ctx, true)
   local h, err = inputInstance().instance:tap(sid, now(), pressSpec(args), args.holdMs)
   if not h then raise(err) end
@@ -2301,6 +2310,7 @@ end
 -- dispatched when any key fails validation.
 ops["input.combo"] = function(args, ctx)
   requireInputEnabled()
+  state.keyFrame = true
   local _, sid = ownSession(ctx, true)
   local inst = inputInstance().instance
   if type(inst.combo) ~= "function" then error("[no-module] the loaded hardkeys module has no combo() (KB-04 needs 0.3.0 or newer)", 0) end
@@ -6392,6 +6402,61 @@ local function closeClient(i, reason)
 end
 state._closeClient = closeClient  -- exposed for local testing
 
+-- One frame of client servicing: up to 64 request lines per client. KB-29 (reviews 4-6 of #75): at most one
+-- key-producing request (input.press / input.tap / input.combo / input.sequence) runs per frame, counting a key the
+-- hardkeys service pressed this frame (state.serviceKeyFrame). A key request that finds the frame taken waits as
+-- the client's pending line for the next frame; every other request is still answered (in order: nothing behind a
+-- pending line of that client runs first). Quickey presses issued in one console frame reorder in a focused text
+-- field. Clients are visited from a rotating start, so one busy client cannot starve the others.
+local serviceClients
+do
+local KEY_OPS = { ["input.press"] = true, ["input.tap"] = true, ["input.combo"] = true, ["input.sequence"] = true }
+-- The DECODED op decides (review 7 of #75): any valid JSON spelling of a key op is held back. Decoding happens
+-- only while the frame is taken; an undecodable line is answered (as invalid) by handleLine as usual.
+local function lineOp(line)
+  local ok, req = pcall(json.decode, line)
+  return ok and type(req) == "table" and type(req.op) == "string" and req.op or nil
+end
+serviceClients = function()
+  state.keyFrame = state.serviceKeyFrame or false
+  state.serviceKeyFrame = false
+  local n = #state.clients
+  if n == 0 then return end
+  state.clientCursor = ((state.clientCursor or 0) % n) + 1
+  local order = {}
+  for k = 0, n - 1 do order[#order + 1] = state.clients[((state.clientCursor - 1 + k) % n) + 1] end
+  local closedClients = {}
+  for _, cl in ipairs(order) do
+    local closed = false
+    for _ = 1, 64 do
+      local line, rerr, partial
+      if cl.pending then line, cl.pending = cl.pending, nil else line, rerr, partial = cl.sock:receive("*l") end
+      if line then
+        local full = cl.buf .. line
+        cl.buf = ""
+        if full ~= "" then
+          if state.keyFrame and KEY_OPS[lineOp(full) or ""] then cl.pending = full; break end
+          local response = handleLine(cl, full)
+          if not sendAll(cl.sock, response .. "\n") then closed = true; break end
+        end
+      else
+        if partial and partial ~= "" then cl.buf = cl.buf .. partial end
+        if rerr == "closed" then closed = true end
+        break
+      end
+    end
+    if closed then closedClients[#closedClients + 1] = cl end
+  end
+  for _, cl in ipairs(closedClients) do
+    for i = #state.clients, 1, -1 do
+      if state.clients[i] == cl then closeClient(i); log("client disconnected (%d total)", #state.clients) end
+    end
+  end
+end
+end
+state._serviceClients = serviceClients  -- exposed for local testing
+state._serviceModules = serviceModules
+
 local function serverMain()
   local server, err = socket.bind(state.host, state.port)
   if not server then
@@ -6428,30 +6493,7 @@ local function serverMain()
       end
     end
 
-    -- service existing clients
-    for i = #state.clients, 1, -1 do
-      local cl = state.clients[i]
-      local closed = false
-      for _ = 1, 64 do
-        local line, rerr, partial = cl.sock:receive("*l")
-        if line then
-          local full = cl.buf .. line
-          cl.buf = ""
-          if full ~= "" then
-            local response = handleLine(cl, full)
-            if not sendAll(cl.sock, response .. "\n") then closed = true; break end
-          end
-        else
-          if partial and partial ~= "" then cl.buf = cl.buf .. partial end
-          if rerr == "closed" then closed = true end
-          break
-        end
-      end
-      if closed then
-        closeClient(i)
-        log("client disconnected (%d total)", #state.clients)
-      end
-    end
+    serviceClients()
 
     coroutine.yield()
   end
@@ -6481,7 +6523,8 @@ end
 --                            Quickey backend (KB-13), both on one instance (KB-15), the fake backend
 --                            (KB-03 lifecycle only) or disabled
 --   input status | input recover       print input state / operator recovery of unresolved releases
---   bank=<quickey>/<page>.<first>[-<last>]  provision the Quickey bank (KB-12); bankcodes=hardkeys|qualified
+--   bank=<quickey>/<page>.<first>[-<last>]  provision the Quickey bank (KB-12); bankcodes=hardkeys|qualified;
+--                            bankexec=static gives every code its own executor of the range (KB-29)
 --   bank status | bank verify | bank teardown
 local function parseArgument(argument)
   local opts = {}
@@ -6508,6 +6551,10 @@ local function parseArgument(argument)
     elseif key == "bankcodes" then
       if val == "hardkeys" or val == "qualified" then opts.bankCodes = val
       else return nil, string.format("\"%s\": expected bankcodes=hardkeys or bankcodes=qualified", tok) end
+    elseif key == "bankexec" then
+      -- KB-29: static gives every code its own executor of the range, assigned once (review 13 of #75)
+      if val == "static" then opts.bankStatic = true elseif val == "dynamic" then opts.bankStatic = false
+      else return nil, string.format("\"%s\": expected bankexec=static or bankexec=dynamic", tok) end
     elseif l == "stop" or l == "status" then
       opts.command = l
     elseif l == "control" then
@@ -6554,7 +6601,7 @@ local function parseArgument(argument)
       if not port or port < 1 or port > 65535 then return nil, string.format("\"%s\" is not a valid port number (expected 1-65535)", tok) end
       opts.port = port
     else
-      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|quickey|mixed|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bank status\", \"bank verify\", \"bank teardown\", \"control=fake|console|off\", \"control status\" or \"control recover\")", tok)
+      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|quickey|mixed|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bankexec=static|dynamic\", \"bank status\", \"bank verify\", \"bank teardown\", \"control=fake|console|off\", \"control status\" or \"control recover\")", tok)
     end
     prev = l
   end
@@ -6565,6 +6612,7 @@ local function parseArgument(argument)
     return nil, "\"bank\": expected bank=<quickey>/<page>.<first>[-<last>], \"bank status\", \"bank verify\" or \"bank teardown\" (there is no default range)"
   end
   if opts.bankCodes and not opts.bank then return nil, "\"bankcodes\" needs a bank=... range in the same argument" end
+  if opts.bankStatic ~= nil and not opts.bank then return nil, "\"bankexec\" needs a bank=... range in the same argument" end
   if opts.controlToken and opts.command == nil and opts.control == nil then
     return nil, "\"control\": expected control=fake, control=console, control=off, \"control status\" or \"control recover\" (there is no default backend)"
   end
@@ -6686,7 +6734,7 @@ local function applyBankPolicy(opts)
   local rec = bankInstance("provision")
   if not rec then return end
   local spec = { authorized = true, quickeys = { first = opts.bank.quickeyFirst },
-                 executors = { page = opts.bank.page, first = opts.bank.executorFirst, count = opts.bank.executorCount }, codes = opts.bankCodes }
+                 executors = { page = opts.bank.page, first = opts.bank.executorFirst, count = opts.bank.executorCount, static = opts.bankStatic or nil }, codes = opts.bankCodes }
   local ok, r, err = pcall(rec.instance.provisionBank, rec.instance, spec, now())
   if not ok then logerr("bank provision: raised: %s", tostring(r)); return end
   if not r then
