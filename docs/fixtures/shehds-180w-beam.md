@@ -1,4 +1,4 @@
-# SHEHDS 180 W beam: gobo, colour, prism and frost
+# SHEHDS 180 W beam: gobo, colour, prism, frost and gradient
 
 What each wheel slot of the SHEHDS 180 W beam actually projects, from photos of one unit on a wall (2026-10-20).
 The fixture type in the show (type 3 "180W Beam Moving Head", converted from the grandMA2 library) has the wheels
@@ -68,17 +68,20 @@ The beam has one prism, on the console's Beam tab, second encoder.
 rings, 12 outside and 6 inside, with a dark centre and no copy in the middle. The copies' edges show slight yellow
 and blue fringes from the glass.
 
-## Frost
+## Frost and gradient
 
 The Beam tab's third encoder has three positions:
 
 | Photo | Name | Seen as |
 | --- | --- | --- |
 | [0](shehds-180w-beam/frost-0.jpg) | Open | The hard-edged beam |
-| [1](shehds-180w-beam/frost-1.jpg) | Frost | No edge left: a wide, soft wash with a brighter middle |
-| [2](shehds-180w-beam/frost-2.jpg) | Light frost | The spot keeps its shape with a slightly softer edge; the photo shows magenta and cyan fringes on opposite sides |
+| [1](shehds-180w-beam/frost-1.jpg) | Light frost | No edge left in the photo: a wide, soft wash with a brighter middle |
+| [2](shehds-180w-beam/frost-2.jpg) | Gradient | A colour gradient across the beam, edge slightly softened. On a single spot it shows only as magenta and cyan fringes on opposite sides and a blue-violet cast |
+
+The gradient is much clearer with the prism ([photo](shehds-180w-beam/gradient-prism.jpg)): each facet picks up a
+different part of it, so the 18 copies run from violet on one side through blue to green on the other.
 
 The type has two effect wheels with media, E (2 slots) and E2 (3 slots). The counts suggest the prism (open, prism)
-is E and the frost is E2, but that has not been checked against the type.
+is E and the frost and gradient are E2, but that has not been checked against the type.
 
-These names, swatches and the prism and frost notes have not been written to the show's fixture type yet.
+These names, swatches and the prism, frost and gradient notes have not been written to the show's fixture type yet.
