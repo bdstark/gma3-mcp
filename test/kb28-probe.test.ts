@@ -119,3 +119,10 @@ test("cleanup leaves a foreign Quickey named like a probe slot (no marker) and i
     assert.deepEqual(c.writes, [], "nothing was unpressed or deleted");
   } finally { b.close(); }
 });
+
+test("refuses enabled bridge input or open input sessions, and popup mode with MA held", async () => {
+  const input = { enabled: true, holds: 0, unresolved: 0, unresolvedFromPreviousRun: 0, busy: null, sessions: 0 };
+  await expectRefusal(ping({ input }), {}, /without input/);
+  await expectRefusal(ping({ input: { ...input, enabled: false, sessions: 1 } }), {}, /1 session/);
+  await expectRefusal(ping(), { ma: true }, /MASTATE=true/, ["popup"]);
+});

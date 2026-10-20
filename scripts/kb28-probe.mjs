@@ -219,11 +219,15 @@ async function preflight(A) {
   if (!SHOW_GUARD.test(String(ping.showfile ?? ""))) { console.error(`show "${ping.showfile}" does not look disposable; refusing to press console keys`); process.exit(2); }
   if (!ping.lua?.enabled) { console.error('Lua execution is off on the bridge; the probe creates its objects and verifies through Lua and needs  Plugin "gma3_mcp_bridge" "lua on"'); process.exit(2); }
   if (ping.input && (ping.input.holds > 0 || ping.input.unresolved > 0 || ping.input.unresolvedFromPreviousRun > 0 || ping.input.busy)) { console.error("the bridge has holds or unresolved records; resolve them first (input status / input recover)"); process.exit(2); }
+  // Another client with bridge input could press a key between the probe's steps: input must be off, as recorded.
+  if (ping.input && (ping.input.enabled || ping.input.sessions > 0)) { console.error(`bridge input is ${ping.input.enabled ? "enabled" : "disabled"} with ${ping.input.sessions ?? 0} session(s); start the bridge without input (Plugin "gma3_mcp_bridge" "lua on") so no other client can press keys during the probe`); process.exit(2); }
   // The NX-K surface plugin keeps its state in this global (mtpnxk_surface.lua); a running surface would interleave keys.
   const surface = await lua(A, "local s = rawget(_G, '__mtpnxk_surface'); return s ~= nil and s.running == true");
   if (surface === true) { console.error('the mtpnxk surface plugin is running; stop it first:  Plugin "mtpnxk_surface" "stop"'); process.exit(2); }
-  if (mode !== "cleanup" && mode !== "popup") {
-    const cmd = await readCmd(A);
+  if (mode !== "cleanup") {
+    // popup runs with the pop-up open (its line is checked in runPopup), but never with MA held: every key would
+    // be measured as part of an MA chord.
+    const cmd = mode === "popup" ? "" : await readCmd(A);
     const ma = await readMa(A);
     if (cmd !== "" || ma !== false) { console.error(`console not idle: cmdtext=${JSON.stringify(cmd)} MASTATE=${ma}`); process.exit(2); }
   }
@@ -383,8 +387,12 @@ async function main() {
     await A.end();
     return { ping };
   }
-  await setup(A);
+  let ready = false;
   try {
+    // Inside the protected region: a setup that fails after its first slot still removes what it created
+    // (cleanup only touches objects carrying the probe's name and marker).
+    await setup(A);
+    ready = true;
     if (mode === "run") {
       const codes = String(opt("--codes", TEXT_CODES.join(","))).split(",").filter(Boolean);
       await runCmdline(A, codes);
@@ -396,7 +404,7 @@ async function main() {
       await runType(A, argv.slice(1, end < 0 ? undefined : end));
     }
   } finally {
-    if (mode === "run") await clearLine(A);
+    if (mode === "run" && ready) await clearLine(A);
     const left = await cleanup(A);
     record("probe objects removed, slots empty", Object.values(left).every((st) => !st.quickey && !st.exec), left);
     record("MASTATE false at the end", (await readMa(A)) === false);
