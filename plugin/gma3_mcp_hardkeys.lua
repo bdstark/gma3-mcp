@@ -2418,8 +2418,9 @@ end
 -- Undoes what the current provisionBank() call did after a failure: clears executors it assigned (only
 -- while they still hold the placeholder) and deletes objects it created that still read back as ours
 -- (marker written, or still exactly as created with nothing else written) and unchanged. A Name the console
--- stored with a "#<n>" suffix (the name was taken elsewhere in the pool) counts as written only while it is the
--- exact name read back right after the write (rec.storedName): the suffix alone proves nothing.
+-- stored with a "#<n>" suffix (the name was taken elsewhere in the pool) replaces the written one: the object is ours
+-- only while it carries exactly the name read back right after the write (rec.storedName); the suffix alone proves
+-- nothing, and a later rename (even back to the written name) keeps it.
 function Instance:_rollbackCreated(created, assigned, bank)
   local out = { removed = {}, kept = {}, cleared = {} }
   local d = self._deps
@@ -2469,7 +2470,7 @@ function Instance:_rollbackCreated(created, assigned, bank)
       local ours
       if rec.written.Note then
         ours = m ~= nil and m.owner == bank.owner and m.bank == bank.id and m.code == rec.name
-          and (rec.written.Code == nil or tostring(obj.code) == rec.written.Code) and (rec.written.Name == nil or tostring(obj.name) == rec.written.Name or (rec.storedName ~= nil and tostring(obj.name) == rec.storedName))
+          and (rec.written.Code == nil or tostring(obj.code) == rec.written.Code) and (rec.written.Name == nil or tostring(obj.name) == (rec.storedName or rec.written.Name))
         if not ours then why = "the object no longer reads back as written (marker/code/name differ); kept" end
       else
         -- Nothing was written yet: a freshly created Quickey has an empty Note and no Code.

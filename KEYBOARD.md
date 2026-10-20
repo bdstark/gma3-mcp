@@ -1484,7 +1484,7 @@ bank at 900 stopped after its first Quickey: the console keeps Quickey names uni
 as `MCP MA1#2`, the readback failed, and the rollback kept Quickey 940 because its name no longer matched. The
 preflight now lists the pool (`deps.quickeys.list`) and refuses with `name-taken`, naming the colliding pool index,
 before anything is created; the rollback deletes an object whose Name is still exactly the `#<n>` name the console stored when it was written (any
-later rename keeps it).
+later rename, even back to the written name, keeps it).
 
 ## Evidence and open questions
 
