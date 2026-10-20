@@ -321,15 +321,17 @@ do
   check("a failed first release leaves the later key of the ordered combo down (not released out of order)", cf and pressedCount() == 2 and inst:status(5.8).unresolved == 1, J({ pressed = pressedCount(), unresolved = inst:status(5.8).unresolved }))
   inst:recover(nil, 5.9); inst:service(5.95)
   check("...after recovery the group comes up in order", pressedCount() == 0, J(cmdsSince(ncs)))
-  -- Review 8: the order is set before dispatch, so a rollback after a later key fails releases in press order too.
-  local origPress, nPress = deps.executors.press, 0
-  deps.executors.press = function(...) nPress = nPress + 1; if nPress == 3 then console.cmds[#console.cmds + 1] = "Press refused"; return false, "refused" end return origPress(...) end
-  before = #console.cmds
+  -- Review 11: only two-key pairs were rolled, so a combo with a probed code takes at most two keys.
+  local nc3 = #console.cmds
   local c3, err3 = inst:combo("s", 6, { { key = "NUM1" }, { key = "AT" }, { key = "NUM2" } }, { holdMs = 100 })
-  deps.executors.press = origPress
-  local seen = cmdsSince(before)
-  local unpresses = {}; for _, cmd in ipairs(seen) do if cmd:find("^Unpress") then unpresses[#unpresses + 1] = cmd end end
-  check("a combo whose third key fails rolls back the first two in press order", c3 == nil and err3 and #unpresses == 2 and unpresses[1] == "Unpress Page 1.190" and unpresses[2] == "Unpress Page 1.191" and pressedCount() == 0, J({ err = err3, cmds = seen }))
+  check("a three-key combo with probed codes is refused before its first key", c3 == nil and err3 and err3.reason == "capability" and #console.cmds == nc3 and pressedCount() == 0, J(err3))
+  -- Review 11: releaseAll with a refused first release leaves the later key held; the same recover() releases both.
+  local cr = inst:combo("s", 6.1, { { key = "NUM1" }, { key = "THRU" } })
+  console.fail.unpress = { err = "Object not found", count = 1 }
+  local ra2 = inst:releaseAll("s", 6.2)
+  local afterRA = pressedCount()
+  local rc = inst:recover("s", 6.3)
+  check("recover() releases the combo key held back behind a refused release, in order", cr and afterRA == 2 and ra2.blocked and #ra2.blocked == 1 and pressedCount() == 0 and rc.attempted == 2, J({ afterRA = afterRA, blocked = ra2.blocked, attempted = rc.attempted }))
 end
 
 -------------------------------------------------------------------------------

@@ -3203,7 +3203,8 @@ function Instance:recover(sessionId, now)
   checkNow(now, "recover")
   local list = {}
   for _, h in ipairs(self:_orderedHolds()) do
-    if (h.state == "unresolved" or h.state == "releasing") and (sessionId == nil or h.session == sessionId) then list[#list + 1] = h end
+    -- A later combo key held back behind an unresolved earlier one is released by the same recovery, in order.
+    if (h.state == "unresolved" or h.state == "releasing" or (h.state == "held" and h.blockedRelease)) and (sessionId == nil or h.session == sessionId) then list[#list + 1] = h end
   end
   local result = self:_releaseHolds(list, now, "recover")
   result.scope = sessionId or "all"
@@ -4013,7 +4014,7 @@ function Instance:service(now)
   for _, h in ipairs(due) do
     if out.work >= budget then break end
     -- A later key of an ordered combo waits (still held, deadline kept) while an earlier one may be down.
-    if not self:_blockedByEarlier(h) then
+    if self:_blockedByEarlier(h) then h.blockedRelease = true else
       out.work = out.work + 1
       local r = self:_attemptRelease(h, now, h.deadlineReason or "deadline")
       if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
@@ -4931,6 +4932,19 @@ function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming, i
       if incoming and incoming.quickkey and (caps.chordWith or (incomingCaps and incomingCaps.chordWith)) then return pairErrorFor(held.quickkey, caps, "left down by an earlier step") end
     end
   end
+  -- Only TWO-key pairs were rolled (review 11): a combo with a probed code takes at most two keys.
+  local peerCount, peerProbed = 0, false
+  for tk, peer in pairs(groupPeers or {}) do
+    if tk ~= exceptTupleKey and type(peer) == "table" then
+      peerCount = peerCount + 1
+      if peer.capabilities and peer.capabilities.chordWith then peerProbed = true end
+    end
+  end
+  if peerCount >= 2 and (peerProbed or (incomingCaps and incomingCaps.chordWith)) then
+    local _, e = fail("unsupported", string.format("%s would be the %dth key of a combo with a probed KB-28 code; only two-key pairs were qualified, refused before dispatch, nothing is substituted", tostring(incoming and incoming.quickkey), peerCount + 1),
+      { reason = "capability", missing = { "chord" }, kind = "hold", pair = true })
+    return e
+  end
   for tk, peer in pairs(groupPeers or {}) do
     if tk ~= exceptTupleKey and type(peer) == "table" then
       local caps = peer.capabilities or {}
@@ -5333,6 +5347,7 @@ function Instance:_releaseHolds(list, now, reason)
   for _, h in ipairs(list) do
     local blocker = (h.state == "held" or h.state == "unresolved" or h.state == "releasing") and self:_blockedByEarlier(h)
     if blocker then
+      h.blockedRelease = true  -- recover() releases it once the earlier key is resolved (review 11)
       out.blocked = out.blocked or {}
       out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = blocker.id }
     elseif h.state == "held" or h.state == "unresolved" or h.state == "releasing" then

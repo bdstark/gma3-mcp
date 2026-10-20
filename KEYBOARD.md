@@ -1402,7 +1402,8 @@ combo that contains a probed code releases in press order (first down, first up)
 in (review 7); releasing one of its keys before an earlier one is refused (`out-of-order`, review 9), by the sequence
 preflight as well, and a later key stays down while an earlier one's release is unresolved (review 10); other combos
 keep newest first. A probed pair is admitted only between keys of the same combo: next to a separately held key it is
-refused, because only a combo releases in the qualified order (review 10). No MCP tool or TypeScript contract changed.
+refused, because only a combo releases in the qualified order (review 10). Such a combo takes at most two keys (only
+pairs were rolled), and recover() also releases a later key held back behind a refused release (review 11). No MCP tool or TypeScript contract changed.
 
 ### Record (2026-10-20)
 
