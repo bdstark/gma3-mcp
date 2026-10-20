@@ -1,4 +1,4 @@
-# SHEHDS 180 W beam: gobo, colour and prism
+# SHEHDS 180 W beam: gobo, colour, prism and frost
 
 What each wheel slot of the SHEHDS 180 W beam actually projects, from photos of one unit on a wall (2026-10-20).
 The fixture type in the show (type 3 "180W Beam Moving Head", converted from the grandMA2 library) has the wheels
@@ -68,7 +68,17 @@ The beam has one prism, on the console's Beam tab, second encoder.
 rings, 12 outside and 6 inside, with a dark centre and no copy in the middle. The copies' edges show slight yellow
 and blue fringes from the glass.
 
-The type has two effect wheels with media, E (2 slots) and E2 (3 slots). Which one the prism encoder drives is not
-recorded here.
+## Frost
 
-These names, swatches and the prism note have not been written to the show's fixture type yet.
+The Beam tab's third encoder has three positions:
+
+| Photo | Name | Seen as |
+| --- | --- | --- |
+| [0](shehds-180w-beam/frost-0.jpg) | Open | The hard-edged beam |
+| [1](shehds-180w-beam/frost-1.jpg) | Frost | No edge left: a wide, soft wash with a brighter middle |
+| [2](shehds-180w-beam/frost-2.jpg) | Light frost | The spot keeps its shape with a slightly softer edge; the photo shows magenta and cyan fringes on opposite sides |
+
+The type has two effect wheels with media, E (2 slots) and E2 (3 slots). The counts suggest the prism (open, prism)
+is E and the frost is E2, but that has not been checked against the type.
+
+These names, swatches and the prism and frost notes have not been written to the show's fixture type yet.
