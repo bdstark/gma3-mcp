@@ -2364,6 +2364,8 @@ function Instance:_rollbackCreated(created, assigned, bank)
       end
     elseif cls.state ~= "empty" then
       out.kept[#out.kept + 1] = { executor = ref, reason = "no longer holds the placeholder (" .. cls.state .. "); left alone" }
+      local qi = holder(cls)  -- another bank Quickey left on it (e.g. a mismatched readback) stays with it (review 8 of #75)
+      if qi then stillAssigned[qi] = ref end
     end
   end
   for i = #created, 1, -1 do
@@ -3016,6 +3018,7 @@ function Instance:tap(sessionId, now, spec, holdMs, ctx)
   -- down that long (review 4 of #75).
   -- (A non-table spec is left to _planPress, which refuses it as bad-argument; review 7 of #75.)
   local sp = type(spec) == "table" and spec or nil
+  if sp and sp.direct ~= nil and type(sp.direct) ~= "boolean" then return fail("bad-argument", "spec.direct must be a boolean (false forces the executor path)") end
   local directCandidate = type(self._adapter.tapDirect) == "function" and not (sp and (sp.direct == false or sp.exclusive))
     and (requestedHoldMs == nil or requestedHoldMs <= 50) and self:_liveQuickkeyCount() == 0
   local plan, perr = self:_planPress(sessionId, now, spec, { kind = "tap", fromSequence = ctx and ctx.fromSequence, direct = directCandidate or nil })
@@ -3046,6 +3049,7 @@ function Instance:_dispatchDirectTap(s, plan, now)
     local msg = type(aOk) == "table" and aOk.message or aOk
     local target = type(aOk) == "table" and type(aOk.target) == "table" and aOk.target or nil
     self:_dropHold(hold)
+    self._pressCount = self._pressCount + 1  -- it may have acted: it counts as a press (frame gates, review 8 of #75)
     return fail("press-uncertain", "direct tap raised an error: " .. tostring(msg) .. " (a direct tap leaves nothing down; whether it acted is unknown)", { uncertain = true, direct = true, target = target })
   end
   if aOk == false then

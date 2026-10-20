@@ -654,6 +654,13 @@ do
   for _ = 1, 10 do tq = tq + 0.03; inst:service(tq) end
   local rq = qr and inst:sequenceStatus(qr.id, tq)
   check("a sequence step whose direct tap raised is uncertain, not failed", rq and rq.events and rq.events[1] and rq.events[1].state == "uncertain", J(rq and rq.events))
+  -- #75 review 8: a non-boolean direct is refused, never taken as permission; an uncertain direct tap counts as a press.
+  local tb2, eb2 = inst:tap("s", 5.62, { key = "NUM5", direct = "false" }, 50)
+  check("a non-boolean direct override is refused as bad-argument", tb2 == nil and eb2.code == "bad-argument", J(eb2))
+  local pc0 = inst._pressCount
+  console.raise.qpress = "console busy"
+  inst:tap("s", 5.63, { key = "NUM5" }, 50)
+  check("an uncertain (raised) direct tap counts as a press", inst._pressCount == pc0 + 1, J({ pc0, inst._pressCount }))
   -- #75 review 7: a non-table spec is refused as a structured error, never a Lua raise.
   local okT, tb, eb = pcall(inst.tap, inst, "s", 5.65, 5, 50)
   check("tap() with a non-table spec returns an error instead of raising", okT and tb == nil and type(eb) == "table" and eb.code ~= nil, J({ ok = okT, err = eb }))
