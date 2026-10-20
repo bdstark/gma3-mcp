@@ -26,8 +26,8 @@ end
 local chunk = assert(loadfile(here .. "/../../plugin/gma3_mcp_hardkeys.lua"))
 local HK = chunk("test_plugin", "gma3_mcp_hardkeys", {}, nil)
 
-local VK = { [""] = 0, UNKNOWN = 0, MA1 = 1, MA2 = 2, X1 = 19, EXEC = 35, GO = 42, FIXTURE = 56, STORE = 66, NUM1 = 68, NUM5 = 72,
-             THRU = 78, PLEASE = 84, OOPS = 86, UNDO = 86, CLEAR = 87, ESC = 88 }
+local VK = { [""] = 0, UNKNOWN = 0, MA1 = 1, MA2 = 2, X1 = 19, EXEC = 35, GO = 42, FIXTURE = 56, STORE = 66, NUM1 = 68, NUM2 = 69, NUM5 = 72,
+             THRU = 78, AT = 82, PLEASE = 84, OOPS = 86, UNDO = 86, CLEAR = 87, ESC = 88 }
 
 -- Fake console -------------------------------------------------------------------
 local console
@@ -285,20 +285,27 @@ do
   before = #console.cmds
   inst:service(4.11)
   check("the chord releases newest first", J(cmdsSince(before)) == J({ "Unpress Page 1.191", "Unpress Page 1.190" }) and pressedCount() == 0, J(cmdsSince(before)))
-  -- KB-28 review 7: a combo with a peer-restricted code (NUM1, chordWith keypad) releases in press order, the
-  -- order its rolled pairs were qualified in.
+  -- KB-28 review 7: a combo with a probed code releases in press order, the order its rolled pairs were qualified
+  -- in (review 9: only the exact directed pairs the probe rolled, here NUM1>THRU).
   before = #console.cmds
-  c, err = inst:combo("s", 5, { { key = "NUM5" }, { key = "NUM1" } }, { holdMs = 100 })
-  check("a NUM5 + NUM1 combo reports press-order release", c and c.releaseOrder:find("^press order"), J(err or c))
+  c, err = inst:combo("s", 5, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 100 })
+  check("a NUM1 + THRU combo reports press-order release", c and c.releaseOrder:find("^press order"), J(err or c))
   local p1 = cmdsSince(before)
   before = #console.cmds
   inst:service(5.11)
-  check("...and releases NUM5 (first down) before NUM1", J(cmdsSince(before)) == J({ (p1[2]:gsub("^Press", "Unpress")), (p1[#p1]:gsub("^Press", "Unpress")) }) and pressedCount() == 0, J({ pressed = p1, released = cmdsSince(before) }))
+  check("...and releases NUM1 (first down) before THRU", J(cmdsSince(before)) == J({ (p1[2]:gsub("^Press", "Unpress")), (p1[#p1]:gsub("^Press", "Unpress")) }) and pressedCount() == 0, J({ pressed = p1, released = cmdsSince(before) }))
+  -- Review 9: a held press-order combo refuses an out-of-order constituent release.
+  local cu, erru = inst:combo("s", 5.5, { { key = "NUM1" }, { key = "THRU" } })
+  local rOut, eOut = inst:release("s", 5.51, { hold = cu and cu.holds[2].id })
+  check("releasing THRU before NUM1 in a held press-order combo is refused (out-of-order), nothing released", cu and rOut == nil and eOut.code == "out-of-order" and pressedCount() == 2, J({ erru = erru, eOut = eOut }))
+  local rIn = inst:release("s", 5.52, { hold = cu.holds[1].id })
+  local rIn2 = inst:release("s", 5.53, { hold = cu.holds[2].id })
+  check("...in press order both come up", rIn and rIn2 and pressedCount() == 0, J({ rIn and rIn.state, rIn2 and rIn2.state }))
   -- Review 8: the order is set before dispatch, so a rollback after a later key fails releases in press order too.
   local origPress, nPress = deps.executors.press, 0
   deps.executors.press = function(...) nPress = nPress + 1; if nPress == 3 then console.cmds[#console.cmds + 1] = "Press refused"; return false, "refused" end return origPress(...) end
   before = #console.cmds
-  local c3, err3 = inst:combo("s", 6, { { key = "NUM5" }, { key = "NUM1" }, { key = "THRU" } }, { holdMs = 100 })
+  local c3, err3 = inst:combo("s", 6, { { key = "NUM1" }, { key = "AT" }, { key = "NUM2" } }, { holdMs = 100 })
   deps.executors.press = origPress
   local seen = cmdsSince(before)
   local unpresses = {}; for _, cmd in ipairs(seen) do if cmd:find("^Unpress") then unpresses[#unpresses + 1] = cmd end end
@@ -342,11 +349,15 @@ do
   -- pair; THRU (chordWith digit) joins a held NUM5 but not a held STORE.
   h = inst:press("s", 2.8, { key = "NUM1" })
   h2, err = inst:press("s", 2.81, { key = "MA1" })
-  check("MA1 next to a held NUM1 is refused: NUM1's chord evidence covers keypad keys only", h and h2 == nil and err.reason == "capability" and err.heldKey == "NUM1" and pressedCount() == 1, J(err))
+  check("MA1 next to a held NUM1 is refused: NUM1>MA1 was never rolled", h and h2 == nil and err.reason == "capability" and err.heldKey == "NUM1" and pressedCount() == 1, J(err))
   inst:releaseAll("s", 2.82)
-  h = inst:press("s", 2.83, { key = "NUM5" })
+  h = inst:press("s", 2.83, { key = "NUM1" })
   h2, err = inst:press("s", 2.84, { key = "THRU" })
-  check("THRU joins a held digit (NUM5)", h and h2 and pressedCount() == 2, J(err))
+  check("THRU joins a held NUM1 (the probed pair NUM1>THRU)", h and h2 and pressedCount() == 2, J(err))
+  inst:releaseAll("s", 2.845)
+  h = inst:press("s", 2.846, { key = "NUM5" })
+  h2, err = inst:press("s", 2.847, { key = "THRU" })
+  check("THRU next to a held NUM5 is refused: NUM5>THRU was never rolled (review 9)", h and h2 == nil and err.heldKey == "NUM5", J(err))
   inst:releaseAll("s", 2.85)
   h = inst:press("s", 2.86, { key = "STORE" })
   h2, err = inst:press("s", 2.87, { key = "THRU" })
@@ -392,7 +403,7 @@ do
   console.quickeys[n5] = nil
   local h, err = inst:tap("s", 1, { key = "NUM5" }, 50)
   check("a deleted Quickey refuses the press (bank-object-missing), nothing issued, no record", h == nil and err.code == "unsupported" and err.message:find("was deleted") and #console.cmds == 0 and inst:status(1).holdCount == 0, J(err))
-  check("the bank reports the problem, nothing repaired", inst:bankStatus().state == "degraded" and (console.calls["quickeys.create"] or 0) == 13 and (console.calls["quickeys.set"] or 0) > 0 and backend.counters.press == 0, J(inst:bankStatus().codes[6]))
+  check("the bank reports the problem, nothing repaired", inst:bankStatus().state == "degraded" and (console.calls["quickeys.create"] or 0) == 15 and (console.calls["quickeys.set"] or 0) > 0 and backend.counters.press == 0, J(inst:bankStatus().codes[6]))
   console.quickeys[n5] = { name = "MCP NUM5", code = "NUM6", note = HK.bankMarkerText("bridge", inst:bankStatus().id, "NUM5", { page = 1, first = 190, count = 8 }) }
   h, err = inst:tap("s", 2, { key = "NUM5" }, 50)
   check("an operator edit (Code) refuses the press (bank-object-changed)", h == nil and err.message:find("was modified") and #console.cmds == 0, J(err))

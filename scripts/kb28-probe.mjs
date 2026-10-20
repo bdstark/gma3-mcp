@@ -124,8 +124,19 @@ return { quickey = q and { name = tostring(q.name), code = tostring(q:Get('Code'
 const readSlot = (conn, s) => lua(conn, readSlotLua(s));
 const MARKER = "kb28-probe";
 // Ownership is the name AND the marker Note setup writes; an executor is ours only while it holds our own Quickey.
-const ours = (s, st) => !!st.quickey && st.quickey.name === s.name && st.quickey.note === MARKER;
+// A Quickey this process stored at a verified-empty slot stays ours while its Note is the marker or still empty
+// (setup may have failed before the marker write, review 9), so a partial setup can be rolled back.
+const createdHere = new Set();
+const ours = (s, st) => !!st.quickey && ((st.quickey.name === s.name && st.quickey.note === MARKER)
+  || (createdHere.has(s.name) && (st.quickey.note === MARKER || st.quickey.note === "")));
 const execOurs = (s, st) => ours(s, st) && !!st.exec && st.exec !== "noobj" && st.exec.class === "Quickey" && st.exec.index === s.q;
+// The ownership guard every press and release runs in the SAME Lua request as its command (review 9): the slot's
+// Quickey (name, marker) and its executor holding exactly that Quickey. Returns a reason string when it fails.
+const guardLua = (s) => `local q = ObjectList('Quickey ${s.q}')[1]
+if not q or tostring(q.name) ~= '${s.name}' or tostring(q:Get('Note')) ~= '${MARKER}' then return 'not ours' end
+local h = ObjectList('Page ${EXP}.${s.e}')[1]
+local o = h and h:Get('Object')
+if not o or tostring(o:GetClass()) ~= 'Quickey' or tonumber(o.index) ~= ${s.q} then return 'executor not ours' end`;
 
 async function setup(conn) {
   for (const s of Object.values(SLOTS)) {
@@ -133,6 +144,7 @@ async function setup(conn) {
     if (st.quickey || st.exec) throw new Error(`Quickey ${s.q} or executor ${EXP}.${s.e} is not empty (${JSON.stringify(st)}); pick other slots with --quickey/--exec, or run "cleanup" after an aborted run`);
   }
   for (const s of Object.values(SLOTS)) {
+    createdHere.add(s.name);  // before the request: a Store that went through is ours even if the request fails
     const st = await lua(conn, `Cmd('Store Quickey ${s.q} /NoConfirmation')
 local q = ObjectList('Quickey ${s.q}')[1]
 if not q then return 'not created' end
@@ -155,7 +167,7 @@ async function cleanup(conn, unpressAll = false) {
   for (const s of Object.values(SLOTS)) {
     const st = await readSlot(conn, s);
     if (execOurs(s, st) && (pressed.has(s.name) || unpressAll)) {
-      const fu = await lua(conn, `return Cmd('Unpress Page ${EXP}.${s.e}')`);
+      const fu = await lua(conn, `${guardLua(s)}\nreturn Cmd('Unpress Page ${EXP}.${s.e}')`);
       if (!accepted(fu)) {
         // The key may still be down: deleting its assignment would leave it stuck (KB-10). Keep the slot for recovery.
         record(`${s.name}: Unpress refused (${fu}); Quickey ${s.q} and executor ${EXP}.${s.e} left in place for recovery`, false, fu);
@@ -178,23 +190,33 @@ async function cleanup(conn, unpressAll = false) {
 // Every rewrite (and so every press that follows it) re-verifies ownership: the name, the probe's marker Note and
 // the slot's executor still holding this Quickey (review 4). A replaced object is never written or pressed.
 async function code(conn, s, name) {
-  const back = await lua(conn, `local q = ObjectList('Quickey ${s.q}')[1]
-if not q or tostring(q.name) ~= '${s.name}' or tostring(q:Get('Note')) ~= '${MARKER}' then return 'not ours' end
-local h = ObjectList('Page ${EXP}.${s.e}')[1]
-local o = h and h:Get('Object')
-if not o or tostring(o:GetClass()) ~= 'Quickey' or tonumber(o.index) ~= ${s.q} then return 'executor not ours' end
+  const back = await lua(conn, `${guardLua(s)}
 q:Set('Code', '${name}')
 return tostring(q:Get('Code'))`);
   if (back !== name) throw new Error(`Quickey ${s.q} code ${name} reads back ${back}`);
+  s.code = name;  // what every later press of this slot must still find on it
 }
 // Marked pressed BEFORE the request: a request that times out may still have pressed the key.
-const press = (conn, s) => { pressed.add(s.name); return lua(conn, `return Cmd('Press Page ${EXP}.${s.e}')`); };
+// The press re-runs the ownership guard and checks the Code code() set, in the same request (review 9). A guard
+// failure presses nothing: the marker is cleared and the stage stops. A refused Press leaves nothing down either.
+const press = async (conn, s) => {
+  pressed.add(s.name);
+  const r = await lua(conn, `${guardLua(s)}
+if tostring(q:Get('Code')) ~= '${s.code}' then return 'code changed: ' .. tostring(q:Get('Code')) end
+return Cmd('Press Page ${EXP}.${s.e}')`);
+  if (!accepted(r)) pressed.delete(s.name);
+  if (r === "not ours" || r === "executor not ours" || String(r).startsWith("code changed")) throw new Error(`probe slot ${s.name}: ${r}; nothing pressed, stage stopped`);
+  return r;
+};
 // Only an accepted Unpress clears the marker: after a refused one the key may still be down, so cleanup must try
 // again before it deletes anything (review 5).
 // A refused Unpress also stops the stage (review 7): nothing may rewrite or press the slot while its key may be
 // down; the throw goes to the caller's finally, where cleanup releases the slot before deleting it.
+// The release re-runs the guard in the same request: an executor that no longer holds the probe's Quickey is never
+// unpressed (that would release whatever replaced it), and the marker stays for recovery (review 9).
 const unpress = async (conn, s) => {
-  const r = await lua(conn, `return Cmd('Unpress Page ${EXP}.${s.e}')`);
+  const r = await lua(conn, `${guardLua(s)}
+return Cmd('Unpress Page ${EXP}.${s.e}')`);
   if (!accepted(r)) throw new Error(`Unpress Page ${EXP}.${s.e} (${s.name}) was refused (${r}); stage stopped, the slot is kept for recovery`);
   pressed.delete(s.name);
   return r;
@@ -483,8 +505,10 @@ async function main() {
       await runType(A, argv.slice(1, end < 0 ? undefined : end));
     }
   } finally {
-    if (mode === "run" && ready) await clearLine(A);
+    // Cleanup first (review 9): a slot that may still be down is released (or kept) before anything else is sent,
+    // and Escape is never injected while such a slot remains; a failing line clear cannot skip the cleanup.
     const left = await cleanup(A);
+    if (mode === "run" && ready && pressed.size === 0) await clearLine(A).catch((e) => note("line clear after cleanup failed", String(e && e.message)));
     record("probe objects removed, slots empty", Object.values(left).every((st) => !st.quickey && !st.exec), left);
     record("MASTATE false at the end", (await readMa(A)) === false);
   }
