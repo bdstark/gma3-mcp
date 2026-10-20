@@ -2650,7 +2650,14 @@ function Instance:teardownBank(now, opts)
     for _, x in ipairs(bank.executors) do byRef[string.format("%d.%d", x.page, x.index)] = x end
     for _, e in ipairs(remaining) do
       local holderX = not e.placeholder and keep[e.index] and byRef[keep[e.index]]
-      if holderX then bank.staticByCode[e.name] = holderX end
+      if holderX and holderX ~= bank.staticByCode[e.name] then
+        -- The executor records follow (review 16): the old executor no longer stands for this code, the holder does,
+        -- so a retried teardown's unreadable fallback keeps the Quickey that is really there.
+        local old = bank.staticByCode[e.name]
+        if old and old.code == e.name then old.code = nil end
+        holderX.code = e.name
+        bank.staticByCode[e.name] = holderX
+      end
     end
   end
   local summary

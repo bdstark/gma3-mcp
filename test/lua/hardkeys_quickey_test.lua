@@ -1021,6 +1021,12 @@ do
     deps.executors.clear = function(page, index) if page == 1 and index == stE9 then return false, "refused" end return origClear(page, index) end
     local t9 = i9:teardownBank(1, { authorized = true })
     deps.executors.clear = origClear
+    -- Review 16: a retried teardown with that executor unreadable still keeps MA1 (the executor record follows).
+    local origRead = deps.executors.read
+    deps.executors.read = function(page, index) if page == 1 and index == stE9 then error("read failed", 0) end return origRead(page, index) end
+    local t9b = i9:teardownBank(1.5, { authorized = true })
+    deps.executors.read = origRead
+    check("a retried teardown with the holder unreadable keeps the moved Quickey", t9b and t9b.complete == false and console.quickeys[maQ9] ~= nil, J({ complete = t9b and t9b.complete, skipped = t9b and t9b.skipped }))
     local d9 = i9:dispose(2)
     local maRec9; for _, c in ipairs(d9.bank and d9.bank.codes or {}) do if c.name == "MA1" then maRec9 = c end end
     check("the record maps the kept MA1 to the executor that holds it", t9 and t9.complete == false and console.quickeys[maQ9] ~= nil and maRec9 and maRec9.executor == stE9, J({ rec = maRec9, at = stE9, skipped = t9 and t9.skipped }))
