@@ -1413,7 +1413,9 @@ earlier keys of its group due with it, and the sequence and interaction cleanup 
 behind an unresolved release (`blocked`, review 14). The pairs were released one frame per key as well, so a separating backend also
 breaks the frame between an ordered group's releases and before a rollback; a break that raises keeps the later key
 down as `blocked` (review 16). `gma3_hardkeys_release_all`, sequence warnings and the bridge log name blocked keys,
-and adoption reports a changed `chordWith` in `requalified`. No MCP tool or TypeScript contract changed.
+and adoption reports a changed `chordWith` in `requalified`. Without a separator (an ordered group adopted onto a plain backend) the
+later key is released by the next release call, a later frame, and a rollback whose frame break raises keeps the
+earlier keys down for a later release (review 17). No MCP tool or TypeScript contract changed.
 
 ### Record (2026-10-20)
 

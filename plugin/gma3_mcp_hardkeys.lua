@@ -3213,10 +3213,19 @@ function Instance:combo(sessionId, now, specs, opts)
       -- the rollback, so recover() keeps first down, first up (review 13).
       local uh = type(derr) == "table" and derr.hold and self._holds[derr.hold] or nil
       if uh then uh.group, uh.groupIndex, uh.releaseInPressOrder = group, i, pressOrder or nil end
-      -- Review 16: an ordered pair's rollback goes out in a later frame than the press that failed.
-      if pressOrder and #holds > 0 and self:_separatesFrames() then pcall(self._adapter.separateFrames, self._adapter) end
-      local rollback = self:_releaseHolds(holds, now, "combo-aborted")
-      derr.message = "key " .. i .. " of the combo: " .. tostring(derr.message) .. string.format("; %d key(s) pressed before it were released (%d released, %d unresolved)", #holds, #rollback.released, #rollback.unresolved)
+      -- Review 16: an ordered pair's rollback goes out in a later frame than the press that failed. When that break
+      -- raises (review 17), the earlier keys stay down (blocked) for a later release, service() or recover().
+      local rollback
+      if pressOrder and #holds > 0 and not (self:_separatesFrames() and pcall(self._adapter.separateFrames, self._adapter)) then
+        rollback = { released = {}, unresolved = {}, attempted = 0, blocked = {} }
+        for _, h in ipairs(holds) do
+          h.blockedRelease = true
+          rollback.blocked[#rollback.blocked + 1] = { hold = h.id, logical = h.logical, after = uh and uh.id or nil, reason = "the frame break before the rollback raised" }
+        end
+      else
+        rollback = self:_releaseHolds(holds, now, "combo-aborted")
+      end
+      derr.message = "key " .. i .. " of the combo: " .. tostring(derr.message) .. string.format("; %d key(s) pressed before it were released (%d released, %d unresolved, %d still held for a later release)", #holds, #rollback.released, #rollback.unresolved, rollback.blocked and #rollback.blocked or 0)
       derr.key = i
       derr.pressed = {}
       for _, h in ipairs(holds) do derr.pressed[#derr.pressed + 1] = self:_holdReport(h, now) end
@@ -5065,9 +5074,11 @@ end
 -- Review 16: the probed pairs were also RELEASED one request (frame) per key, so consecutive releases inside one
 -- ordered group are separated the same way. Returns true when the next release may go out (no break needed, or the
 -- break went through), false when the break raised (the caller keeps the key down, reported as blocked).
+-- Without a separator (an ordered group adopted onto a plain backend, review 17) the later key is not released in the
+-- same call: it stays blocked and the next release call (a later frame) releases it.
 function Instance:_orderedFrameBreak(prev, h)
   if not (prev and h.releaseInPressOrder and h.group and prev.group == h.group) then return true end
-  if not self:_separatesFrames() then return true end
+  if not self:_separatesFrames() then return false end
   local ok = pcall(self._adapter.separateFrames, self._adapter)
   return ok
 end
@@ -5531,7 +5542,7 @@ function Instance:_releaseHolds(list, now, reason)
     elseif (h.state == "held" or h.state == "unresolved" or h.state == "releasing") and not self:_orderedFrameBreak(prev, h) then
       h.blockedRelease = true
       out.blocked = out.blocked or {}
-      out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = prev.id, reason = "the frame break before its release raised" }
+      out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = prev.id, reason = self:_separatesFrames() and "the frame break before its release raised" or "no frame separator: released by the next release call (a later frame)" }
     elseif h.state == "held" or h.state == "unresolved" or h.state == "releasing" then
       prev = h
       out.attempted = out.attempted + 1

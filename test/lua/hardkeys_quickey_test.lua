@@ -382,6 +382,22 @@ do
   console.raise.frame = "frame break failed"
   local c2, err2 = inst:combo("s", 2, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 100 })
   check("a raising frame break releases the first key and does not press the second", c2 == nil and err2.key == 2 and err2.rollback and #err2.rollback.released == 1 and pressedCount() == 0, J(err2))
+  -- Review 17: when the second press raises and the break before the rollback raises too, NUM1 stays down for later.
+  do
+    local _, be = nil, nil
+    local origPress, nP = deps.executors.press, 0
+    deps.executors.press = function(...) nP = nP + 1; if nP == 2 then error("press wedged", 0) end return origPress(...) end
+    local nF = 0
+    local adapter = inst._adapter
+    local origSep = adapter.separateFrames
+    adapter.separateFrames = function(...) nF = nF + 1; if nF == 2 then error("break wedged", 0) end return origSep(...) end
+    local cr2, er2 = inst:combo("s", 2.5, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 100 })
+    deps.executors.press, adapter.separateFrames = origPress, origSep
+    local n1Down = false; for _, qi in pairs(console.pressed) do if console.quickeys[qi] and console.quickeys[qi].code == "NUM1" then n1Down = true end end
+    check("a raising break before the rollback keeps the first key down (blocked), nothing released in that frame", cr2 == nil and er2.rollback and #er2.rollback.released == 0 and #er2.rollback.blocked == 1 and n1Down, J({ err = er2, pressed = console.pressed }))
+    inst:recover(nil, 2.6); inst:recover(nil, 2.7)
+    check("...recover() releases it and the uncertain second key later", pressedCount() == 0 and inst:status(2.7).unresolved == 0, J(inst:status(2.7).holds))
+  end
   -- Comment: the group takes its earliest maximum hold, so THRU (1 s) is never held past its bound by NUM1 (30 s).
   local c3 = inst:combo("s", 3, { { key = "NUM1", maxHoldMs = 30000 }, { key = "THRU", maxHoldMs = 1000 } })
   local d1, d2 = c3 and inst._holds[c3.holds[1].id].deadline, c3 and inst._holds[c3.holds[2].id].deadline
@@ -907,6 +923,25 @@ do
   local unp = {}; for _, cmd in ipairs(cmdsSince(before)) do if cmd:find("^Unpress") then unp[#unp + 1] = cmd end end
   check("after adoption recover() releases the combo first down, first up", #unp == 2 and unp[1] == ("Unpress Page 1." .. tostring(n1Exec)) and pressedCount() == 0, J(cmdsSince(before)))
   inst2:dispose(6)
+  -- Review 17: adopted onto a backend without a frame separator, the group is released one key per recover() call.
+  do
+    local i4 = fresh()
+    local c4 = i4:combo("s", 1, { { key = "NUM1" }, { key = "THRU" } })
+    console.fail.unpress = { err = "Object not found" }
+    local d4 = i4:dispose(2)
+    console.fail.unpress = nil
+    local i5 = newInst()
+    i5:adopt(d4.records, 3)
+    assert(i5:enableInput(HK.quickeyBackend(i5)))
+    i5:adoptBank(d4.bank, 4)
+    local b1 = #console.cmds
+    local r1 = i5:recover(nil, 5)
+    local u1 = {}; for _, cmd in ipairs(cmdsSince(b1)) do if cmd:find("^Unpress") then u1[#u1 + 1] = cmd end end
+    check("without a separator recover() releases only the first key of an adopted ordered group", c4 and #u1 == 1 and u1[1] == ("Unpress Page 1." .. c4.holds[1].target.executor) and r1.blocked and #r1.blocked == 1 and pressedCount() == 1, J({ u1 = u1, blocked = r1.blocked }))
+    i5:recover(nil, 6)
+    check("...and the next recover() call releases the later key", pressedCount() == 0, J(i5:status(6).holds))
+    i5:dispose(7)
+  end
   -- The sequence preflight sees a live ordered combo of the session.
   local inst3 = fresh()
   local c3 = inst3:combo("s", 1, { { key = "NUM1" }, { key = "THRU" } })
