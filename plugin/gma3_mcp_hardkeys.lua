@@ -2701,14 +2701,16 @@ function Instance:adoptBank(record, now)
   -- from the first executor would move them.
   local positions
   if s.executors.static then
-    local all, any = true, false
+    local all, any, hasCode = true, false, false
     for _, c in ipairs(record.codes) do
       if type(c) == "table" and not c.placeholder then
+        hasCode = true
         if type(c.executor) == "number" then positions = positions or {}; positions[c.name] = c.executor; any = true else all = false end
       end
     end
     if any and not all then return fail("bad-argument", "the static record gives an executor for some codes but not all") end
-    if partial and not any then return fail("bad-argument", "the partial static record does not carry its codes' executors, so their original positions are unknown; tear it down from its own version or delete the objects by hand") end
+    -- Only the placeholder left (review 12): no code has a position to lose.
+    if partial and hasCode and not any then return fail("bad-argument", "the partial static record does not carry its codes' executors, so their original positions are unknown; tear it down from its own version or delete the objects by hand") end
   end
   local okMap, mapErr = applyStaticMap(bank, positions)
   if not okMap then return fail("bad-argument", "the record's " .. mapErr) end

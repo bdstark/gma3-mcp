@@ -892,6 +892,21 @@ do
     deps.executors.clear = origClear
     check("teardown keeps the Quickey the executor holds after the clear, not the one it held before", t5 and t5.complete == false and console.quickeys[stQ5] ~= nil and console.quickeys[maQ5] == nil and console.executors["1." .. maE5].quickey == stQ5, J({ complete = t5 and t5.complete, skipped = t5 and t5.skipped }))
   end
+  -- #75 review 12: when only a placeholder executor cannot be cleared, the partial record holds just the placeholder
+  -- (no code, so no position) and is adopted for cleanup.
+  do
+    newConsole(); pageWithExecutors(1, 190, 40)
+    local i6 = newInst()
+    assert(i6:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 40, static = true }, codes = "qualified" }, 0))
+    local origClear = deps.executors.clear
+    deps.executors.clear = function(page, index) if page == 1 and index == 229 then return false, "refused" end return origClear(page, index) end
+    local t6 = i6:teardownBank(1, { authorized = true })
+    deps.executors.clear = origClear
+    local d6 = i6:dispose(2)
+    local onlyPh = d6.bank and #d6.bank.codes == 1 and d6.bank.codes[1].placeholder
+    local a6, e6 = newInst():adoptBank(d6.bank, 3)
+    check("a placeholder-only partial static record is adopted for cleanup", t6 and t6.complete == false and onlyPh and a6 ~= nil, J({ complete = t6 and t6.complete, codes = d6.bank and d6.bank.codes, err = e6 }))
+  end
   -- #75 review 10: an executor press that raised may have acted, so it counts as a press for the frame gates.
   do
     local inst3 = fresh()

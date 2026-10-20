@@ -1467,7 +1467,7 @@ per key. The operator asked for less noise and work per key, and for a static as
   an executor that was not confirmed empty: a refused clear, or an unreadable executor or readback (reviews 6, 8, 9, 10),
   and after a returned clear the Quickey a readable readback shows (review 11). A static bank's record carries each
   code's executor, so a partially torn-down bank is adopted with its original layout; a partial static record
-  without it is refused (review 11).
+  without it is refused (review 11), unless only the placeholder is left (review 12).
 
 **Record (2026-10-20):** `scripts/kb28-probe.mjs --direct` on onPC 2.5.1.0 ([record](docs/probes/kb-29-direct-taps-macos-2.5.1.md)):
 26/26 on the command line (one token or action per tap, nothing more 300 ms later; Highlight toggled once; Full set
