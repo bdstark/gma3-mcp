@@ -8,7 +8,8 @@
 //   node scripts/kb28-probe.mjs run    [--codes NUM0,NUM2,...] [--out report.json]   command line: taps, holds, rolling pairs, toggles
 //   node scripts/kb28-probe.mjs popup  [--out report.json]                            Edit Command pop-up open and empty (opened by hand)
 //   node scripts/kb28-probe.mjs type   NUM1 DOT NUM5                                  one key per request, nothing read (screenshot check)
-//   node scripts/kb28-probe.mjs cleanup                                               removes the probe objects of an aborted run
+//   node scripts/kb28-probe.mjs cleanup [--unpress]                                   removes the probe objects of an aborted run
+//                                                                                    (--unpress: Unpress them first, if a key may be down)
 //
 // Options: --quickey N (probe Quickeys N and N+1, default 960), --exec P.E (probe executors P.E and P.E+1, default
 // 1.190). Every slot must be empty at the start; the probe only deletes objects it can identify as its own (name
@@ -118,11 +119,13 @@ const SLOTS = { A: { q: QK, e: EXE, name: "KB28 A" }, B: { q: QK + 1, e: EXE + 1
 const readSlotLua = (s) => `local q = ObjectList('Quickey ${s.q}')[1]
 local h = ObjectList('Page ${EXP}.${s.e}')[1]
 local o = h and h:Get('Object')
-return { quickey = q and { name = tostring(q.name), code = tostring(q:Get('Code')) } or false,
+return { quickey = q and { name = tostring(q.name), code = tostring(q:Get('Code')), note = tostring(q:Get('Note')) } or false,
   exec = h and (o and { class = tostring(o:GetClass()), name = tostring(o.name), index = tonumber(o.index) } or 'noobj') or false }`;
 const readSlot = (conn, s) => lua(conn, readSlotLua(s));
-const ours = (s, st) => st.quickey && st.quickey.name === s.name;
-const execOurs = (s, st) => st.exec && st.exec !== "noobj" && st.exec.class === "Quickey" && st.exec.index === s.q;
+const MARKER = "kb28-probe";
+// Ownership is the name AND the marker Note setup writes; an executor is ours only while it holds our own Quickey.
+const ours = (s, st) => !!st.quickey && st.quickey.name === s.name && st.quickey.note === MARKER;
+const execOurs = (s, st) => ours(s, st) && !!st.exec && st.exec !== "noobj" && st.exec.class === "Quickey" && st.exec.index === s.q;
 
 async function setup(conn) {
   for (const s of Object.values(SLOTS)) {
@@ -133,7 +136,7 @@ async function setup(conn) {
     const st = await lua(conn, `Cmd('Store Quickey ${s.q} /NoConfirmation')
 local q = ObjectList('Quickey ${s.q}')[1]
 if not q then return 'not created' end
-q:Set('Name', '${s.name}'); q:Set('Note', 'kb28-probe')
+q:Set('Name', '${s.name}'); q:Set('Note', '${MARKER}')
 Cmd('Assign Quickey ${s.q} At Page ${EXP}.${s.e}')
 return true`);
     if (st !== true) throw new Error(`creating Quickey ${s.q}: ${st}`);
@@ -142,10 +145,20 @@ return true`);
   }
 }
 
-async function cleanup(conn) {
+// Slots this process pressed and has not released. Deleting or reassigning an executor during a hold leaves the
+// key down (KB-10), so cleanup releases them first. A separate "cleanup" process cannot know what an aborted run
+// left pressed: --unpress makes it issue Unpress on its own executors before deleting (the operator's decision;
+// an Unpress of a key that is not down is not qualified).
+const pressed = new Set();
+async function cleanup(conn, unpressAll = false) {
   const out = {};
   for (const s of Object.values(SLOTS)) {
     const st = await readSlot(conn, s);
+    if (execOurs(s, st) && (pressed.has(s.name) || unpressAll)) {
+      const fu = await lua(conn, `return Cmd('Unpress Page ${EXP}.${s.e}')`);
+      pressed.delete(s.name);
+      note(`${s.name}: released before cleanup`, fu);
+    }
     if (execOurs(s, st)) await lua(conn, `Cmd('Delete Page ${EXP}.${s.e} /NoConfirmation'); return true`);
     else if (st.exec) note(`executor ${EXP}.${s.e} left in place`, st.exec);
     if (ours(s, st)) await lua(conn, `Cmd('Delete Quickey ${s.q} /NoConfirmation'); return true`);
@@ -163,8 +176,9 @@ q:Set('Code', '${name}')
 return tostring(q:Get('Code'))`);
   if (back !== name) throw new Error(`Quickey ${s.q} code ${name} reads back ${back}`);
 }
-const press = (conn, s) => lua(conn, `return Cmd('Press Page ${EXP}.${s.e}')`);
-const unpress = (conn, s) => lua(conn, `return Cmd('Unpress Page ${EXP}.${s.e}')`);
+// Marked pressed BEFORE the request: a request that times out may still have pressed the key.
+const press = (conn, s) => { pressed.add(s.name); return lua(conn, `return Cmd('Press Page ${EXP}.${s.e}')`); };
+const unpress = async (conn, s) => { const r = await lua(conn, `return Cmd('Unpress Page ${EXP}.${s.e}')`); pressed.delete(s.name); return r; };
 const accepted = (fbText) => typeof fbText === "string" && fbText.startsWith("OK");
 
 /** Escape through Keyboard() (an ESC Quickey never touches the command line, KB-10), up to three times: a
@@ -186,6 +200,7 @@ async function settle(reader, from, ms = 600) {
 // One tap through the executor: Press, read in the chunk and on the next request, Unpress, read again.
 async function tap(conn, s, name) {
   await code(conn, s, name);
+  pressed.add(s.name);
   const r = await lua(conn, `local before = CmdObj().cmdtext
 local fp = Cmd('Press Page ${EXP}.${s.e}')
 local imm = CmdObj().cmdtext
@@ -267,6 +282,18 @@ async function runCmdline(A, codes) {
     await press(A, SLOTS.A); await unpress(A, SLOTS.A);
     const v3 = await settle(read, v2);
     const line = await readCmd(A);
+    // Sustained hold: down for 1.5 s, the mode flips once and stays (no repeat), Unpress leaves it.
+    const h0 = await read();
+    const hp = await press(A, SLOTS.A);
+    const h1 = await settle(read, h0);
+    await sleep(1500);
+    const h2 = await read();
+    const hu = await unpress(A, SLOTS.A);
+    await sleep(400);
+    const h3 = await read();
+    await press(A, SLOTS.A); await unpress(A, SLOTS.A);
+    const h4 = await settle(read, h3);
+    record(`${name} hold: down 1.5 s flips ${reader} once and keeps it, Unpress leaves it`, accepted(hp) && accepted(hu) && h1 !== h0 && h2 === h1 && h3 === h1 && h4 === h0, { h0, h1, h2, h3, h4 });
     record(`${name}: Press toggles ${reader} once, Unpress leaves it, a second tap restores it`, accepted(fp) && accepted(fu) && v0 !== undefined && v1 !== v0 && v2 === v1 && v3 === v0 && line === "", { v0, v1, v2, v3, line });
   }
 }
@@ -295,6 +322,18 @@ async function runFull(A) {
   const d2 = await dimmer(A);
   const line2 = await readCmd(A);
   record(`FULL with Fixture ${FIXTURE} selected sets Dimmer 100 on Press, nothing more on Unpress`, accepted(fp) && accepted(fu) && d1 === 100 && d2 === 100 && line1 === "" && line2 === "", { sel0, d0, d1, line1, d2, line2 });
+  // Sustained hold: FULL down for 1.5 s on a cleared programmer acts once (Dimmer 100, line empty, MA untouched).
+  await lua(A, `Cmd('ClearAll'); Cmd('Fixture ${FIXTURE}'); return true`);
+  const fp2 = await press(A, SLOTS.A);
+  const e1 = await dimmer(A);
+  await sleep(1500);
+  const e2 = await dimmer(A);
+  const lineH = await readCmd(A);
+  const maH = await readMa(A);
+  const fu2 = await unpress(A, SLOTS.A);
+  await sleep(300);
+  const e3 = await dimmer(A);
+  record(`FULL hold: down 1.5 s with Fixture ${FIXTURE} selected sets Dimmer 100 once, nothing on Unpress`, accepted(fp2) && accepted(fu2) && e1 === 100 && e2 === 100 && e3 === 100 && lineH === "" && maH === false, { e1, e2, lineH, maH, e3 });
   await lua(A, "Cmd('ClearAll'); return true");
 }
 
@@ -340,7 +379,7 @@ async function main() {
   await A.connect();
   const ping = await preflight(A);
   if (mode === "cleanup") {
-    note("cleanup", await cleanup(A));
+    note("cleanup", await cleanup(A, argv.includes("--unpress")));
     await A.end();
     return { ping };
   }

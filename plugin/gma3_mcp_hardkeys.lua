@@ -2481,13 +2481,39 @@ function Instance:adoptBank(record, now)
                  codes = {}, byName = {}, byIndex = {}, executors = {}, exclusions = record.exclusions or {}, aliases = record.aliases or {}, unresolvedAliases = record.unresolvedAliases or {},
                  enumEntries = record.enumEntries, counters = { created = 0, reused = 0, verifications = 0, targetChecks = 0, refusedTargets = 0 } }
   local hasPlaceholder = false
+  -- A record kept by an older module carries that module's qualification. The flags are evidence about the
+  -- code, not about the objects, so they are recomputed from this module's table (KB-28 qualified codes a
+  -- 0.10.0 record lists as discovered); requalified names the codes whose flags changed.
+  local requalified = {}
   for _, c in ipairs(record.codes) do
     if type(c) == "table" and type(c.name) == "string" and type(c.index) == "number" then
       local e = { name = c.name, value = c.value, index = c.index, qualified = c.qualified, note = c.note, placeholder = c.placeholder and true or nil, state = "unverified" }
-      if e.placeholder then hasPlaceholder = true end
+      if e.placeholder then hasPlaceholder = true else
+        local q = BANK_QUALIFIED[e.name]
+        local now_ = q and shallowCopy(q) or false
+        local was = type(c.qualified) == "table" and c.qualified or false
+        if (now_ == false) ~= (was == false) or (now_ and (now_.tap ~= was.tap or now_.hold ~= was.hold or now_.chord ~= was.chord)) then requalified[#requalified + 1] = e.name end
+        e.qualified, e.note = now_, (q and q.note) or BANK_UNQUALIFIED_NOTES[e.name]
+      end
       bank.codes[#bank.codes + 1] = e; bank.byName[e.name], bank.byIndex[e.index] = e, e
     end
   end
+  -- Qualified codes the kept bank does not contain (a "qualified" bank provisioned before they had evidence):
+  -- adoption creates nothing, so they stay unavailable until the operator tears the bank down and provisions it
+  -- again. An explicit code list is the operator's choice and is not reported.
+  local missing = {}
+  if s.codes == "qualified" then
+    -- Only codes this console has (Enums.VirtualKeyCode, read best-effort: unreadable means nothing is reported).
+    local d = self:_bankDeps()
+    local okV, vk = pcall(function() return d and d.virtualKeyCodes() end)
+    if okV and type(vk) == "table" then
+      local q = discoverBankCodes(vk, "qualified")
+      for _, c in ipairs(q and q.codes or {}) do if not bank.byName[c.name] then missing[#missing + 1] = c.name end end
+      table.sort(missing)
+    end
+  end
+  bank.requalified = #requalified > 0 and requalified or nil
+  bank.missingQualified = #missing > 0 and missing or nil
   if #bank.codes == 0 then return fail("bad-argument", "the record lists no codes") end
   -- A partially torn-down bank legitimately lacks the placeholder (deleted with the rest): it is adopted for
   -- cleanup only. A complete record without it predates the executor reservation and is refused.
@@ -2552,8 +2578,9 @@ function Instance:_bankSummary(now, extra)
                 codeCount = #codes, qualifiedCount = qualified, discoveredCount = discovered, problemCount = problems,
                 codes = codes, placeholder = placeholder, executors = executors, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries,
                 createdAt = bank.createdAt, adoptedAt = bank.adoptedAt, verifiedAt = bank.verifiedAt, checkedAt = bank.checkedAt, counters = shallowCopy(bank.counters), problems = bank.problems,
-                record = self:_bankRecord(),
-                note = "qualified = KB-10 evidence per code (tap/hold/chord); discovered codes are provisioned but a backend must not advertise them; reserved executors hold the bank's code-less placeholder Quickey so the claim is visible to other consumers; every dispatch re-reads the show identity and its Quickey (bankTarget) and nothing is ever repaired" }
+                record = self:_bankRecord(), requalified = bank.requalified, missingQualified = bank.missingQualified,
+                reprovision = bank.missingQualified and ("this bank lacks " .. #bank.missingQualified .. " qualified code(s) (" .. table.concat(bank.missingQualified, " ") .. "): tear it down and provision it again to route them as Quickeys") or nil,
+                note = "qualified = KB-10/KB-28 evidence per code (tap/hold/chord); discovered codes are provisioned but a backend must not advertise them; reserved executors hold the bank's code-less placeholder Quickey so the claim is visible to other consumers; every dispatch re-reads the show identity and its Quickey (bankTarget) and nothing is ever repaired" }
   if extra then for k, v in pairs(extra) do out[k] = v end end
   return out
 end

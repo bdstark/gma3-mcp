@@ -275,6 +275,14 @@ do
   local inst6 = newInst()
   local r7 = inst6:provisionBank(spec({ codes = "qualified" }), 7)
   check("codes=qualified provisions the evidenced codes plus the placeholder", r7 and r7.codeCount == NQUAL and r7.discoveredCount == 0 and console.quickeys[900 + NQUAL - 1] ~= nil and console.quickeys[900 + NQUAL].code == "" and console.quickeys[900 + NQUAL + 1] == nil, J(r7 and r7.codeCount))
+  -- A "qualified" bank provisioned before a code had evidence lacks it: adoption names it and the remedy.
+  local rec7 = inst6:dispose(7.1).bank
+  local kept = {}
+  for _, c in ipairs(rec7.codes) do if c.name ~= "NUM9" then kept[#kept + 1] = c end end
+  rec7.codes = kept
+  local inst7 = newInst()
+  local a7 = inst7:adoptBank(rec7, 7.2)
+  check("adopting a qualified bank that lacks a qualified code reports it with the reprovision remedy, creating nothing", a7 and J(a7.missingQualified) == J({ "NUM9" }) and a7.reprovision:find("tear it down and provision it again") and console.quickeys[900 + NQUAL + 1] == nil, J(a7 and { a7.missingQualified, a7.reprovision }))
 end
 
 -------------------------------------------------------------------------------
@@ -531,6 +539,16 @@ do
   local a, err = inst2:adoptBank(dis.bank, 3)
   check("adoptBank verifies and reuses the objects without creating", a and a.adopted and a.state == "ready" and a.codeCount == NCODES and console.calls["quickeys.create"] == creates, J(err or a.problems))
   check("adopted bank serves targets and executors", inst2:bankTarget("STORE", 3) ~= nil and inst2:bankExecutor(190, 3).state == "reserved")
+  -- KB-28 review: a record kept by an older module carries that module's flags. Adoption recomputes them and
+  -- reports qualified codes a "qualified" bank lacks (it creates nothing).
+  local instC = newInst(); instC:adoptBank(dis.bank, 3.05)
+  local oldRec = instC:dispose(3.1).bank
+  for _, c in ipairs(oldRec.codes) do if c.name == "EDIT" then c.qualified = false end if c.name == "NUM1" then c.qualified = { tap = true, hold = true, chord = false } end end
+  local instR = newInst()
+  local ar = instR:adoptBank(oldRec, 3.2)
+  local edit; for _, c in ipairs(ar.codes) do if c.name == "EDIT" then edit = c end end
+  check("adoption recomputes each code's qualification from the loaded module and names the changed codes", ar.state == "ready" and edit.qualified and edit.qualified.hold == true and J(ar.requalified) == J({ "EDIT", "NUM1" }) and ar.missingQualified == nil and ar.reprovision == nil, J({ ar.requalified, edit }))
+  instR:dispose(3.3)
   local inst3 = newInst("surface")
   a, err = inst3:adoptBank(dis.bank, 4)
   check("a record of another owner is not adopted", a == nil and err.code == "bank-foreign-owner", J(err))

@@ -3,7 +3,7 @@
 Date: 2026-10-20. Evidence for [KEYBOARD.md](../../KEYBOARD.md) "KB-28". Question under test: do the codes the NX-K
 surface still sends through the keyboard shortcut table (which does not reach pop-ups and dialogs) behave like the
 KB-10 codes on the executor path, so `gma3_mcp_hardkeys` can qualify them? Script: `scripts/kb28-probe.mjs`; reports:
-[run](kb-28-quickey-codes-run-macos-2.5.1.json) (70/70) and [pop-up](kb-28-quickey-codes-popup-macos-2.5.1.json).
+[run](kb-28-quickey-codes-run-macos-2.5.1.json) (72/72) and [pop-up](kb-28-quickey-codes-popup-macos-2.5.1.json).
 
 **Result: 24 more codes qualified for tap and hold, 18 of them for chords.** Every code below put exactly one token on
 the command line (or acted once) on `Press Page P.E`, added nothing on `Unpress`, and did not repeat while held for
@@ -21,7 +21,7 @@ Please entered and accepted a value in an encoder's calculator pop-up (Dimmer 75
 | Other key sources | the NX-K surface plugin stopped (the probe refuses to run while `_G.__mtpnxk_surface.running`); no physical key was used. Desktop control only opened the pop-ups and cancelled one dialog (below) |
 | Clearing | `Keyboard(1,'press','Escape')` up to three times on the command line; `CLEAR` (KB-10) inside the pop-up |
 
-## Command line (`run`, 70/70)
+## Command line (`run`, 72/72)
 
 | Code | Press puts | Hold 1.5 s | Rolled with digits |
 | --- | --- | --- | --- |
@@ -33,8 +33,8 @@ Please entered and accepted a value in an encoder's calculator pop-up (Dimmer 75
 | CUE / GROUP | `Cue ` / `Group ` | one token | yes: `1 Cue `, `Cue 2`, `1 Group `, `Group 2` |
 | PREVIEW | `Preview ` (a keyword, not the preview-mode toggle: the mode stayed `Normal`) | one token | yes: `1 Preview `, `Preview Cue 2` |
 | COPY / MOVE / DELETE / MACRO | `Copy ` / `Move ` / `Delete ` / `Macro ` | one token | **not qualified**, see below |
-| FULL | nothing on an empty selection; with Fixture 101 selected, Dimmer 100 in the programmer, line empty | Dimmer stays 100, nothing more on Unpress | not tested |
-| HIGHLIGHT | toggles Highlight once (the reader shows it a frame later); Unpress leaves it; a second tap restores it | — | not tested |
+| FULL | nothing on an empty selection; with Fixture 101 selected, Dimmer 100 in the programmer, line empty | held 1.5 s on a cleared programmer: Dimmer 100 once, line empty, MA untouched, nothing on Unpress | not tested |
+| HIGHLIGHT | toggles Highlight once (the reader shows it a frame later); Unpress leaves it; a second tap restores it | held 1.5 s: flipped once and stayed, Unpress left it | not tested |
 
 NUM1 and THRU (KB-10: chord not qualified) now have rolled-pair evidence (`12`, `1.`, `1 Thru `, `Thru 8`).
 
@@ -94,5 +94,6 @@ afterwards.
 
 - One onPC, one show and user, macOS; no physical keys. Stuck-key recovery (a direct `Unpress Quickey`) was not tested
   for any new code and stays qualified for MA1 only.
+- Probe objects are owned by name and the `kb28-probe` Note; cleanup releases a slot this process pressed before deleting it (`cleanup --unpress` for an aborted run).
 - The bridge in this show was 0.25.1; the probe depends only on `lua`, `ping`, `feedback.read` and `programmer`.
 - Rolled pairs cover the listed combinations, not every pair; release order was always first-down first-up.

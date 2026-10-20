@@ -108,3 +108,14 @@ test("a refused connection aborts with exit 2 instead of exiting silently", asyn
   assert.equal(r.status, 2, r.stdout + r.stderr);
   assert.match(r.stderr, /cannot connect to the bridge/);
 });
+
+test("cleanup leaves a foreign Quickey named like a probe slot (no marker) and its executor in place", async () => {
+  const c = fakeConsole(ping(), { slot: { quickey: { name: "KB28 A", code: "NUM1", note: "operator" }, exec: { class: "Quickey", name: "KB28 A", index: 960 } } });
+  const b = await startFakeBridge(c.handler);
+  try {
+    const r = await run(["cleanup"], { GMA3_BRIDGE_PORT: String(b.port) });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /left in place/);
+    assert.deepEqual(c.writes, [], "nothing was unpressed or deleted");
+  } finally { b.close(); }
+});

@@ -1,6 +1,6 @@
 {
   "probe": "kb-28-run",
-  "date": "2026-10-20T07:44:52.937Z",
+  "date": "2026-10-20T07:57:48.491Z",
   "bridge": {
     "version": "0.25.1",
     "host": "127.0.0.1",
@@ -26,7 +26,7 @@
     }
   },
   "exec": "1.190",
-  "passed": 70,
+  "passed": 72,
   "failed": 0,
   "steps": [
     {
@@ -712,6 +712,17 @@
       }
     },
     {
+      "name": "HIGHLIGHT hold: down 1.5 s flips highlight once and keeps it, Unpress leaves it",
+      "pass": true,
+      "detail": {
+        "h0": false,
+        "h1": true,
+        "h2": true,
+        "h3": true,
+        "h4": false
+      }
+    },
+    {
       "name": "HIGHLIGHT: Press toggles highlight once, Unpress leaves it, a second tap restores it",
       "pass": true,
       "detail": {
@@ -732,6 +743,17 @@
         "line1": "",
         "d2": 100,
         "line2": ""
+      }
+    },
+    {
+      "name": "FULL hold: down 1.5 s with Fixture 101 selected sets Dimmer 100 once, nothing on Unpress",
+      "pass": true,
+      "detail": {
+        "e1": 100,
+        "e2": 100,
+        "lineH": "",
+        "maH": false,
+        "e3": 100
       }
     },
     {
