@@ -644,7 +644,11 @@ function releaseSteps(r: Record<string, unknown>, prefix = "release"): StepResul
   }
   // A later key of an ordered combo held back behind an unresolved earlier one is still down (KB-28 review 16).
   for (const a of (r.blocked as Array<Record<string, unknown>>) ?? []) {
-    steps.push({ name: `${prefix} ${String(a.logical ?? a.hold)}`, status: "unknown", op: "input.release", error: `not released: it waits behind ${String(a.after)}, an earlier key of its ordered combo whose release is unresolved; still held, recover() releases both in order`, detail: a });
+    // Review 19: a frame-gate deferral (a.reason) is not an unresolved predecessor: only this key is still down.
+    const why = a.reason
+      ? `not released in this frame: ${String(a.reason)}; still held, a later release or "input recover" releases it`
+      : `not released: it waits behind ${String(a.after)}, an earlier key of its ordered combo whose release is unresolved; still held, recover() releases both in order`;
+    steps.push({ name: `${prefix} ${String(a.logical ?? a.hold)}`, status: "unknown", op: "input.release", error: why, detail: a });
   }
   return steps;
 }
