@@ -184,6 +184,11 @@ test("KB-28 review 16: keys held back behind an unresolved ordered release are r
   const r = await h.callJson("gma3_hardkeys_release_all", {});
   assert.deepEqual(r.result.steps.map((s: { status: string }) => s.status), ["unknown", "unknown"]);
   assert.match(r.result.steps[1].error, /waits behind h1/);
+  // Review 19: a frame-gate deferral names its reason, not an unresolved predecessor.
+  h.fake.on("input.releaseAll", () => ({ attempted: 1, released: [{ hold: "h1", logical: "NUM1", outcome: "dispatched" }], unresolved: [], blocked: [{ hold: "h2", logical: "THRU", after: "h1", reason: "no frame separator: released in a later frame" }] }));
+  const r2 = await h.callJson("gma3_hardkeys_release_all", {});
+  assert.match(r2.result.steps[1].error, /not released in this frame: no frame separator/);
+  assert.doesNotMatch(r2.result.steps[1].error, /unresolved/);
   scriptSequence(report([{ kind: "combo", keys: ["NUM1", "THRU"], state: "completed" }], "completed", { cleanup: { attempted: 1, released: 0, unresolved: 1, blocked: 1, blockedHolds: ["h2"] } }));
   const { result } = await h.callJson("gma3_input_sequence", { steps: [{ kind: "press", key: "MA" }, { kind: "tap", key: "STORE" }] });
   assert.match(result.warnings.join(" "), /1 more key\(s\) of an ordered combo are still held/);

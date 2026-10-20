@@ -354,6 +354,8 @@ async function preflight(A) {
   console.log(`bridge ${ping.bridgeVersion} on ${ping.host}:${ping.port}; show "${ping.showfile ?? ""}"; input ${ping.input ? (ping.input.enabled ? `enabled (${ping.input.backend})` : "disabled") : "not reported"}; lua ${ping.lua?.enabled ? "on" : "off"}`);
   if (!SHOW_GUARD.test(String(ping.showfile ?? ""))) { console.error(`show "${ping.showfile}" does not look disposable; refusing to press console keys`); process.exit(2); }
   if (!ping.lua?.enabled) { console.error('Lua execution is off on the bridge; the probe creates its objects and verifies through Lua and needs  Plugin "gma3_mcp_bridge" "lua on"'); process.exit(2); }
+  // A bridge that does not report its input state cannot show that no other client can press keys (review 19).
+  if (!ping.input || typeof ping.input !== "object") { console.error("the bridge does not report its input state (ping.input); use a bridge that does, started without input"); process.exit(2); }
   if (ping.input && (ping.input.holds > 0 || ping.input.unresolved > 0 || ping.input.unresolvedFromPreviousRun > 0 || ping.input.busy)) { console.error("the bridge has holds or unresolved records; resolve them first (input status / input recover)"); process.exit(2); }
   // Another client with bridge input could press a key between the probe's steps: input must be off, as recorded.
   if (ping.input && (ping.input.enabled || ping.input.sessions > 0)) { console.error(`bridge input is ${ping.input.enabled ? "enabled" : "disabled"} with ${ping.input.sessions ?? 0} session(s); start the bridge without input (Plugin "gma3_mcp_bridge" "lua on") so no other client can press keys during the probe`); process.exit(2); }

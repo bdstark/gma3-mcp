@@ -86,6 +86,11 @@ test("refuses a show that does not look disposable and Lua off", async () => {
   await expectRefusal(ping({ lua: { enabled: false } }), {}, /lua on/);
 });
 
+test("refuses a bridge that does not report its input state (review 19)", async () => {
+  const { input: _omit, ...noInput } = ping();
+  await expectRefusal(noInput, {}, /does not report its input state/);
+});
+
 test("refuses bridge holds and a running surface plugin", async () => {
   await expectRefusal(ping({ input: { enabled: true, holds: 1, unresolved: 0, unresolvedFromPreviousRun: 0, busy: null } }), {}, /holds or unresolved/);
   await expectRefusal(ping(), { surface: true }, /mtpnxk_surface" "stop"/);

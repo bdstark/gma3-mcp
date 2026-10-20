@@ -1794,7 +1794,10 @@ local function logReleaseResult(prefix, r)
   for _, a in ipairs(r.released or {}) do log("%s released %s", prefix, describeAttempt(a)) end
   for _, a in ipairs(r.unresolved or {}) do logerr("%s UNRESOLVED %s", prefix, describeAttempt(a)) end
   -- A later key of an ordered combo held back behind an unresolved earlier one is still down (KB-28 review 16).
-  for _, b in ipairs(r.blocked or {}) do logerr("%s STILL HELD %s (hold %s) behind unresolved %s; input recover releases both in order", prefix, tostring(b.logical), tostring(b.hold), tostring(b.after)) end
+  for _, b in ipairs(r.blocked or {}) do
+    if b.reason then logerr("%s STILL HELD %s (hold %s): %s; a later release or input recover releases it", prefix, tostring(b.logical), tostring(b.hold), tostring(b.reason))
+    else logerr("%s STILL HELD %s (hold %s) behind unresolved %s; input recover releases both in order", prefix, tostring(b.logical), tostring(b.hold), tostring(b.after)) end
+  end
 end
 
 local function serviceModules(now)

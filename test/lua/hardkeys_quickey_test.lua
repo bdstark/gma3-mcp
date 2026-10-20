@@ -450,6 +450,8 @@ do
   local unp2 = 0; for _, cmd in ipairs(cmdsSince(nb)) do if cmd:find("^Unpress") then unp2 = unp2 + 1 end end
   local rep = q2 and inst:sequenceStatus(q2.id, 2.01)
   check("a failed combo's rollback and the auto interaction's end release nothing in that frame when the break raises", q2 and rep.state ~= "running" and unp2 == 0 and pressedCount() == 1, J({ state = rep and rep.state, cmds = cmdsSince(nb), cleanup = rep and rep.cleanup }))
+  local ev1 = rep and rep.events and rep.events[1]
+  check("review 19: the step is uncertain and the sequence's cleanup names the key the rollback kept down", ev1 and ev1.state == "uncertain" and ev1.rollback and ev1.rollback.blocked == 1 and rep.cleanup and rep.cleanup.blocked == 1, J({ ev = ev1 and { state = ev1.state, rollback = ev1.rollback }, cleanup = rep and rep.cleanup }))
   inst:recover(nil, 3)
   check("...recover() in a later frame releases it", pressedCount() == 0, J(inst:status(3).holds))
 end

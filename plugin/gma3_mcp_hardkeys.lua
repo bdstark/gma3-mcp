@@ -3596,8 +3596,9 @@ local function stepError(ev, err)
   if type(err) == "table" and err.unresolved then ev.state = "uncertain"; ev.hold = err.hold else ev.state = "failed" end
   if type(err) == "table" and err.pressed then
     ev.pressed = #err.pressed
-    ev.rollback = err.rollback and { released = #(err.rollback.released or {}), unresolved = #(err.rollback.unresolved or {}) } or nil
-    if err.rollback and #(err.rollback.unresolved or {}) > 0 then ev.state = "uncertain" end
+    ev.rollback = err.rollback and { released = #(err.rollback.released or {}), unresolved = #(err.rollback.unresolved or {}), blocked = #(err.rollback.blocked or {}) } or nil
+    -- A key the rollback kept down (blocked behind the frame gate, review 19) is as uncertain as an unresolved one.
+    if err.rollback and (#(err.rollback.unresolved or {}) > 0 or #(err.rollback.blocked or {}) > 0) then ev.state = "uncertain" end
   end
 end
 
@@ -3637,7 +3638,11 @@ function Instance:_startStep(job, st, ev, now)
   elseif st.kind == "combo" then
     local r, err = self:combo(job.session, now, st.specs, { holdMs = st.holdMs, interaction = job.interaction, fromSequence = true })
     if job.state ~= "running" then return end
-    if not r then stepError(ev, err); return end
+    if not r then
+      -- Keys the rollback kept down stay this sequence's, so its cleanup report names them (review 19).
+      for _, b in ipairs(type(err) == "table" and err.rollback and err.rollback.blocked or {}) do self:_trackHold(job, b.hold) end
+      stepError(ev, err); return
+    end
     ev.holds, ev.group = {}, r.group
     for _, h in ipairs(r.holds) do ev.holds[#ev.holds + 1] = h.id; self:_trackHold(job, h.id) end
     ev.pressOutcome = "dispatched"
