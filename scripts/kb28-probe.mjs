@@ -179,6 +179,7 @@ const pressed = new Set();
 let pendingRestore = null;
 async function restoreToggle(conn, s, r) {
   try {
+    await sleep(400);  // a reader lags the key by a frame: a late toggle shows before this read
     const now = await fb(conn, r.reader);
     if (now === undefined) { note(`${r.name}: ${r.reader} unreadable after the release; left for the operator (baseline ${r.v0})`); return; }
     if (now === r.v0) { note(`${r.name}: ${r.reader} already at its baseline ${r.v0}`); return; }
@@ -448,7 +449,10 @@ async function runCmdline(A, codes, only) {
       const now = await read().catch(() => undefined);
       if (pressed.has(SLOTS.A.name)) {
         // Cleanup releases the slot first and then taps the mode back (review 16).
-        if (now !== v0) { pendingRestore = { name, reader, v0 }; note(`${name}: ${reader} at ${now} (baseline ${v0}); the slot may be down, cleanup releases it and then restores the mode`, now); }
+        // Queued whatever this read says: a reader lags a press by a frame, so a toggle may still appear (review 17);
+        // restoreToggle() reads the final state and does nothing at the baseline.
+        pendingRestore = { name, reader, v0 };
+        note(`${name}: ${reader} at ${now} (baseline ${v0}); the slot may be down, cleanup releases it and then checks the mode`, now);
       } else if (v0 !== undefined && now !== undefined && now !== v0) {
         await code(A, SLOTS.A, name).catch(() => {});
         if (accepted(await press(A, SLOTS.A).catch(() => null))) await unpress(A, SLOTS.A).catch(() => {});
