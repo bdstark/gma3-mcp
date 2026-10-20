@@ -855,6 +855,31 @@ do
     for k = 190, 191 do console.executors["1." .. k] = "empty" end
     for qi in pairs(console.quickeys) do console.quickeys[qi] = nil end
   end
+  -- #75 review 14: an assign that raised after the console applied it is rolled back (the executor is cleared).
+  do
+    local origAssign, nA, raisedAt = deps.executors.assign, 0, nil
+    deps.executors.assign = function(page, index, qi) nA = nA + 1; local r = origAssign(page, index, qi); if nA == 3 then raisedAt = page .. "." .. index; error("assign wedged", 0) end return r end
+    local bp, ep = inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0)
+    deps.executors.assign = origAssign
+    local cleared = false; for _, c in ipairs(ep and ep.cleared or {}) do if c.executor == raisedAt then cleared = true end end
+    check("a static assign that raised after applying is cleared by the rollback", bp == nil and ep.code == "bank-partial" and cleared and next(console.quickeys) == nil, J({ err = ep and ep.message, cleared = ep and ep.cleared, at = raisedAt }))
+    for k = 190, 209 do console.executors["1." .. k] = "empty" end
+    for qi in pairs(console.quickeys) do console.quickeys[qi] = nil end
+  end
+  -- #75 review 14: a readable foreign object read back after the assign references none of ours: the Quickey goes.
+  do
+    local origAssign, nA, meant = deps.executors.assign, 0, nil
+    deps.executors.assign = function(page, index, qi)
+      nA = nA + 1
+      if nA == 3 then meant = qi; console.executors["1." .. index] = { class = "Sequence", name = "Other", index = 5 }; return true end
+      return origAssign(page, index, qi)
+    end
+    local bp, ep = inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0)
+    deps.executors.assign = origAssign
+    check("a foreign readback after the assign does not keep the Quickey meant for it", bp == nil and ep.code == "bank-partial" and meant and console.quickeys[meant] == nil, J({ err = ep and ep.message, kept = ep and ep.kept, meant = meant }))
+    for k = 190, 209 do console.executors["1." .. k] = "empty" end
+    for qi in pairs(console.quickeys) do console.quickeys[qi] = nil end
+  end
   -- #75 review 10: a clear that returns but whose readback is unreadable keeps the Quickey the executor held.
   do
     local origAssign, origClear, origRead, nA, cleared = deps.executors.assign, deps.executors.clear, deps.executors.read, 0, {}

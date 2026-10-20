@@ -453,6 +453,8 @@ async function runCmdline(A, codes, only) {
       // A direct tap flips the mode once (nothing more 400 ms later), a second one restores it. A direct tap leaves
       // nothing down, so the finally can always tap once more to put the mode back at its baseline (review 4 of #75).
       const v0 = await read();
+      // Without a readable baseline the mode could not be put back after a failure: nothing is tapped (review 14 of #75).
+      if (v0 === undefined) { record(`${name}: ${reader} is not readable, direct stage stopped before any tap`, false); return; }
       try {
         const fp = await dtap(A, SLOTS.A);
         const v1 = await settle(read, v0);

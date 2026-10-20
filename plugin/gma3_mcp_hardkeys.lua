@@ -2326,9 +2326,11 @@ function Instance:provisionBank(spec, now)
         if again.state ~= "empty" then failure = { executor = string.format("%d.%d", x.page, x.index), error = "executor was " .. again.state .. " at the recheck right before the reservation; it was empty at preflight (another writer?)" }; break end
         -- Static: the executor's own code Quickey (KB-29); otherwise the placeholder.
         local q = x.code and bank.byName[x.code] or placeholder
+        -- Recorded BEFORE the call (review 14): an assign that raised after the console applied it is still rolled back
+        -- (an executor found empty is simply left alone).
+        assigned[#assigned + 1] = x
         local okA, aerr = bankOp(d.executors.assign, x.page, x.index, q.index)
         if not okA then failure = { executor = string.format("%d.%d", x.page, x.index), error = "assign failed: " .. tostring(aerr) }; break end
-        assigned[#assigned + 1] = x
         local verify = self:_classifyExecutor(x.page, x.index, bank)
         local good = x.code and (verify.state == "assigned" and verify.code == x.code) or (not x.code and verify.state == "reserved")
         if not good then failure = { executor = string.format("%d.%d", x.page, x.index), error = "readback after the assignment: " .. verify.state .. (verify.error and (": " .. verify.error) or "") .. "; the executor does not hold " .. (x.code and ("the bank's " .. x.code) or "the placeholder") .. " as expected" }; break end
@@ -2384,8 +2386,9 @@ function Instance:_rollbackCreated(created, assigned, bank)
       local qi = holder(cls)  -- another bank Quickey left on it (e.g. a mismatched readback) stays with it (review 8 of #75)
       if qi then stillAssigned[qi] = ref end
       -- An executor that cannot be classified (unreadable) may still reference what this call assigned to it: that
-      -- Quickey is kept as well (review 9 of #75).
-      if not qi then
+      -- Quickey is kept as well (review 9 of #75). A readable foreign object or other Quickey references none of ours
+      -- (review 14).
+      if not qi and cls.state == "error" then
         local mine = x.code and bank.byName[x.code] or bank.byName[BANK_PLACEHOLDER]
         if mine then stillAssigned[mine.index] = ref end
       end
