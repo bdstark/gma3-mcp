@@ -66,8 +66,9 @@ async function main({github:g, context:c, core, mode, deleteBranch = deleteBranc
     const p=c.payload;
     // Ignore ordinary comments and other workflow activity, avoiding feedback loops and API-key abuse.
     if (c.eventName === 'issue_comment' && !(p.comment?.user?.login === BOT && p.comment.user.type === 'Bot') && !(p.comment?.user?.login === OWNER && p.comment.body?.trim() === '/accept')) { core.setOutput('matrix','[]'); return; }
-    if (c.eventName === 'pull_request_review' && p.review?.user?.login !== BOT) { core.setOutput('matrix','[]'); return; }
-    if (c.eventName === 'workflow_run' && !['pull_request','dynamic'].includes(p.workflow_run?.event)) { core.setOutput('matrix','[]'); return; }
+    // Reviews originate on a PR merge ref; only the secret-free listener handles that event.
+    if (c.eventName === 'pull_request_review') { core.setOutput('matrix','[]'); return; }
+    if (c.eventName === 'workflow_run' && !(['pull_request','dynamic'].includes(p.workflow_run?.event) || (p.workflow_run?.event === 'pull_request_review' && p.workflow_run.name === 'PR review event'))) { core.setOutput('matrix','[]'); return; }
     const number = p.pull_request?.number || (p.issue?.pull_request && p.issue.number) || Number(p.inputs?.pr_number || 0);
     const candidates = number ? [await getPR(number)] : await all(g.rest.pulls.list,{state:'open'});
     const matrix=[];

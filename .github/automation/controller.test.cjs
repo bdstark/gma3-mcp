@@ -80,3 +80,17 @@ test('gate requires current reviews, CI, base, discussions and clean state befor
 test('the short UI bot name is not accepted as a REST identity',()=>{
  assert.equal(official([comment(state,{}, {login:'chatgpt-codex-connector',type:'Bot'})],head),false);
 });
+
+test('review notifications hand off through workflow_run, never a privileged direct review event',async()=>{
+ for(const [eventName,payload,scans] of [
+  ['pull_request_review',{review:{user:{login:'chatgpt-codex-connector[bot]'}}},0],
+  ['workflow_run',{workflow_run:{event:'pull_request_review',name:'PR review event'}},1],
+  ['workflow_run',{workflow_run:{event:'pull_request_review',name:'other'}},0],
+  ['workflow_run',{workflow_run:{event:'push',name:'PR review event'}},0],
+ ]) {
+  let listed=0;const outputs={};
+  const g={paginate:async()=>{listed++;return [];},rest:{pulls:{list(){}}}};
+  await main({github:g,context:{repo:{owner:'bdstark',repo:'gma3-mcp'},eventName,payload},core:{setOutput:(k,v)=>outputs[k]=v},mode:'prepare'});
+  assert.equal(listed,scans);assert.equal(outputs.matrix,'[]');
+ }
+});
