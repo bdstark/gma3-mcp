@@ -3230,7 +3230,16 @@ function Instance:adopt(records, now, sessionId)
   checkNow(now, "adopt")
   sessionId = sessionId or "previous-run"
   local adopted, rejected = {}, {}
-  for _, rec in ipairs(records or {}) do
+  -- Adopted in their original press order where known (orderSeq, review 12), so the new records keep it.
+  local ordered, pos = {}, {}
+  for k, r in ipairs(records or {}) do ordered[k] = r; pos[r] = k end
+  table.sort(ordered, function(a, b)
+    local sa = type(a) == "table" and tonumber(a.orderSeq) or math.huge
+    local sb = type(b) == "table" and tonumber(b.orderSeq) or math.huge
+    if sa ~= sb then return sa < sb end
+    return pos[a] < pos[b]  -- otherwise the order they were handed in
+  end)
+  for _, rec in ipairs(ordered) do
     if type(rec) ~= "table" or ((type(rec.pcKey) ~= "string" or rec.pcKey == "") and (type(rec.quickkey) ~= "string" or rec.quickkey == "")) then
       rejected[#rejected + 1] = { record = rec, reason = "no pcKey or quickkey" }
     else
@@ -3255,6 +3264,7 @@ function Instance:adopt(records, now, sessionId)
         hold.pressedAt = rec.pressedAt or now
         hold.dispatch = shallowCopy(rec.dispatch) or hold.dispatch
         hold.adopted = true
+        if type(rec.orderGroup) == "string" then hold.group, hold.releaseInPressOrder = "adopted:" .. rec.orderGroup, true end
         self:_markUnresolved(hold, now, rec.unresolved and rec.unresolved.reason or "adopted from a previous run with an unresolved release")
         adopted[#adopted + 1] = self:_holdReport(hold, now)
       end
@@ -3443,6 +3453,24 @@ function Instance:_validateSequence(sessionId, steps)
   local pressed = {}
   local heldQuickkeys = {}  -- Quickey tuples a press/combo step leaves down for later steps (chord capability)
   local orderedGroups = {}  -- tupleKey -> { list = { tk... }, index } for unbounded combos released in press order (review 10)
+  -- Press-order combos this session already holds count too (review 12): their keys are down now.
+  local liveOrdered = {}
+  do
+    local groups = {}
+    for _, h in pairs(self._holds) do
+      if h.session == sessionId and h.releaseInPressOrder and h.group and (h.state == "held" or h.state == "releasing" or h.state == "unresolved") then
+        groups[h.group] = groups[h.group] or {}
+        local g = groups[h.group]
+        g[#g + 1] = h
+      end
+    end
+    for _, list in pairs(groups) do
+      table.sort(list, function(a, b) return a.seq < b.seq end)
+      local tks = {}
+      for _, h in ipairs(list) do tks[#tks + 1] = h.tupleKey; liveOrdered[h.tupleKey] = true end
+      for idx, h in ipairs(list) do orderedGroups[h.tupleKey] = { list = tks, index = idx } end
+    end
+  end
   local heldPcKeys = {}     -- PC-key tuples a press/combo step leaves down (KB-15: never next to a Quickey)
   -- The instance's live key records by tuple (held, releasing, unresolved; text records own no key), as a
   -- simulated state the steps update: a release step of a key this session holds removes it, so a later
@@ -3610,11 +3638,12 @@ function Instance:_validateSequence(sessionId, steps)
       local og = s.tupleKey and orderedGroups[s.tupleKey]
       if og then
         for idx = 1, og.index - 1 do
-          if heldQuickkeys[og.list[idx]] then
+          if heldQuickkeys[og.list[idx]] or liveOrdered[og.list[idx]] then
             return stepFail(i, "out-of-order", string.format("release of %s before %s: the combo of an earlier step is released in press order (KB-28), release the earlier key first", tostring(s.logical), tostring(og.list[idx])))
           end
         end
         orderedGroups[s.tupleKey] = nil
+        liveOrdered[s.tupleKey] = nil
       end
       if s.tupleKey then heldQuickkeys[s.tupleKey] = nil; heldPcKeys[s.tupleKey] = nil end
       s.spec = spec
@@ -4217,6 +4246,9 @@ function Instance:dispose(now)
       rec.exclusive = h.exclusive or nil
       rec.unresolved = h.unresolved or { reason = "instance disposed without a release attempt (no clock or adapter)", since = now }
       rec.tupleKey = h.tupleKey
+      -- A press-order combo keeps its group and press order across a restart (review 12): adopt() restores them,
+      -- so recover() releases first down, first up.
+      if h.releaseInPressOrder and h.group then rec.orderGroup, rec.orderSeq = h.group, h.seq end
       records[#records + 1] = rec
     end
   end
