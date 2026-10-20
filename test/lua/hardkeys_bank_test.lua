@@ -32,6 +32,8 @@ local VK = { [""] = 0, UNKNOWN = 0, MA1 = 1, MA2 = 2, PREV = 3, XKEYS = 15, X1 =
              PLEASE = 84, FULL = 85, OOPS = 86, UNDO = 86, CLEAR = 87, ESC = 88, ENCODER_INSIDE1 = 89, FLASH = 101, RECORD = 114,
              ONPC_SCREEN2 = 127, LOCATE = 146 }
 local NCODES = 19   -- command-area codes in VK above; the bank adds one placeholder slot after them
+-- Codes in VK with evidence: KB-10 (MA1 FIXTURE STORE NUM1 NUM5 THRU PLEASE OOPS CLEAR) and KB-28 (EDIT NUM0 NUM9 PLUS FULL).
+local NQUAL = 14
 
 -- Fake console -------------------------------------------------------------------
 -- quickeys[i] = { name, code, note }; executors["page.index"] = "empty" | { quickey = i } (a bank object by
@@ -179,7 +181,7 @@ do
   check("command-area codes are kept, MA1/MA2 included", #d.codes == NCODES and names.MA1 and names.MA2 and names.GO and names.LOCATE and names.NUM0 and names.FULL, J(names))
   check("codes are ordered by value and carry KB-10 qualification", d.codes[1].name == "MA1" and names.NUM5.qualified.hold == true and names.MA1.qualified.tap == false and names.OOPS.qualified.hold == false and names.GO.qualified == false and names.ESC.qualified == false and names.ESC.note:find("never touched"), J({ names.NUM5, names.ESC }))
   local q = HK.discoverBankCodes(VK, "qualified")
-  check("\"qualified\" keeps only codes with evidence and reports the rest as exclusions", #q.codes == 9 and findReason(q.exclusions, "no KB-10 evidence") and findReason(q.exclusions, "no KB-10 evidence").name ~= nil, J(q.codes))
+  check("\"qualified\" keeps only codes with evidence and reports the rest as exclusions", #q.codes == NQUAL and findReason(q.exclusions, "no KB-10 evidence") and findReason(q.exclusions, "no KB-10 evidence").name ~= nil, J(q.codes))
   local l = HK.discoverBankCodes(VK, { "NUM5", "THRU", "PLEASE" })
   check("an explicit list provisions exactly those codes", #l.codes == 3 and l.codes[1].name == "NUM5" and l.codes[2].name == "THRU", J(l.codes))
   local m = HK.parseBankMarker(HK.bankMarkerText("bridge", "bridge@q900.e1.190-197", "NUM5", { page = 1, first = 190, count = 8 }))
@@ -242,7 +244,7 @@ do
   for i = 190, 197 do if execHolds(1, i) ~= 900 + NCODES then allReserved = false end end
   check("every reserved executor holds the placeholder (the claim is visible on the console)", allReserved and console.calls["executors.assign"] == 8 and #r.executors == 8 and r.executors[1].state == "reserved" and r.executors[1].reservedNow == true, J(r.executors))
   check("exclusions and aliases reported with the bank", #r.exclusions > 0 and r.aliases[1].alias == "UNDO" and r.enumEntries > 0)
-  check("qualified and discovered counts exclude the placeholder", r.qualifiedCount == 9 and r.discoveredCount == NCODES - 9 and r.problemCount == 0, J({ r.qualifiedCount, r.discoveredCount }))
+  check("qualified and discovered counts exclude the placeholder", r.qualifiedCount == NQUAL and r.discoveredCount == NCODES - NQUAL and r.problemCount == 0, J({ r.qualifiedCount, r.discoveredCount }))
   local st = inst:status(1)
   check("status carries the bank summary and a record for adoption (placeholder flagged)", st.bank.provisioned and st.bank.id == r.id and st.bank.record.codes[1].name == "MA1" and st.bank.record.codes[NCODES + 1].placeholder == true and st.bank.record.spec.executors.count == 8, J(st.bank.record.spec))
   local r2, err2 = inst:provisionBank(spec(), 2)
@@ -272,7 +274,7 @@ do
   newConsole(); pageWithExecutors(1, 190, 8)
   local inst6 = newInst()
   local r7 = inst6:provisionBank(spec({ codes = "qualified" }), 7)
-  check("codes=qualified provisions the nine evidenced codes plus the placeholder", r7 and r7.codeCount == 9 and r7.discoveredCount == 0 and console.quickeys[908] ~= nil and console.quickeys[909].code == "" and console.quickeys[910] == nil, J(r7 and r7.codeCount))
+  check("codes=qualified provisions the evidenced codes plus the placeholder", r7 and r7.codeCount == NQUAL and r7.discoveredCount == 0 and console.quickeys[900 + NQUAL - 1] ~= nil and console.quickeys[900 + NQUAL].code == "" and console.quickeys[900 + NQUAL + 1] == nil, J(r7 and r7.codeCount))
 end
 
 -------------------------------------------------------------------------------

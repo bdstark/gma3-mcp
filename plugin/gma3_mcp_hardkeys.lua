@@ -149,7 +149,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.10.0"
+local VERSION     = "0.11.0"
 local API_VERSION = 1
 
 -- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
@@ -192,11 +192,11 @@ local KEYBOARD_LIMITATIONS = {
 -- What the owned-Quickey backend can and cannot promise (KB-10/KB-12/KB-13 evidence, onPC 2.5.1.0).
 local QUICKEY_LIMITATIONS = {
   "every event goes through the KB-12 bank: a code is dispatched only when its owned Quickey re-reads as the bank's (show identity, marker, Code, Name) right before the press; a missing, changed or replaced object refuses and nothing is repaired",
-  "only codes with KB-10 evidence are dispatched (NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS), each only for the operations evidenced for it (tap / hold / chord); discovered-only codes are refused before dispatch",
+  "only codes with KB-10/KB-28 evidence are dispatched (KB-10: NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS; KB-28: NUM0-NUM9, PLUS, MINUS, DOT, SLASH, AT, FULL, UPDATE, EDIT, COPY, MOVE, DELETE, CUE, GROUP, MACRO, PREVIEW, HIGHLIGHT), each only for the operations evidenced for it (tap / hold / chord); discovered-only codes are refused before dispatch",
   "a Quickey addressed directly is always a complete tap (KB-10), so every tap, hold and chord is an executor press: the code's Quickey is assigned to a reserved executor and Press / Unpress Page P.E is issued; one reserved executor per concurrently held key",
   "no per-key readback exists: a press and a release are reported as dispatched, never confirmed; only the aggregate MASTATE is observable (MA1)",
   "a release is issued only on the recorded executor and only while it still holds the recorded Quickey; an executor emptied, reassigned or deleted during a hold leaves the key down on the console and the record unresolved until the operator restores the assignment and recovery runs; a direct Unpress Quickey is never issued (it re-activates non-latching keys)",
-  "effects are synchronous in the issuing chunk, except that with the Edit Command pop-up or another text field focused digits land one frame after keywords and all text keys go to the focused field (KB-10); nothing here reads the command line",
+  "effects are synchronous in the issuing chunk, except that with the Edit Command pop-up or another text field focused digits land one frame after keywords and all text keys go to the focused field (KB-10); keys pressed in separate requests (separate frames) kept their order in the pop-up (KB-28: 1 Thru 5, 2 + 3, 9 - 4), so a consumer that needs order in text fields dispatches at most one press per frame; nothing here reads the command line",
   "OOPS on an empty command line is Undo (it reverts show data) and PLEASE executes the command line; neither is checked or prevented here",
   "no PC-key or text dispatch and no mode change (capabilities.keyboard = false, char = false, modeChange = false): the shortcut, shortcutOrType and type methods are unavailable on this backend",
 }
@@ -667,19 +667,42 @@ local BANK_EXECUTOR_FUNCTIONS = { FLASH = true, BLACK = true, KILL = true, RATE1
 -- aliases are deduplicated by value with the alphabetically first name and reported.
 local BANK_ALIASES = { UNDO = "OOPS" }
 
--- KB-10 evidence per code (onPC 2.5.1.0, macOS, executor path for holds). Everything else is
--- discovered only. `tap` is a direct Press Quickey or an executor press/release pair; `hold` is an
--- executor Press kept down until Unpress; `chord` is a hold next to another held bank key.
+-- KB-10 evidence per code (onPC 2.5.1.0, macOS, executor path for holds), extended by KB-28 (the NX-K's
+-- remaining keys: docs/probes/kb-28-quickey-codes-macos-2.5.1.md). Everything else is discovered only.
+-- `tap` is a direct Press Quickey or an executor press/release pair; `hold` is an executor Press kept
+-- down until Unpress; `chord` is a hold next to another held bank key (KB-28: the second key goes down
+-- before the first comes up and the line equals two sequential taps). Every KB-28 code is qualified on
+-- the executor path only; stuck-key recovery (a direct Unpress Quickey) stays qualified for MA1 alone.
+local KB28_DIGIT = { tap = true, hold = true, chord = true }
 local BANK_QUALIFIED = {
-  NUM1    = { tap = true, hold = true,  chord = false },
+  NUM1    = { tap = true, hold = true,  chord = true },
   NUM5    = { tap = true, hold = true,  chord = true, note = "a direct Unpress Quickey re-activates it: stuck-key recovery is NOT qualified for NUM5" },
-  THRU    = { tap = true, hold = true,  chord = false },
+  THRU    = { tap = true, hold = true,  chord = true },
   FIXTURE = { tap = true, hold = true,  chord = false },
   PLEASE  = { tap = true, hold = true,  chord = false, note = "executes the command line; immediately after digits it is accepted in the same chunk outside a text pop-up" },
   CLEAR   = { tap = true, hold = true,  chord = false },
   STORE   = { tap = true, hold = true,  chord = true, note = "a 2 s executor hold did not open the Store Settings pop-up" },
   MA1     = { tap = false, hold = true, chord = true, note = "a direct tap holds nothing; qualified as an executor hold (MA1+STORE gave Record); the only code whose stuck-key recovery (direct Unpress Quickey) is qualified" },
   OOPS    = { tap = true, hold = false, chord = false, note = "Undo on an empty command line: it can revert show data, never use it as a clear" },
+  -- KB-28
+  NUM0 = KB28_DIGIT, NUM2 = KB28_DIGIT, NUM3 = KB28_DIGIT, NUM4 = KB28_DIGIT,
+  NUM6 = KB28_DIGIT, NUM7 = KB28_DIGIT, NUM8 = KB28_DIGIT, NUM9 = KB28_DIGIT,
+  PLUS    = { tap = true, hold = true,  chord = true },
+  MINUS   = { tap = true, hold = true,  chord = true },
+  DOT     = { tap = true, hold = true,  chord = true },
+  SLASH   = { tap = true, hold = true,  chord = true },
+  AT      = { tap = true, hold = true,  chord = true, note = "in the Edit Command pop-up it inserted nothing (at the start and mid-line)" },
+  UPDATE  = { tap = true, hold = true,  chord = true },
+  EDIT    = { tap = true, hold = true,  chord = true },
+  CUE     = { tap = true, hold = true,  chord = true },
+  GROUP   = { tap = true, hold = true,  chord = true },
+  PREVIEW = { tap = true, hold = true,  chord = true, note = "the Preview keyword on the command line, not the preview-mode toggle" },
+  COPY    = { tap = true, hold = true,  chord = false, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
+  MOVE    = { tap = true, hold = true,  chord = false, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
+  DELETE  = { tap = true, hold = true,  chord = false, note = "a digit rolled into it opened the delete confirmation for the sheet's selected object: chord not tested further" },
+  MACRO   = { tap = true, hold = true,  chord = false, note = "not rolled: a digit before it would run a show macro" },
+  FULL    = { tap = true, hold = true,  chord = false, note = "executes At Full on the selection (Dimmer 100) on Press; nothing on an empty selection" },
+  HIGHLIGHT = { tap = true, hold = true, chord = false, note = "toggles Highlight once per Press (the mode reads a frame later); Unpress leaves it" },
 }
 -- Discovered codes with evidence that they do NOT behave as command-area keys through a Quickey.
 local BANK_UNQUALIFIED_NOTES = { ESC = "as a Quickey, ESC never touched the command line (direct and executor path)" }

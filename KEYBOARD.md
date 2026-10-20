@@ -1382,6 +1382,36 @@ mode change while a Quickey is down (refused, so never exercised), the NX-K surf
 `modules.lock.json` pin names the 0.10.0 bytes of this revision for vendoring; it does not grant platform coverage.
 
 
+## KB-28 — Qualify the NX-K's remaining keys as Quickeys
+
+**Request:** The NX-K surface sends every key without KB-10 evidence through the keyboard shortcut table, which does not
+reach pop-ups and dialogs (calculators, Edit Command). Qualify those codes on the executor-held Quickey path so the
+surface can route them as Quickeys.
+
+**Depends on:** KB-10, KB-13, KB-15.
+
+**Lua changes: Yes — evidence only.** `gma3_mcp_hardkeys` 0.11.0 adds the probed codes to `BANK_QUALIFIED` with their
+tap/hold/chord flags and notes, upgrades NUM1 and THRU to chord, and names the per-frame ordering rule in the Quickey
+backend's limitations. No dispatch logic, MCP tool or TypeScript contract changed.
+
+### Record (2026-10-20)
+
+[Probe record](docs/probes/kb-28-quickey-codes-macos-2.5.1.md), script `scripts/kb28-probe.mjs` (gate tests in
+`test/kb28-probe.test.ts`). On onPC 2.5.1.0 with the probe's own Quickeys on executors 1.190/1.191:
+
+- Tap and hold qualified for NUM0, NUM2–NUM4, NUM6–NUM9, PLUS, MINUS, DOT, SLASH, AT, UPDATE, EDIT, COPY, MOVE,
+  DELETE, CUE, GROUP, MACRO, PREVIEW, FULL and HIGHLIGHT: one token or action on Press, nothing on Unpress, no repeat.
+- Chord (rolled pairs equal sequential taps) for the digits, PLUS, MINUS, DOT, SLASH, AT, UPDATE, EDIT, CUE, GROUP,
+  PREVIEW, NUM1 and THRU. Not for COPY, MOVE, DELETE (a digit rolled into DELETE opened the delete confirmation for the
+  sheet's selected cue and stalled the bridge until cancelled), MACRO, FULL or HIGHLIGHT.
+- Text fields: keys reach the focused Edit Command pop-up and the encoder calculator (`75.5` + Please stored Dimmer
+  75.5). One key per request kept the order (`1 Thru 5`); one Lua chunk reproduced the KB-10 reordering (` Thru 15`).
+  AT inserted nothing in the Edit Command pop-up.
+- NEXT, PREV and MENU were not probed.
+
+The surface half (vendoring 0.11.0, routing every qualified key as a Quickey, at most one Quickey press per plugin
+tick) is done in the surface project against this revision.
+
 ## Evidence and open questions
 
 - [MA: Plugins](https://help.malighting.com/grandMA3/2.4/HTML/plugins.html) describes `HelpLua`, multiple
