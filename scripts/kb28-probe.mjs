@@ -295,7 +295,8 @@ async function runCmdline(A, codes, only) {
     const rolled = await readCmd(A);
     record(`${a} then ${b} rolled (B down before A up) equals two sequential taps`, [fa, fb2, ua, ub].every(accepted) && rolled === sequential && both === rolled, { sequential, both, rolled });
   }
-  await clearLine(A);
+  // The toggles only mean something on an empty line (review 8).
+  if (!(await clearLine(A))) { record("command line cleared after the rolled pairs (stage stopped, nothing more pressed)", false, await readCmd(A)); return; }
   // 4. Toggles: Press flips the mode once, Unpress leaves it, a second tap flips it back.
   for (const [name, reader] of Object.entries(TOGGLE_CODES).filter(([name]) => pick(name))) {
     await code(A, SLOTS.A, name);
@@ -325,8 +326,12 @@ async function runCmdline(A, codes, only) {
       record(`${name}: Press toggles ${reader} once, Unpress leaves it, a second tap restores it`, accepted(fp) && accepted(fu) && v0 !== undefined && v1 !== v0 && v2 === v1 && v3 === v0 && line === "", { v0, v1, v2, v3, line });
     } finally {
       // Whatever happened in the stage, the mode goes back to its baseline with one more tap (review 5).
+      // Never while the slot may still be down (a refused or aborted release, review 8): cleanup releases it
+      // first, and the mode is then left for the operator (reported).
       const now = await read().catch(() => undefined);
-      if (v0 !== undefined && now !== undefined && now !== v0) {
+      if (pressed.has(SLOTS.A.name)) {
+        if (v0 !== undefined && now !== v0) note(`${name}: ${reader} left at ${now} (baseline ${v0}); the slot may be down, cleanup releases it first`, now);
+      } else if (v0 !== undefined && now !== undefined && now !== v0) {
         await code(A, SLOTS.A, name).catch(() => {});
         if (accepted(await press(A, SLOTS.A).catch(() => null))) await unpress(A, SLOTS.A).catch(() => {});
         note(`${name}: ${reader} restored to ${v0}`, await settle(read, now).catch(() => undefined));
@@ -412,7 +417,15 @@ local res = {}
 ${parts.join("\n")}
 return { ok = true, steps = res }`);
     if (!chunk || chunk.ok !== true) {
-      // A refused Unpress may leave the key down: the marker stays and cleanup releases it before deleting.
+      // The marker stays only when a press may still be down: a step whose Press was accepted but whose Unpress
+      // was not, or no result at all. A failure before any press, or a refused Press with an accepted Unpress,
+      // leaves nothing down, so cleanup does not issue an extra Unpress (review 8).
+      // The chunk reports every step it executed (an empty Lua table may arrive as {} or []); no result at all
+      // means nothing is known, so the marker stays.
+      const raw = chunk ? chunk.steps : undefined;
+      const steps = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? Object.values(raw) : []);
+      const outstanding = !chunk || steps.some((st) => String(st.fp).startsWith("OK") && !String(st.fu).startsWith("OK"));
+      if (!outstanding) pressed.delete(SLOTS.A.name);
       throw new Error(`probe slot ${SLOTS.A.name}, one chunk: ${chunk && chunk.failed}; ${JSON.stringify(chunk && chunk.steps)}`);
     }
     pressed.delete(SLOTS.A.name);
