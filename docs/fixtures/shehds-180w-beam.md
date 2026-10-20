@@ -1,4 +1,4 @@
-# SHEHDS 180 W beam: gobo and colour wheels
+# SHEHDS 180 W beam: gobo, colour and prism
 
 What each wheel slot of the SHEHDS 180 W beam actually projects, from photos of one unit on a wall (2026-10-20).
 The fixture type in the show (type 3 "180W Beam Moving Head", converted from the grandMA2 library) has the wheels
@@ -60,4 +60,15 @@ chosen from the name and the measured hue.
 The type's channel sets name these `open`, `colour 1` … `colour 11`. On the 8-bit colour channel `colour 1` (slot 2,
 green) is DMX 11–21.
 
-These names and swatches have not been written to the show's fixture type yet.
+## Prism
+
+The beam has one prism, on the console's Beam tab, second encoder.
+
+[Photo](shehds-180w-beam/prism.jpg): an 18-facet prism. With the open gobo it makes 18 round copies of the beam in two
+rings, 12 outside and 6 inside, with a dark centre and no copy in the middle. The copies' edges show slight yellow
+and blue fringes from the glass.
+
+The type has two effect wheels with media, E (2 slots) and E2 (3 slots). Which one the prism encoder drives is not
+recorded here.
+
+These names, swatches and the prism note have not been written to the show's fixture type yet.
