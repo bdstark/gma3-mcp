@@ -338,6 +338,9 @@ do
   local nc = #console.cmds
   local c2; c2, err = inst:combo("s", 2.89, { { key = "NUM1" }, { key = "MA1" } }, { holdMs = 50 })
   check("a combo is checked pair by pair before its first key: NUM1 + MA1 is refused, nothing dispatched", c2 == nil and err.reason == "capability" and #console.cmds == nc and pressedCount() == 1, J(err))
+  nc = #console.cmds
+  local q3; q3, err = inst:startSequence("s", 2.9, { { kind = "tap", key = "NUM5", direct = false }, { kind = "combo", keys = { { key = "NUM1" }, { key = "MA1" } }, holdMs = 50 } })
+  check("a bounded combo later in a sequence is pair-checked before the sequence's first event", q3 == nil and has(err.missing or {}, "chord") and err.step == 2 and #console.cmds == nc, J(err))
   inst:releaseAll("s", 3)
   check("refusals counted as refused, never raised", backend.counters.refused == 0 and backend.counters.raised == 0 and pressedCount() == 0, J(backend.counters))
   -- The sequence validator applies the same per-code flags before the first event.

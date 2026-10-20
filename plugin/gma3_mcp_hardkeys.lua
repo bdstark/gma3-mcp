@@ -3316,6 +3316,9 @@ function Instance:_validateSequence(sessionId, steps)
       if step.holdMs ~= nil and (type(step.holdMs) ~= "number" or step.holdMs <= 0 or step.holdMs > self._config.maxTapMs) then return stepFail(i, "bad-argument", "holdMs must be a number in (0, " .. self._config.maxTapMs .. "]") end
       s.specs, s.keyNames = {}, {}
       local seen, comboKind = {}, nil
+      -- Keys of this combo checked so far: a bounded combo's keys never enter heldQuickkeys, yet they are down
+      -- together (review 5), so each next key is pair-checked against them too.
+      local comboPeers = {}
       for k, ks in ipairs(step.keys) do
         if type(ks) ~= "table" then return stepFail(i, "bad-argument", "keys[" .. k .. "] must be a key spec table") end
         if ks.exclusive then return stepFail(i, "bad-argument", "key " .. k .. ": a combo cannot be exclusive") end
@@ -3343,8 +3346,12 @@ function Instance:_validateSequence(sessionId, steps)
         if tuple.quickkey then
           local cerr = self:_quickkeyCapabilityError(tuple, route, step.holdMs and "tap" or "hold", true, true)
           if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
-          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple, route and route.capabilities)
+          local peers = {}
+          for pk, pv in pairs(heldQuickkeys) do peers[pk] = pv end
+          for pk, pv in pairs(comboPeers) do peers[pk] = pv end
+          cerr = self:_heldQuickkeyChordError(tk, peers, tuple, route and route.capabilities)
           if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities, heldKey = cerr.heldKey }) end
+          comboPeers[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities }
           if not step.holdMs then heldQuickkeys[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities } end
         end
         s.specs[k] = spec

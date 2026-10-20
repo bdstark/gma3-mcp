@@ -189,7 +189,9 @@ return tostring(q:Get('Code'))`);
 }
 // Marked pressed BEFORE the request: a request that times out may still have pressed the key.
 const press = (conn, s) => { pressed.add(s.name); return lua(conn, `return Cmd('Press Page ${EXP}.${s.e}')`); };
-const unpress = async (conn, s) => { const r = await lua(conn, `return Cmd('Unpress Page ${EXP}.${s.e}')`); pressed.delete(s.name); return r; };
+// Only an accepted Unpress clears the marker: after a refused one the key may still be down, so cleanup must try
+// again before it deletes anything (review 5).
+const unpress = async (conn, s) => { const r = await lua(conn, `return Cmd('Unpress Page ${EXP}.${s.e}')`); if (accepted(r)) pressed.delete(s.name); return r; };
 const accepted = (fbText) => typeof fbText === "string" && fbText.startsWith("OK");
 
 /** Escape through Keyboard() (an ESC Quickey never touches the command line, KB-10), up to three times: a
@@ -292,27 +294,37 @@ async function runCmdline(A, codes, only) {
     await code(A, SLOTS.A, name);
     const read = () => fb(A, reader);
     const v0 = await read();
-    const fp = await press(A, SLOTS.A);
-    const v1 = await settle(read, v0);
-    const fu = await unpress(A, SLOTS.A);
-    await sleep(400);
-    const v2 = await read();
-    await press(A, SLOTS.A); await unpress(A, SLOTS.A);
-    const v3 = await settle(read, v2);
-    const line = await readCmd(A);
-    // Sustained hold: down for 1.5 s, the mode flips once and stays (no repeat), Unpress leaves it.
-    const h0 = await read();
-    const hp = await press(A, SLOTS.A);
-    const h1 = await settle(read, h0);
-    await sleep(1500);
-    const h2 = await read();
-    const hu = await unpress(A, SLOTS.A);
-    await sleep(400);
-    const h3 = await read();
-    await press(A, SLOTS.A); await unpress(A, SLOTS.A);
-    const h4 = await settle(read, h3);
-    record(`${name} hold: down 1.5 s flips ${reader} once and keeps it, Unpress leaves it`, accepted(hp) && accepted(hu) && h1 !== h0 && h2 === h1 && h3 === h1 && h4 === h0, { h0, h1, h2, h3, h4 });
-    record(`${name}: Press toggles ${reader} once, Unpress leaves it, a second tap restores it`, accepted(fp) && accepted(fu) && v0 !== undefined && v1 !== v0 && v2 === v1 && v3 === v0 && line === "", { v0, v1, v2, v3, line });
+    try {
+      const fp = await press(A, SLOTS.A);
+      const v1 = await settle(read, v0);
+      const fu = await unpress(A, SLOTS.A);
+      await sleep(400);
+      const v2 = await read();
+      await press(A, SLOTS.A); await unpress(A, SLOTS.A);
+      const v3 = await settle(read, v2);
+      const line = await readCmd(A);
+      // Sustained hold: down for 1.5 s, the mode flips once and stays (no repeat), Unpress leaves it.
+      const h0 = await read();
+      const hp = await press(A, SLOTS.A);
+      const h1 = await settle(read, h0);
+      await sleep(1500);
+      const h2 = await read();
+      const hu = await unpress(A, SLOTS.A);
+      await sleep(400);
+      const h3 = await read();
+      await press(A, SLOTS.A); await unpress(A, SLOTS.A);
+      const h4 = await settle(read, h3);
+      record(`${name} hold: down 1.5 s flips ${reader} once and keeps it, Unpress leaves it`, accepted(hp) && accepted(hu) && h1 !== h0 && h2 === h1 && h3 === h1 && h4 === h0, { h0, h1, h2, h3, h4 });
+      record(`${name}: Press toggles ${reader} once, Unpress leaves it, a second tap restores it`, accepted(fp) && accepted(fu) && v0 !== undefined && v1 !== v0 && v2 === v1 && v3 === v0 && line === "", { v0, v1, v2, v3, line });
+    } finally {
+      // Whatever happened in the stage, the mode goes back to its baseline with one more tap (review 5).
+      const now = await read().catch(() => undefined);
+      if (v0 !== undefined && now !== undefined && now !== v0) {
+        await code(A, SLOTS.A, name).catch(() => {});
+        if (accepted(await press(A, SLOTS.A).catch(() => null))) await unpress(A, SLOTS.A).catch(() => {});
+        note(`${name}: ${reader} restored to ${v0}`, await settle(read, now).catch(() => undefined));
+      }
+    }
   }
 }
 
@@ -368,13 +380,22 @@ async function runPopup(A) {
   // command line buffer (KB-10 32-35), so CmdObj().cmdtext is the readback. Escape would close the pop-up; the
   // line is cleared between sequences with the CLEAR code, which KB-10 qualified.
   const line0 = await readCmd(A);
-  if (line0 !== "") { console.error(`the pop-up's line is not empty (${JSON.stringify(line0)})`); process.exit(2); }
+  // A throw (not process.exit) so the caller's finally still removes the probe objects (review 5).
+  if (line0 !== "") throw new Error(`the pop-up's line is not empty (${JSON.stringify(line0)}); empty it and run again`);
   const clr = async () => { await code(A, SLOTS.B, "CLEAR"); await press(A, SLOTS.B); await unpress(A, SLOTS.B); await sleep(100); return (await readCmd(A)) === ""; };
   for (const seq of POPUP_SEQUENCES) {
     // (a) one chunk: every pair inside a single Lua request (KB-10 35a shape).
     const parts = [];
     for (const name of seq) parts.push(`q:Set('Code', '${name}'); Cmd('Press Page ${EXP}.${SLOTS.A.e}'); Cmd('Unpress Page ${EXP}.${SLOTS.A.e}')`);
-    await lua(A, `local q = ObjectList('Quickey ${SLOTS.A.q}')[1]\n${parts.join("\n")}\nreturn true`);
+    // The same ownership checks as code(): name, marker Note and the executor holding this Quickey (review 5).
+    const chunk = await lua(A, `local q = ObjectList('Quickey ${SLOTS.A.q}')[1]
+if not q or tostring(q.name) ~= '${SLOTS.A.name}' or tostring(q:Get('Note')) ~= '${MARKER}' then return 'not ours' end
+local h = ObjectList('Page ${EXP}.${SLOTS.A.e}')[1]
+local o = h and h:Get('Object')
+if not o or tostring(o:GetClass()) ~= 'Quickey' or tonumber(o.index) ~= ${SLOTS.A.q} then return 'executor not ours' end
+${parts.join("\n")}
+return true`);
+    if (chunk !== true) throw new Error(`probe slot ${SLOTS.A.name}: ${chunk}; nothing pressed`);
     await sleep(200);
     const oneChunk = await readCmd(A);
     if (!(await clr())) { record(`${seq.join(" ")}: CLEAR empties the pop-up line`, false, await readCmd(A)); return; }
