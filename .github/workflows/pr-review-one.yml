@@ -30,7 +30,7 @@ jobs:
         if: inputs.review
         with:
           repository: bdstark/gma3-mcp
-          ref: 8bbf30e7f92cd7e2fbd2dfba299be1df4ff498ac
+          ref: 672a8893b50b4436f97e5b5607b443aa38ea2fde
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -69,6 +69,7 @@ jobs:
           sandbox: read-only
           safety-strategy: drop-sudo
           allow-users: bdstark
+          allow-bot-users: chatgpt-codex-connector,github-actions[bot]
   publish:
     needs: independent
     runs-on: ubuntu-latest
@@ -81,7 +82,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 8bbf30e7f92cd7e2fbd2dfba299be1df4ff498ac
+          ref: 672a8893b50b4436f97e5b5607b443aa38ea2fde
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -111,7 +112,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 8bbf30e7f92cd7e2fbd2dfba299be1df4ff498ac
+          ref: 672a8893b50b4436f97e5b5607b443aa38ea2fde
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -135,7 +136,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 8bbf30e7f92cd7e2fbd2dfba299be1df4ff498ac
+          ref: 672a8893b50b4436f97e5b5607b443aa38ea2fde
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
