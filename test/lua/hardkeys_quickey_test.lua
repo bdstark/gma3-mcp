@@ -367,12 +367,14 @@ do
   local firstPress
   for i, cmd in ipairs(cmds) do if cmd:find("^Press") then firstPress = i; break end end
   check("a probed pair breaks the frame once, after the first key's press and before the second's", c and console.frames == 1 and firstPress and console.frameAt[1] == n0 + firstPress and cmds[#cmds]:find("^Press"), J({ frames = console.frames, at = console.frameAt, cmds = cmds }))
+  inst:service(1.05)  -- closes the frame the presses went out in (review 18: service() ends a console frame)
   local nr, fr = #console.cmds, console.frames
   inst:service(1.11)
   local rel = cmdsSince(nr)
   check("review 16: the ordered pair is released with a frame break between its two Unpress commands", #rel == 2 and console.frames == fr + 1 and console.frameAt[#console.frameAt] == nr + 1 and pressedCount() == 0, J({ rel = rel, frames = console.frames, at = console.frameAt }))
   -- A frame break that raises before the second release keeps that key down (blocked) until recover().
   local cb = inst:combo("s", 1.2, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 50 })
+  inst:service(1.21)
   console.raise.frame = "frame break failed"
   local sv = inst:service(1.3)
   check("...a raising break before the second release keeps it held and reports it blocked", cb and pressedCount() == 1 and sv.blocked and #sv.blocked == 1 and sv.blocked[1].hold == cb.holds[2].id, J({ pressed = pressedCount(), blocked = sv.blocked }))
@@ -429,6 +431,36 @@ do
   check("a sequence's cleanup report counts the blocked later key", rep and rep.cleanup and rep.cleanup.blocked == 1 and rep.cleanup.unresolved == 1 and #rep.cleanup.blockedHolds == 1, J(rep and rep.cleanup))
   inst:recover(nil, t + 1)
   check("...and recover() releases both", pressedCount() == 0)
+end
+
+-- KB-28 review 18: every key event of an ordered group in one console frame is separated, whatever path issues it.
+do
+  local inst, backend = fresh()
+  console.frames, console.frameAt = 0, {}
+  -- Two adjacent release steps of a sequence break the frame between their Unpress commands.
+  local n0 = #console.cmds
+  local q = inst:startSequence("s", 1, { { kind = "combo", keys = { { key = "NUM1" }, { key = "THRU" } } }, { kind = "release", key = "NUM1" }, { kind = "release", key = "THRU" } })
+  inst:service(1.01)
+  local cmds = cmdsSince(n0)
+  local unp = {}; for k, cmd in ipairs(cmds) do if cmd:find("^Unpress") then unp[#unp + 1] = n0 + k end end
+  local between = false; for _, at in ipairs(console.frameAt) do if #unp == 2 and at >= unp[1] and at < unp[2] then between = true end end
+  check("adjacent sequence release steps of an ordered combo are separated by a frame break", q and #unp == 2 and between and pressedCount() == 0, J({ cmds = cmds, at = console.frameAt }))
+  -- Without a working break, an interaction ending in the failed combo's frame keeps the earlier key down.
+  local origPress, nP = deps.executors.press, 0
+  deps.executors.press = function(...) nP = nP + 1; if nP == 2 then error("press wedged", 0) end return origPress(...) end
+  local origSep = backend.separateFrames
+  local nF = 0
+  backend.separateFrames = function(...) nF = nF + 1; if nF >= 2 then error("break wedged", 0) end return origSep(...) end
+  inst:service(1.5)
+  local nb = #console.cmds
+  local q2 = inst:startSequence("s", 2, { { kind = "combo", keys = { { key = "NUM1" }, { key = "THRU" } }, holdMs = 50 } })
+  inst:service(2.01)
+  deps.executors.press, backend.separateFrames = origPress, origSep
+  local unp2 = 0; for _, cmd in ipairs(cmdsSince(nb)) do if cmd:find("^Unpress") then unp2 = unp2 + 1 end end
+  local rep = q2 and inst:sequenceStatus(q2.id, 2.01)
+  check("a failed combo's rollback and the auto interaction's end release nothing in that frame when the break raises", q2 and rep.state ~= "running" and unp2 == 0 and pressedCount() == 1, J({ state = rep and rep.state, cmds = cmdsSince(nb), cleanup = rep and rep.cleanup }))
+  inst:recover(nil, 3)
+  check("...recover() in a later frame releases it", pressedCount() == 0, J(inst:status(3).holds))
 end
 
 -------------------------------------------------------------------------------
@@ -953,8 +985,9 @@ do
     local r1 = i5:recover(nil, 5)
     local u1 = {}; for _, cmd in ipairs(cmdsSince(b1)) do if cmd:find("^Unpress") then u1[#u1 + 1] = cmd end end
     check("without a separator recover() releases only the first key of an adopted ordered group", c4 and #u1 == 1 and u1[1] == ("Unpress Page 1." .. c4.holds[1].target.executor) and r1.blocked and #r1.blocked == 1 and pressedCount() == 1, J({ u1 = u1, blocked = r1.blocked }))
+    i5:service(5.5)  -- the next console frame
     i5:recover(nil, 6)
-    check("...and the next recover() call releases the later key", pressedCount() == 0, J(i5:status(6).holds))
+    check("...and a recover() call in a later frame releases the later key", pressedCount() == 0, J(i5:status(6).holds))
     i5:dispose(7)
   end
   -- The sequence preflight sees a live ordered combo of the session.
