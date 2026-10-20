@@ -2,7 +2,7 @@
 
 The reusable workflows in this repository serve only `bdstark/gma3-mcp`, `bdstark/gma3-beat-sync` and
 `bdstark/gma3-phrase-sync`. Callers pin an immutable revision. Each job fetches only the shared automation directory
-from its pinned controller revision. Candidate product code is checked out separately and is reviewed under its own
+from its pinned controller revision. The candidate repository is fetched separately with trusted main checked out; PR commits are inspected as data using git diff/show, under its own
 licence and repository guidance. No product implementation is transferred between repositories.
 
 ## Setup and rollout

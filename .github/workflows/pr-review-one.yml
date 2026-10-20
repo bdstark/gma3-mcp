@@ -30,14 +30,14 @@ jobs:
         if: inputs.review
         with:
           repository: bdstark/gma3-mcp
-          ref: 672a8893b50b4436f97e5b5607b443aa38ea2fde
+          ref: e4f26cc0a0a3409e0c84b08b6654ad82b660fcb9
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: inputs.review
         with:
-          ref: ${{ inputs.head }}
+          ref: main
           fetch-depth: 0
           persist-credentials: false
           path: candidate
@@ -54,6 +54,10 @@ jobs:
             if (!process.env.REVIEW_KEY) throw new Error('Configure OPENAI_API_KEY in repository Actions secrets');
             const pr = (await github.rest.pulls.get({...context.repo, pull_number:Number(process.env.PR_NUMBER)})).data;
             if (pr.head.sha !== process.env.HEAD_SHA || pr.base.sha !== process.env.BASE_SHA) throw new Error('Review head/base changed');
+            const cp = require('node:child_process');
+            const base = cp.execFileSync('git', ['rev-parse','HEAD'], {cwd:'candidate',encoding:'utf8'}).trim();
+            if (base !== pr.base.sha) throw new Error('Trusted main checkout moved; retry');
+            cp.execFileSync('git', ['cat-file','-e',`${pr.head.sha}^{commit}`], {cwd:'candidate'});
             require('node:fs').writeFileSync('review-context.json', JSON.stringify({head_sha:pr.head.sha,base_sha:pr.base.sha,requirements:pr.body}));
       # Last step: the reviewer has no write token, and candidate scripts are never run.
       - name: Independent offline review
@@ -82,7 +86,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 672a8893b50b4436f97e5b5607b443aa38ea2fde
+          ref: e4f26cc0a0a3409e0c84b08b6654ad82b660fcb9
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -112,7 +116,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 672a8893b50b4436f97e5b5607b443aa38ea2fde
+          ref: e4f26cc0a0a3409e0c84b08b6654ad82b660fcb9
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -136,7 +140,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 672a8893b50b4436f97e5b5607b443aa38ea2fde
+          ref: e4f26cc0a0a3409e0c84b08b6654ad82b660fcb9
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
