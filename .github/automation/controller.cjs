@@ -58,7 +58,7 @@ async function main({github:g, context:c, core, mode}) {
   if (mode === 'prepare') {
     const p=c.payload;
     // Ignore ordinary comments and other workflow activity, avoiding feedback loops and API-key abuse.
-    if (c.eventName === 'issue_comment' && !(p.comment?.user?.login === BOT && p.comment.user.type === 'Bot')) { core.setOutput('matrix','[]'); return; }
+    if (c.eventName === 'issue_comment' && !(p.comment?.user?.login === BOT && p.comment.user.type === 'Bot') && !(p.comment?.user?.login === OWNER && p.comment.body?.trim() === '/accept')) { core.setOutput('matrix','[]'); return; }
     if (c.eventName === 'pull_request_review' && p.review?.user?.login !== BOT) { core.setOutput('matrix','[]'); return; }
     if (c.eventName === 'workflow_run' && !['pull_request','dynamic'].includes(p.workflow_run?.event)) { core.setOutput('matrix','[]'); return; }
     const number = p.pull_request?.number || (p.issue?.pull_request && p.issue.number) || Number(p.inputs?.pr_number || 0);
