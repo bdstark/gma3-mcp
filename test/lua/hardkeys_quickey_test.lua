@@ -1033,6 +1033,24 @@ do
     local a9, e9 = newInst():adoptBank(d9.bank, 3)
     check("...and that record is adopted", a9 ~= nil, J(e9))
   end
+  -- #75 review 17: when the displaced code's Quickey survives too, it keeps no position and the record still adopts.
+  do
+    newConsole(); pageWithExecutors(1, 190, 20)
+    local i10 = newInst()
+    local b10 = assert(i10:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0))
+    local maQ, stQ = i10:bankTarget("MA1", 0).index, i10:bankTarget("STORE", 0).index
+    local stE; for i, c in ipairs(b10.codes) do if c.name == "STORE" then stE = 189 + i end end
+    console.executors["1." .. stE] = { quickey = maQ }
+    local origClear, origDelete = deps.executors.clear, deps.quickeys.delete
+    deps.executors.clear = function(page, index) if page == 1 and index == stE then return false, "refused" end return origClear(page, index) end
+    deps.quickeys.delete = function(index) if index == stQ then return false, "refused" end return origDelete(index) end
+    local t10 = i10:teardownBank(1, { authorized = true })
+    deps.executors.clear, deps.quickeys.delete = origClear, origDelete
+    local d10 = i10:dispose(2)
+    local recs = {}; for _, c in ipairs(d10.bank and d10.bank.codes or {}) do recs[c.name] = c end
+    local a10, e10 = newInst():adoptBank(d10.bank, 3)
+    check("a displaced code keeps no position, MA1 keeps its holder, and the partial record adopts", t10 and recs.MA1 and recs.MA1.executor == stE and recs.STORE and recs.STORE.executor == nil and a10 ~= nil, J({ ma = recs.MA1, st = recs.STORE, err = e10 }))
+  end
   -- #75 review 10: an executor press that raised may have acted, so it counts as a press for the frame gates.
   do
     local inst3 = fresh()

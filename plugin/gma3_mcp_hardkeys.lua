@@ -744,14 +744,14 @@ end
 -- beyond the codes hold the placeholder. Sets x.code on the bank's executor entries (nil = placeholder).
 -- positions (code -> executor number, from a kept record, review 11 of #75) restores the original layout instead,
 -- which a partially torn-down bank (fewer codes than it was provisioned with) needs.
-local function applyStaticMap(bank, positions)
+local function applyStaticMap(bank, positions, partial)
   if not (bank.spec and bank.spec.executors and bank.spec.executors.static) then return true end
   if positions then
     bank.staticByCode = {}
     local byIndex = {}
     for _, x in ipairs(bank.executors) do byIndex[x.index] = x; x.code = nil end
     for _, e in ipairs(bank.codes) do
-      if not e.placeholder then
+      if not e.placeholder and not (partial and positions[e.name] == nil) then  -- a displaced code of a partial record has none
         local x = byIndex[positions[e.name]]
         if not x or x.code then return nil, string.format("static position of %s (executor %s) is outside the bank or taken twice", e.name, tostring(positions[e.name])) end
         x.code = e.name
@@ -2655,6 +2655,10 @@ function Instance:teardownBank(now, opts)
         -- so a retried teardown's unreadable fallback keeps the Quickey that is really there.
         local old = bank.staticByCode[e.name]
         if old and old.code == e.name then old.code = nil end
+        -- The code the holder stood for is displaced (review 17): its Quickey is not on that executor, so it keeps no
+        -- position (a partial record may list such a code without one) and two codes never share an executor.
+        local displaced = holderX.code
+        if displaced and displaced ~= e.name and bank.staticByCode[displaced] == holderX then bank.staticByCode[displaced] = nil end
         holderX.code = e.name
         bank.staticByCode[e.name] = holderX
       end
@@ -2744,11 +2748,12 @@ function Instance:adoptBank(record, now)
         if type(c.executor) == "number" then positions = positions or {}; positions[c.name] = c.executor; any = true else all = false end
       end
     end
-    if any and not all then return fail("bad-argument", "the static record gives an executor for some codes but not all") end
+    -- A partial record may list displaced codes without an executor (review 17); a complete one maps every code.
+    if any and not all and not partial then return fail("bad-argument", "the static record gives an executor for some codes but not all") end
     -- Only the placeholder left (review 12): no code has a position to lose.
     if partial and hasCode and not any then return fail("bad-argument", "the partial static record does not carry its codes' executors, so their original positions are unknown; tear it down from its own version or delete the objects by hand") end
   end
-  local okMap, mapErr = applyStaticMap(bank, positions)
+  local okMap, mapErr = applyStaticMap(bank, positions, partial)
   if not okMap then return fail("bad-argument", "the record's " .. mapErr) end
   if not record.show or record.show == "" then return fail("bad-argument", "the record carries no show identity") end
   self._bank = bank
