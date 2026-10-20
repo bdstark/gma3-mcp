@@ -53,7 +53,7 @@ function run(args: string[], env: Record<string, string>): Promise<{ status: num
 const ping = (extra: Record<string, unknown> = {}) => ({ bridgeVersion: "0.36.0", host: "127.0.0.1", port: 9800, showfile: "mcp-test-disposable", lua: { enabled: true }, input: { enabled: false, holds: 0, unresolved: 0, unresolvedFromPreviousRun: 0, busy: null }, ...extra });
 
 /** A console whose reads answer from `state`; every write-shaped Lua chunk is recorded. */
-function fakeConsole(p: unknown, state: { surface?: boolean; cmd?: string; ma?: boolean; slot?: unknown }) {
+function fakeConsole(p: unknown, state: { surface?: boolean; cmd?: string; ma?: boolean; slot?: unknown; onWrite?: (code: string) => unknown }) {
   const writes: string[] = [];
   const handler: Handler = (op, args) => {
     if (op === "ping") return p;
@@ -64,6 +64,7 @@ function fakeConsole(p: unknown, state: { surface?: boolean; cmd?: string; ma?: 
     if (code.includes("MAState")) return { values: [state.ma ?? false] };
     if (code.includes("ObjectList('Quickey") && code.includes("ObjectList('Page") && !code.includes("Cmd(")) return { values: [state.slot ?? { quickey: false, exec: false }] };
     writes.push(code);
+    if (state.onWrite) return { values: [state.onWrite(code)] };
     throw new Error("write reached the fake console");
   };
   return { handler, writes };
@@ -125,4 +126,18 @@ test("refuses enabled bridge input or open input sessions, and popup mode with M
   await expectRefusal(ping({ input }), {}, /without input/);
   await expectRefusal(ping({ input: { ...input, enabled: false, sessions: 1 } }), {}, /1 session/);
   await expectRefusal(ping(), { ma: true }, /MASTATE=true/, ["popup"]);
+});
+
+test("setup removes a new Quickey in the same request when the console ignores its ownership Note", async () => {
+  const c = fakeConsole(ping(), { onWrite: (code) => (code.includes("Store Quickey") ? "marker not applied; removed" : true) });
+  const b = await startFakeBridge(c.handler);
+  try {
+    const r = await run(["run"], { GMA3_BRIDGE_PORT: String(b.port) });
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, /ignored the ownership Note/);
+    assert.equal(c.writes.length, 1, "only the setup request of the first slot was sent");
+    const chunk = c.writes[0];
+    const check = chunk.indexOf("q:Get('Note')"), del = chunk.indexOf("Delete Quickey"), name = chunk.indexOf("q:Set('Name'"), assign = chunk.indexOf("Assign Quickey");
+    assert.ok(check > 0 && del > check && name > del && assign > name, "the marker is verified, and a failed one deleted, before the rename and the Assign");
+  } finally { b.close(); }
 });
