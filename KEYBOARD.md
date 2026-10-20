@@ -1479,6 +1479,12 @@ Dimmer 100 once); in the Edit Command pop-up one tap per request kept the order 
 chunk reordered, as on the executor path, `At` inserting nothing; `4 2 . 5` and Please typed into the Dimmer
 calculator stored 42.5.
 
+**Name collision fix (2026-10-20):** a static bank at 940 provisioned in a show that already held the surface's dynamic
+bank at 900 stopped after its first Quickey: the console keeps Quickey names unique in the pool and stored the new one
+as `MCP MA1#2`, the readback failed, and the rollback kept Quickey 940 because its name no longer matched. The
+preflight now lists the pool (`deps.quickeys.list`) and refuses with `name-taken`, naming the colliding pool index,
+before anything is created; the rollback deletes an object whose Name is the written one plus a console-added `#<n>`.
+
 ## Evidence and open questions
 
 - [MA: Plugins](https://help.malighting.com/grandMA3/2.4/HTML/plugins.html) describes `HelpLua`, multiple

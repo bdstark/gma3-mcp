@@ -1919,6 +1919,12 @@ do
       return x.object end end }
   end
   ObjectList = function(ref)
+    if ref == "Quickey Thru" then
+      local t = {}
+      for i in pairs(pool) do t[#t + 1] = quickeyHandle(i) end
+      table.sort(t, function(a, b) return a.index < b.index end)
+      return t
+    end
     local qi = tostring(ref):match("^Quickey (%d+)$")
     if qi then return pool[tonumber(qi)] and { quickeyHandle(tonumber(qi)) } or {} end
     local page, ei = tostring(ref):match("^Page (%d+)%.(%d+)$")
