@@ -30,7 +30,7 @@ jobs:
         if: inputs.review
         with:
           repository: bdstark/gma3-mcp
-          ref: f6d9c227674e4df777f8f5e31af9d6b19daf647a
+          ref: a113dac9e2b0b4bb41381f6270a97bb3b2cd41c5
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -86,7 +86,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: f6d9c227674e4df777f8f5e31af9d6b19daf647a
+          ref: a113dac9e2b0b4bb41381f6270a97bb3b2cd41c5
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -105,6 +105,7 @@ jobs:
   accept:
     concurrency:
       group: pr-merge-${{ github.repository }}
+      queue: max
       cancel-in-progress: false
     needs: publish
     if: vars.PR_MERGE_ENABLED == 'true'
@@ -119,7 +120,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: f6d9c227674e4df777f8f5e31af9d6b19daf647a
+          ref: a113dac9e2b0b4bb41381f6270a97bb3b2cd41c5
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -136,6 +137,7 @@ jobs:
   cleanup:
     concurrency:
       group: pr-merge-${{ github.repository }}
+      queue: max
       cancel-in-progress: false
     if: inputs.cleanup && vars.PR_MERGE_ENABLED == 'true'
     runs-on: ubuntu-latest
@@ -147,7 +149,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: f6d9c227674e4df777f8f5e31af9d6b19daf647a
+          ref: a113dac9e2b0b4bb41381f6270a97bb3b2cd41c5
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy

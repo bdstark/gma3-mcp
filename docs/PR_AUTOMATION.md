@@ -58,6 +58,9 @@ need to trigger another workflow: the current controller performs the merge dire
 ## Cleanup and stacked PRs
 
 Merge and cleanup jobs serialize repository-wide and recheck eligibility after acquiring that serialization.
+They use `queue: max` so pending jobs are retained (GitHub limits this queue to 100; excess jobs need a new dispatch).
+A fresh non-ready independent verdict vetoes acceptance even when an older ready receipt exists. GitHub
+mergeability that is temporarily unknown is polled four times at three-second intervals before holding the PR.
 After an automated merge the controller explicitly dispatches another scan: GITHUB_TOKEN pushes alone do not trigger
 new workflows. Other PRs whose CI base is stale still need rebase/current-base CI before acceptance.
 
@@ -76,6 +79,7 @@ deletion off while using the stack-aware controller.
 Use strict up-to-date required CI protection where available, and avoid concurrent manual writes to main during
 automatic acceptance; repository-wide serialization covers this controller, not external maintainers.
 
-Controller tests: `node --test .github/automation/controller.test.cjs`. Workflow validation: `actionlint`.
+Controller tests: `node --test .github/automation/controller.test.cjs`. Workflow validation: `actionlint` (older releases do not recognize GitHub’s documented `concurrency.queue`;
+use a current release or ignore only that known syntax diagnostic).
 When changing the controller, commit it first and bump the immutable controller ref in both reusable workflows; then
 commit the workflows and bump each consumer's reusable-workflow ref. Review those changes manually.
