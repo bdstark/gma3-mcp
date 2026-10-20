@@ -8,6 +8,8 @@ on:
       base: {type: string, required: true}
       review: {type: boolean, required: true}
       cleanup: {type: boolean, required: true}
+    secrets:
+      OPENAI_API_KEY: {required: true}
 permissions:
   contents: read
 concurrency:

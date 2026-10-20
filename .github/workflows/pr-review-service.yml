@@ -2,6 +2,8 @@
 name: Reusable PR review service
 on:
   workflow_call:
+    secrets:
+      OPENAI_API_KEY: {required: true}
 permissions:
   contents: read
 jobs:
@@ -36,6 +38,8 @@ jobs:
       matrix:
         pr: ${{ fromJSON(needs.plan.outputs.matrix) }}
     uses: ./.github/workflows/pr-review-one.yml
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     with:
       number: ${{ matrix.pr.number }}
       head: ${{ matrix.pr.head }}
