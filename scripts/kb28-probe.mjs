@@ -150,10 +150,19 @@ async function setup(conn) {
 Cmd('Store Quickey ${s.q} /NoConfirmation')
 local q = ObjectList('Quickey ${s.q}')[1]
 if not q then return 'not created' end
-q:Set('Note', '${MARKER}'); q:Set('Name', '${s.name}')  -- the marker first: it is the identity cleanup relies on (review 13)
+q:Set('Note', '${MARKER}')  -- the marker first: it is the identity cleanup relies on (review 13)
+if tostring(q:Get('Note')) ~= '${MARKER}' then
+  -- Review 15: an ignored marker write leaves an object cleanup cannot recognise; it is removed in this request,
+  -- before it is renamed or assigned.
+  Cmd('Delete Quickey ${s.q} /NoConfirmation')
+  if ObjectList('Quickey ${s.q}')[1] then return 'marker not applied; removing it failed' end
+  return 'marker not applied; removed'
+end
+q:Set('Name', '${s.name}')
 Cmd('Assign Quickey ${s.q} At Page ${EXP}.${s.e}')
 return true`);
     if (st === "occupied") { createdHere.delete(s.name); throw new Error(`Quickey ${s.q} or executor ${EXP}.${s.e} became occupied before setup; nothing created`); }
+    if (st === "marker not applied; removed") { createdHere.delete(s.name); throw new Error(`Quickey ${s.q}: the console ignored the ownership Note, so the new object was removed again; nothing of this slot is left`); }
     if (st !== true) throw new Error(`creating Quickey ${s.q}: ${st}`);
     const back = await readSlot(conn, s);
     if (!ours(s, back) || !execOurs(s, back)) throw new Error(`probe slot ${s.name} does not read back (${JSON.stringify(back)})`);
@@ -428,14 +437,22 @@ async function dimmer(A) {
   const row = (r.result.rows || []).find((x) => x.attribute === "Dimmer");
   return row ? row.value : null;
 }
+// Set when the FULL stage ends while its slot may still be down: the programmer is cleared only after cleanup has
+// released the slot (review 15), never alongside an uncertain held key.
+let fullClearPending = false;
+async function clearAfterFull(A) {
+  const cleared = await lua(A, `local fb = Cmd('ClearAll'); return { fb = tostring(fb), sel = SelectionCount() }`).catch((e) => ({ error: String(e && e.message) }));
+  const dLeft = await dimmer(A).catch(() => "unreadable");
+  record("FULL: selection and programmer cleared after the stage", cleared && cleared.sel === 0 && dLeft === null, { cleared, dimmer: dLeft });
+}
 async function runFull(A) {
   try {
     await runFullStage(A);
   } finally {
-    // The selection and the programmer value are cleared whatever happened in the stage (review 4).
-    const cleared = await lua(A, `local fb = Cmd('ClearAll'); return { fb = tostring(fb), sel = SelectionCount() }`).catch((e) => ({ error: String(e && e.message) }));
-    const dLeft = await dimmer(A).catch(() => "unreadable");
-    record("FULL: selection and programmer cleared after the stage", cleared && cleared.sel === 0 && dLeft === null, { cleared, dimmer: dLeft });
+    // The selection and the programmer value are cleared whatever happened in the stage (review 4), but not while
+    // the slot may be down (a throw after the press, a refused Unpress): then main() clears after cleanup.
+    if (pressed.has(SLOTS.A.name)) fullClearPending = true;
+    else await clearAfterFull(A);
   }
 }
 async function runFullStage(A) {
@@ -571,6 +588,10 @@ async function main() {
     // and Escape is never injected while such a slot remains; a failing line clear cannot skip the cleanup.
     const left = await cleanup(A);
     if (mode === "run" && ready && pressed.size === 0) await clearLine(A).catch((e) => note("line clear after cleanup failed", String(e && e.message)));
+    if (fullClearPending) {
+      if (pressed.size === 0) await clearAfterFull(A);
+      else record("FULL: programmer left for the operator (the slot may still be down, so ClearAll was not sent)", false);
+    }
     record("probe objects removed, slots empty", Object.values(left).every((st) => !st.quickey && !st.exec), left);
     record("MASTATE false at the end", (await readMa(A)) === false);
   }
