@@ -608,5 +608,34 @@ do
   check("recovery after the sequence releases the stuck tap", pressedCount() == 0 and inst:status(30).unresolved == 0)
 end
 
+-- KB-28 review 12: a press-order combo keeps its order across dispose/adopt, and the sequence preflight
+-- knows the session's live ordered combos.
+do
+  local inst = fresh()
+  local c = inst:combo("s", 1, { { key = "NUM1" }, { key = "THRU" } })
+  local n1Exec = c and c.holds[1].target.executor
+  console.fail.unpress = { err = "Object not found" }  -- sticky: every Unpress is refused at shutdown
+  local dis = inst:dispose(2)
+  console.fail.unpress = nil
+  local og = 0; for _, r in ipairs(dis.records) do if r.orderGroup then og = og + 1 end end
+  check("dispose hands back the combo's order group with both records", og == 2, J(dis.records))
+  local inst2 = newInst()
+  inst2:adopt({ dis.records[2], dis.records[1] }, 3)  -- handed back in the wrong order on purpose
+  assert(inst2:enableInput(HK.quickeyBackend(inst2)))
+  inst2:adoptBank(dis.bank, 4)
+  local before = #console.cmds
+  inst2:recover(nil, 5)
+  local unp = {}; for _, cmd in ipairs(cmdsSince(before)) do if cmd:find("^Unpress") then unp[#unp + 1] = cmd end end
+  check("after adoption recover() releases the combo first down, first up", #unp == 2 and unp[1] == ("Unpress Page 1." .. tostring(n1Exec)) and pressedCount() == 0, J(cmdsSince(before)))
+  inst2:dispose(6)
+  -- The sequence preflight sees a live ordered combo of the session.
+  local inst3 = fresh()
+  local c3 = inst3:combo("s", 1, { { key = "NUM1" }, { key = "THRU" } })
+  local nb = #console.cmds
+  local q, err = inst3:startSequence("s", 2, { { kind = "wait", ms = 10 }, { kind = "release", key = "THRU" } })
+  check("a sequence that would release THRU before the live NUM1 of its combo is refused before its first event", c3 and q == nil and err.code == "out-of-order" and #console.cmds == nb, J(err))
+  inst3:releaseAll("s", 3)
+end
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) else print("ALL PASSED") end
