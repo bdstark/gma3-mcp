@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+name: PR automation
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited, closed]
+  issue_comment:
+    types: [created, edited]
+  workflow_run:
+    workflows: [CI, CodeQL, PR review event]
+    types: [completed]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number (empty scans open PRs; merged number retries cleanup)
+        required: false
+        type: string
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+  checks: read
+jobs:
+  service:
+    uses: ./.github/workflows/pr-review-service.yml
