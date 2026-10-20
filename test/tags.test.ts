@@ -299,6 +299,18 @@ test("gma3_assign_tag assigns over a range by name, sets protect and reads every
   assert.equal(r.result.changedCount, 3);
 });
 
+test("review 1: a name is found on any page of the pool, and a protect change on an existing reference counts as changed", async () => {
+  for (let n = 1; n <= 1001; n++) con.tags.set(n, { name: `T${n}`, tagType: "None", forwardCommands: true, action: "Pool Default", note: "" });
+  con.objects.get("Group 950")!.tags!.push({ tag: 1001, protect: false });
+  const r = await h.callJson("gma3_assign_tag", { tag: "T1001", target: "Group 950", protect: true });
+  assert.equal(r.isError, false, r.text);
+  assert.ok(h.fake.requests.some((q) => q.op === "tags" && q.args.offset === 1000), "the second page was read");
+  assert.deepEqual(h.fake.commands, ["Assign Tag 1001 At Group 950"]);
+  assert.equal(r.result.objects[0].changed, true);
+  assert.equal(r.result.objects[0].protectBefore, false);
+  assert.equal(r.result.changedCount, 1);
+});
+
 test("gma3_assign_tag reports a cue target as its Part 0, and off removes the tag", async () => {
   con.tags.set(950, { name: "A", tagType: "None", forwardCommands: true, action: "Pool Default", note: "" });
   let r = await h.callJson("gma3_assign_tag", { tag: 950, target: "Sequence 950 Cue 1" });

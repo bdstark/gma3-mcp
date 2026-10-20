@@ -245,8 +245,13 @@ export async function findTag(bridge: Gma3Bridge, key: number | string, t?: numb
     const r = await readTags(bridge, { tags: [key], references: false }, t);
     return r.items[0] ? { tag: r.items[0] } : { error: `Tag ${key} does not exist` };
   }
-  const all = await readTags(bridge, { references: false, limit: 1000 }, t);
-  const hits = all.items.filter((x) => x.name === key);
+  // Every page of the show-wide pool (review round 1: a later page may hold the name).
+  const hits: TagInfo[] = [];
+  for (let offset = 0; ; offset += 1000) {
+    const page = await readTags(bridge, { references: false, offset, limit: 1000 }, t);
+    hits.push(...page.items.filter((x) => x.name === key));
+    if (!page.incomplete || page.items.length === 0) break;
+  }
   if (hits.length === 0) return { error: `no tag is named ${JSON.stringify(key)}` };
   if (hits.length > 1) return { error: `${hits.length} tags are named ${JSON.stringify(key)} (${hits.map((h) => `Tag ${h.no}`).join(", ")}); give the number` };
   return { tag: hits[0] };
@@ -611,10 +616,13 @@ export async function assignTag(base: ToolContext, raw: AssignArgs): Promise<Ope
       }
     }
     const rows = (after ?? before).map((o, i) => {
-      const was = entryOf(before[i] ?? {}, no) !== undefined;
+      const prior = entryOf(before[i] ?? {}, no);
+      const was = prior !== undefined;
       const e = entryOf(o, no);
+      // A protect write on a reference that was already there is a change too (review round 1).
+      const protectChanged = protect !== undefined && prior !== undefined && e !== undefined && prior.protect !== e.protect;
       return presentObject(o, {
-        ...(after ? { carries: e !== undefined, ...(e ? { protect: e.protect ?? null, ...(e.flagUnreadable ? { protectUnreadable: true } : {}) } : {}), changed: was !== (e !== undefined) } : { carried: was }),
+        ...(after ? { carries: e !== undefined, ...(e ? { protect: e.protect ?? null, ...(e.flagUnreadable ? { protectUnreadable: true } : {}) } : {}), changed: was !== (e !== undefined) || protectChanged, ...(protectChanged ? { protectBefore: prior!.protect ?? null } : {}) } : { carried: was }),
         tags: tagList(o.tags),
       });
     });
