@@ -1399,8 +1399,10 @@ the probe rolled (`CHORD_PAIRS`, `chordWith = "probed"`, reviews 3 and 9): `A>B`
 a pair with a KB-28 code (NUM1 and THRU included) on either side is allowed only when it is listed; KB-10's NUM5, STORE
 and MA1 keep their unrestricted chord flag between themselves, and every other pair is refused before dispatch. A
 combo that contains a probed code releases in press order (first down, first up), the order the pairs were qualified
-in (review 7); releasing one of its keys before an earlier one is refused (`out-of-order`, review 9); other combos keep
-newest first. No MCP tool or TypeScript contract changed.
+in (review 7); releasing one of its keys before an earlier one is refused (`out-of-order`, review 9), by the sequence
+preflight as well, and a later key stays down while an earlier one's release is unresolved (review 10); other combos
+keep newest first. A probed pair is admitted only between keys of the same combo: next to a separately held key it is
+refused, because only a combo releases in the qualified order (review 10). No MCP tool or TypeScript contract changed.
 
 ### Record (2026-10-20)
 
