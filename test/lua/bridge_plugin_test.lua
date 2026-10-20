@@ -1948,6 +1948,10 @@ do
   check("a bank range without executors is refused", lastLog():find("bank=<quickey>/<page>"), lastLog())
   Main(nil, "bankcodes=qualified"); Cleanup()
   check("bankcodes needs a range", lastLog():find("needs a bank="), lastLog())
+  Main(nil, "bankexec=static"); Cleanup()
+  check("#75 review 13: bankexec needs a range", lastLog():find("\"bankexec\" needs a bank="), lastLog())
+  Main(nil, "bank=900/1.190-197 bankexec=fixed"); Cleanup()
+  check("...and takes static or dynamic only", lastLog():find("expected bankexec=static or bankexec=dynamic"), lastLog())
   state.input.bank = nil
   local before = #logs
   start("9800 input=fake bank=900/1.190-197")
@@ -1976,6 +1980,14 @@ do
   before = #logs
   Main(nil, "bank=900/1.190-197"); Cleanup()
   check("re-provisioning while a bank exists is refused as bank-exists", logFound("bank provision refused %[bank%-exists%]", before), lastLog())
+  -- #75 review 13: bankexec=static reaches the module's executor spec.
+  do
+    local realProvision, seen = hk.instance.provisionBank, nil
+    hk.instance.provisionBank = function(self, spec, t) seen = spec; return realProvision(self, spec, t) end
+    Main(nil, "bank=900/1.190-197 bankexec=static"); Cleanup()
+    hk.instance.provisionBank = realProvision
+    check("bankexec=static forwards executors.static = true", seen and seen.executors.static == true and seen.executors.first == 190, J(seen and seen.executors))
+  end
   -- KB-13: the owned-Quickey backend through the bridge argument "input=quickey".
   before = #logs
   Main(nil, "input=quickey"); Cleanup()

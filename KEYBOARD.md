@@ -1459,7 +1459,8 @@ per key. The operator asked for less noise and work per key, and for a static as
   assigned once at provisioning (the rest hold the placeholder); `count` must cover the codes (up to 256). A press goes
   to the code's own executor without any Assign, after checking that it still holds that code's Quickey; a reassigned
   executor is refused (`misassigned`), never repaired. A static bank has its own id letter (`@q900.s1.301-333`), so a
-  record of one mode is never adopted as the other; adoption rebuilds the map.
+  record of one mode is never adopted as the other; adoption rebuilds the map. Through the bridge:
+  `Plugin "gma3_mcp_bridge" "bank=940/1.301-340 bankexec=static"` (review 13).
 - Reviews of bdstark/gma3-mcp#75: a direct tap skips the executor preflight; a raised direct tap is `press-uncertain`;
   an exclusive tap (a long-press) and a tap with `holdMs` above the 50 ms default stay executor-held; adoption counts
   `direct` in `requalified`; a sequence sends one direct tap per service call. Bridge 0.37.0 forwards `direct` in key

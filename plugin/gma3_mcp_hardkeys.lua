@@ -2576,8 +2576,15 @@ function Instance:teardownBank(now, opts)
   -- (pool index -> executor), so no skipped executor points at a deleted object.
   local keep = {}
   local function keepFor(x, cls, ref)
-    local e = (cls and cls.state == "assigned" and bank.byName[cls.code]) or (cls and cls.state == "reserved" and bank.byName[BANK_PLACEHOLDER])
-      or (x.code and bank.byName[x.code]) or bank.byName[BANK_PLACEHOLDER]
+    local e
+    if cls and cls.state ~= "error" then
+      -- A readable classification says what the executor holds: only a bank Quickey on it is kept (review 13: a
+      -- foreign object or an empty executor references none of ours).
+      e = (cls.state == "assigned" and bank.byName[cls.code]) or (cls.state == "reserved" and bank.byName[BANK_PLACEHOLDER]) or nil
+    else
+      -- Unreadable or unknown: whatever the bank put there may still be on it.
+      e = (x.code and bank.byName[x.code]) or bank.byName[BANK_PLACEHOLDER]
+    end
     if e then keep[e.index] = ref end
   end
   -- Executors first: an assignment to a Quickey that is about to be deleted would dangle.

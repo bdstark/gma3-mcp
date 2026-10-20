@@ -82,7 +82,10 @@
 --                                               "bank=900/1.190" reserves 8 executors from 190.
 --                                               Add "bankcodes=qualified" to provision only the codes
 --                                               with KB-10 evidence (default: every command-area code,
---                                               each reported qualified or discovered).
+--                                               each reported qualified or discovered). Add
+--                                               "bankexec=static" for a static bank (KB-29): code i on
+--                                               executor first + i - 1, assigned once; the range must
+--                                               cover every code.
 --   Plugin "gma3_mcp_bridge" "bank status"      print the bank: codes, slots, executors, problems
 --   Plugin "gma3_mcp_bridge" "bank verify"      re-read every owned object and report what changed
 --   Plugin "gma3_mcp_bridge" "bank teardown"    delete the verified owned Quickeys and clear their
@@ -6517,7 +6520,8 @@ end
 --                            Quickey backend (KB-13), both on one instance (KB-15), the fake backend
 --                            (KB-03 lifecycle only) or disabled
 --   input status | input recover       print input state / operator recovery of unresolved releases
---   bank=<quickey>/<page>.<first>[-<last>]  provision the Quickey bank (KB-12); bankcodes=hardkeys|qualified
+--   bank=<quickey>/<page>.<first>[-<last>]  provision the Quickey bank (KB-12); bankcodes=hardkeys|qualified;
+--                            bankexec=static gives every code its own executor of the range (KB-29)
 --   bank status | bank verify | bank teardown
 local function parseArgument(argument)
   local opts = {}
@@ -6544,6 +6548,10 @@ local function parseArgument(argument)
     elseif key == "bankcodes" then
       if val == "hardkeys" or val == "qualified" then opts.bankCodes = val
       else return nil, string.format("\"%s\": expected bankcodes=hardkeys or bankcodes=qualified", tok) end
+    elseif key == "bankexec" then
+      -- KB-29: static gives every code its own executor of the range, assigned once (review 13 of #75)
+      if val == "static" then opts.bankStatic = true elseif val == "dynamic" then opts.bankStatic = false
+      else return nil, string.format("\"%s\": expected bankexec=static or bankexec=dynamic", tok) end
     elseif l == "stop" or l == "status" then
       opts.command = l
     elseif l == "control" then
@@ -6590,7 +6598,7 @@ local function parseArgument(argument)
       if not port or port < 1 or port > 65535 then return nil, string.format("\"%s\" is not a valid port number (expected 1-65535)", tok) end
       opts.port = port
     else
-      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|quickey|mixed|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bank status\", \"bank verify\", \"bank teardown\", \"control=fake|console|off\", \"control status\" or \"control recover\")", tok)
+      return nil, string.format("\"%s\" is not a recognised argument (expected a port number, \"stop\", \"status\", \"lua\", \"lua on|off\", \"luatime=<ms>\", \"luasteps=<n>\", \"luahook=preserve|replace\", \"input=keyboard|fake|quickey|mixed|off\", \"input status\", \"input recover\", \"bank=<quickey>/<page>.<first>-<last>\", \"bankcodes=hardkeys|qualified\", \"bankexec=static|dynamic\", \"bank status\", \"bank verify\", \"bank teardown\", \"control=fake|console|off\", \"control status\" or \"control recover\")", tok)
     end
     prev = l
   end
@@ -6601,6 +6609,7 @@ local function parseArgument(argument)
     return nil, "\"bank\": expected bank=<quickey>/<page>.<first>[-<last>], \"bank status\", \"bank verify\" or \"bank teardown\" (there is no default range)"
   end
   if opts.bankCodes and not opts.bank then return nil, "\"bankcodes\" needs a bank=... range in the same argument" end
+  if opts.bankStatic ~= nil and not opts.bank then return nil, "\"bankexec\" needs a bank=... range in the same argument" end
   if opts.controlToken and opts.command == nil and opts.control == nil then
     return nil, "\"control\": expected control=fake, control=console, control=off, \"control status\" or \"control recover\" (there is no default backend)"
   end
@@ -6722,7 +6731,7 @@ local function applyBankPolicy(opts)
   local rec = bankInstance("provision")
   if not rec then return end
   local spec = { authorized = true, quickeys = { first = opts.bank.quickeyFirst },
-                 executors = { page = opts.bank.page, first = opts.bank.executorFirst, count = opts.bank.executorCount }, codes = opts.bankCodes }
+                 executors = { page = opts.bank.page, first = opts.bank.executorFirst, count = opts.bank.executorCount, static = opts.bankStatic or nil }, codes = opts.bankCodes }
   local ok, r, err = pcall(rec.instance.provisionBank, rec.instance, spec, now())
   if not ok then logerr("bank provision: raised: %s", tostring(r)); return end
   if not r then

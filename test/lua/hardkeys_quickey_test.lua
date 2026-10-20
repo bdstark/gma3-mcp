@@ -939,6 +939,23 @@ do
     local a6, e6 = newInst():adoptBank(d6.bank, 3)
     check("a placeholder-only partial static record is adopted for cleanup", t6 and t6.complete == false and onlyPh and a6 ~= nil, J({ complete = t6 and t6.complete, codes = d6.bank and d6.bank.codes, err = e6 }))
   end
+  -- #75 review 13: a foreign object read back on the executor after a returned clear references none of ours: the
+  -- old bank Quickey is deleted, not kept.
+  do
+    newConsole(); pageWithExecutors(1, 190, 20)
+    local i7 = newInst()
+    local b7 = assert(i7:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0))
+    local maQ7 = i7:bankTarget("MA1", 0).index
+    local maE7; for i, c in ipairs(b7.codes) do if c.name == "MA1" then maE7 = 189 + i end end
+    local origClear = deps.executors.clear
+    deps.executors.clear = function(page, index)
+      if page == 1 and index == maE7 then console.executors["1." .. index] = { class = "Sequence", name = "Other", index = 5 }; return true end
+      return origClear(page, index)
+    end
+    local t7 = i7:teardownBank(1, { authorized = true })
+    deps.executors.clear = origClear
+    check("a foreign object after the clear does not keep the old bank Quickey", t7 and t7.complete == true and console.quickeys[maQ7] == nil, J({ complete = t7 and t7.complete, skipped = t7 and t7.skipped }))
+  end
   -- #75 review 10: an executor press that raised may have acted, so it counts as a press for the frame gates.
   do
     local inst3 = fresh()
