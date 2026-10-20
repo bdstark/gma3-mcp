@@ -866,7 +866,8 @@ show groups sequences for Kill Instant / Kill Delayed and for playback commands 
 - `Go+`/`Off Tag` reach every tagged sequence. Invalid `TagType` values are silently ignored.
 - `Action` ignores every Lua `Set`; `Set Tag N Property "Action" "<token>"` applies each `TagActionToken` (None,
   Pool Default, Go+, Off, Flash, Temp, Top, Toggle, Pause, List Reference) and answers `Not allowed` to anything else.
-- Not probed: Kill Instant / Kill Delayed and Protect in playback, objects of another data pool, two tags with one name.
+- Not probed: Kill Instant / Kill Delayed and Protect in playback, playback with Forward Commands off, objects of
+  another data pool, two tags with one name, and writing or clearing a tag's appearance.
 
 **Status:** proposed.
 
@@ -890,19 +891,22 @@ show groups sequences for Kill Instant / Kill Delayed and for playback commands 
   - Pool targets (sequences, groups, macros) take `data_pool` like the other tools (`src/tools/datapool.ts`). The
     qualified command form is probed first, and the live test tags same-numbered sequences in two data pools and
     checks that only the intended one changed.
-- `gma3_configure_tag` sets type, Forward Commands, action, appearance and note, refusing values outside the enums
-  before sending and reading each one back. `Action` is written with `Set Tag N Property "Action" "<token>"`, since
-  Lua `Set` ignores it.
-- Tag playback is verified: `gma3_playback` with a tag target resolves the tag's sequences through `GetReferences()`
-  before dispatch and reads each one's state back a frame later, instead of returning `notRead`.
+- `gma3_configure_tag` sets type, Forward Commands, action and note, refusing values outside the enums before
+  sending and reading each one back. `Action` is written with `Set Tag N Property "Action" "<token>"`, since Lua
+  `Set` ignores it. Appearance stays read-only until a probe establishes how it is written (by number, name or
+  handle) and cleared.
+- Tag playback is verified: `gma3_playback` with a tag target resolves a tag name to one tag number first (refusing a
+  name that matches several tags or none, as `gma3_assign_tag` does), dispatches by number, resolves the tag's
+  sequences through `GetReferences()` and reads each one's state back a frame later, instead of returning `notRead`.
+  With Forward Commands off it reports that the command reaches no tagged sequence.
 - Selecting objects by tag ("every sequence tagged Encore") is answered from the reverse lookup, without the agent
   scanning pools.
 - Kill behaviour is probed and then tested live with several sequences running: Kill Instant and Kill Delayed (others
   released at once / after the started sequence's fade), and a protected reference left running. Until that probe,
   the tools document `TagType` and `protect` as settings whose playback effect is unverified.
 - A live test (`test/live/tags.live.ts`) covers create, assign over a range and in a second data pool, an ambiguous
-  name refused, protect, unassign, delete, `Go+`/`Off Tag` read back per sequence, and the kill scenarios, on
-  reserved objects.
+  name refused, protect, unassign, delete, `Go+`/`Off Tag` read back per sequence, `Go+ Tag` with Forward Commands
+  off (no tagged sequence starts) and then on again, and the kill scenarios, on reserved objects.
 
 ## Recommended delivery order
 
@@ -916,7 +920,8 @@ From the second field test:
 - SU-13 and SU-14 build on it.
 - SU-15's probe (does `cmd` expand `$variables`) is small. Run it early, since SU-14 depends on its answer.
 - SU-16, SU-18, SU-19 and SU-20 are independent.
-- SU-21 (tags) is independent; its probe is done.
+- SU-21 (tags) is independent. Its first probe is recorded; the data-pool command form, kill and protect behaviour,
+  Forward Commands off, same-named tags and appearance writes still need probing before the tools that use them.
 - SU-17's `resync` is independent. Its plugin tools wait for the interface that bdstark/gma3-beat-sync's BS-01 and BS-02
   define.
 

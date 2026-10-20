@@ -113,7 +113,8 @@ As with sequences and executors (SB-01), invalid values are dropped without an e
 | `Go+ Tag 950` (Forward Commands on, three empty sequences tagged) | all three start (`HasActivePlayback` true, current cue 1) |
 | `Off Tag 950` | all three stop |
 
-Kill Instant / Kill Delayed behaviour, Protect during playback and what each pool action does were not probed.
+Kill Instant / Kill Delayed behaviour, Protect during playback, playback with Forward Commands off and what each
+pool action does were not probed.
 
 ## Not probed
 
@@ -123,3 +124,4 @@ Kill Instant / Kill Delayed behaviour, Protect during playback and what each poo
 - Two tags with the same name addressed by name (the manual says a name addresses every pool object that has it).
 - `Lock` on a tag, and how the tag editor's "Add New Tag Reference" relates to the missing children.
 - Undo of `Assign Tag`.
+- Writing or clearing a tag's `APPEARANCE` (by number, name or handle; Lua `Set` or the command line).
