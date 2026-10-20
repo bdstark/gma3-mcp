@@ -145,12 +145,15 @@ async function setup(conn) {
   }
   for (const s of Object.values(SLOTS)) {
     createdHere.add(s.name);  // before the request: a Store that went through is ours even if the request fails
-    const st = await lua(conn, `Cmd('Store Quickey ${s.q} /NoConfirmation')
+    // Both slots are re-checked empty in the same request as the Store and the Assign (review 11).
+    const st = await lua(conn, `if ObjectList('Quickey ${s.q}')[1] or ObjectList('Page ${EXP}.${s.e}')[1] then return 'occupied' end
+Cmd('Store Quickey ${s.q} /NoConfirmation')
 local q = ObjectList('Quickey ${s.q}')[1]
 if not q then return 'not created' end
 q:Set('Name', '${s.name}'); q:Set('Note', '${MARKER}')
 Cmd('Assign Quickey ${s.q} At Page ${EXP}.${s.e}')
 return true`);
+    if (st === "occupied") { createdHere.delete(s.name); throw new Error(`Quickey ${s.q} or executor ${EXP}.${s.e} became occupied before setup; nothing created`); }
     if (st !== true) throw new Error(`creating Quickey ${s.q}: ${st}`);
     const back = await readSlot(conn, s);
     if (!ours(s, back) || !execOurs(s, back)) throw new Error(`probe slot ${s.name} does not read back (${JSON.stringify(back)})`);
@@ -192,7 +195,11 @@ return true`);
       if (d !== true) note(`executor ${EXP}.${s.e} left in place`, d);
     }
     else if (st.exec) note(`executor ${EXP}.${s.e} left in place`, st.exec);
-    if (ours(s, st)) {
+    if (ours(s, st) && pressed.has(s.name)) {
+      // Its key may still be down and its executor no longer holds it (reassigned): the Quickey is what the operator
+      // needs to restore the assignment and recover, so it stays (review 11).
+      record(`${s.name}: may still be down and its executor no longer holds Quickey ${s.q}; the Quickey is kept for recovery`, false, st);
+    } else if (ours(s, st)) {
       const d = await lua(conn, `${ownQ}
 Cmd('Delete Quickey ${s.q} /NoConfirmation')
 return true`);
@@ -222,8 +229,12 @@ const press = async (conn, s) => {
   const r = await lua(conn, `${guardLua(s)}
 if tostring(q:Get('Code')) ~= '${s.code}' then return 'code changed: ' .. tostring(q:Get('Code')) end
 return Cmd('Press Page ${EXP}.${s.e}')`);
-  if (!accepted(r)) pressed.delete(s.name);
-  if (r === "not ours" || r === "executor not ours" || String(r).startsWith("code changed")) throw new Error(`probe slot ${s.name}: ${r}; nothing pressed, stage stopped`);
+  if (!accepted(r)) {
+    // Nothing is down after a guard failure or a refused Press; the stage stops, so no caller ever sends the
+    // matching Unpress for a key that is not known to be down (review 11).
+    pressed.delete(s.name);
+    throw new Error(`probe slot ${s.name}: Press ${r}; nothing pressed, stage stopped`);
+  }
   return r;
 };
 // Only an accepted Unpress clears the marker: after a refused one the key may still be down, so cleanup must try
