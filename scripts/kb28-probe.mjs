@@ -177,9 +177,27 @@ async function cleanup(conn, unpressAll = false) {
       pressed.delete(s.name);
       note(`${s.name}: released before cleanup`, fu);
     }
-    if (execOurs(s, st)) await lua(conn, `Cmd('Delete Page ${EXP}.${s.e} /NoConfirmation'); return true`);
+    // Each delete re-checks ownership in the SAME request (review 10): a replacement after readSlot is never deleted.
+    const ownQ = `local q = ObjectList('Quickey ${s.q}')[1]
+if not q then return 'no quickey' end
+local note = tostring(q:Get('Note'))
+if not ((tostring(q.name) == '${s.name}' and note == '${MARKER}') or (${createdHere.has(s.name) ? "true" : "false"} and (note == '${MARKER}' or note == ''))) then return 'not ours' end`;
+    if (execOurs(s, st)) {
+      const d = await lua(conn, `${ownQ}
+local h = ObjectList('Page ${EXP}.${s.e}')[1]
+local o = h and h:Get('Object')
+if not o or tostring(o:GetClass()) ~= 'Quickey' or tonumber(o.index) ~= ${s.q} then return 'executor not ours' end
+Cmd('Delete Page ${EXP}.${s.e} /NoConfirmation')
+return true`);
+      if (d !== true) note(`executor ${EXP}.${s.e} left in place`, d);
+    }
     else if (st.exec) note(`executor ${EXP}.${s.e} left in place`, st.exec);
-    if (ours(s, st)) await lua(conn, `Cmd('Delete Quickey ${s.q} /NoConfirmation'); return true`);
+    if (ours(s, st)) {
+      const d = await lua(conn, `${ownQ}
+Cmd('Delete Quickey ${s.q} /NoConfirmation')
+return true`);
+      if (d !== true) note(`Quickey ${s.q} left in place`, d);
+    }
     else if (st.quickey) note(`Quickey ${s.q} left in place`, st.quickey);
     out[s.name] = await readSlot(conn, s);
   }
@@ -243,10 +261,20 @@ async function settle(reader, from, ms = 600) {
 async function tap(conn, s, name) {
   await code(conn, s, name);
   pressed.add(s.name);
-  const r = await lua(conn, `local before = CmdObj().cmdtext
+  // The same guard and Code check as press(), in the same request as the Press (review 10).
+  const r = await lua(conn, `${guardLua(s)}
+if tostring(q:Get('Code')) ~= '${s.code}' then return 'code changed: ' .. tostring(q:Get('Code')) end
+local before = CmdObj().cmdtext
 local fp = Cmd('Press Page ${EXP}.${s.e}')
 local imm = CmdObj().cmdtext
 return { before = before, fp = fp, imm = imm }`);
+  if (typeof r === "string") { pressed.delete(s.name); throw new Error(`probe slot ${s.name}: ${r}; nothing pressed, stage stopped`); }
+  if (!accepted(r.fp)) {
+    // Refused: nothing is down, so no Unpress is sent (unpressing a key that is not down is not qualified).
+    pressed.delete(s.name);
+    const line = await readCmd(conn);
+    return { ...r, afterPress: line, fu: "not pressed", afterRelease: line };
+  }
   const afterPress = await readCmd(conn);
   const fu = await unpress(conn, s);
   const afterRelease = await readCmd(conn);

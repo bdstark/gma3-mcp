@@ -301,6 +301,17 @@ do
   local rIn = inst:release("s", 5.52, { hold = cu.holds[1].id })
   local rIn2 = inst:release("s", 5.53, { hold = cu.holds[2].id })
   check("...in press order both come up", rIn and rIn2 and pressedCount() == 0, J({ rIn and rIn.state, rIn2 and rIn2.state }))
+  -- Review 10: a sequence whose release step would break an ordered combo is refused before its first event.
+  local ncs = #console.cmds
+  local qo, eo = inst:startSequence("s", 5.6, { { kind = "combo", keys = { { key = "NUM1" }, { key = "NUM2" } } }, { kind = "release", key = "NUM2" } })
+  check("a sequence releasing NUM2 before NUM1 of its combo is refused at preflight, nothing dispatched", qo == nil and eo.code == "out-of-order" and #console.cmds == ncs and pressedCount() == 0, J(eo))
+  -- Review 10: when the first release of an ordered combo fails, the later key stays down until recovery.
+  local cf = inst:combo("s", 5.7, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 50 })
+  console.fail.unpress = { err = "Object not found", count = 1 }
+  inst:service(5.8)
+  check("a failed first release leaves the later key of the ordered combo down (not released out of order)", cf and pressedCount() == 2 and inst:status(5.8).unresolved == 1, J({ pressed = pressedCount(), unresolved = inst:status(5.8).unresolved }))
+  inst:recover(nil, 5.9); inst:service(5.95)
+  check("...after recovery the group comes up in order", pressedCount() == 0, J(cmdsSince(ncs)))
   -- Review 8: the order is set before dispatch, so a rollback after a later key fails releases in press order too.
   local origPress, nPress = deps.executors.press, 0
   deps.executors.press = function(...) nPress = nPress + 1; if nPress == 3 then console.cmds[#console.cmds + 1] = "Press refused"; return false, "refused" end return origPress(...) end
@@ -353,7 +364,7 @@ do
   inst:releaseAll("s", 2.82)
   h = inst:press("s", 2.83, { key = "NUM1" })
   h2, err = inst:press("s", 2.84, { key = "THRU" })
-  check("THRU joins a held NUM1 (the probed pair NUM1>THRU)", h and h2 and pressedCount() == 2, J(err))
+  check("THRU next to a separately held NUM1 is refused: probed pairs only inside a combo, which keeps the qualified release order (review 10)", h and h2 == nil and err.heldKey == "NUM1" and pressedCount() == 1, J(err))
   inst:releaseAll("s", 2.845)
   h = inst:press("s", 2.846, { key = "NUM5" })
   h2, err = inst:press("s", 2.847, { key = "THRU" })

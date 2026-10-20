@@ -3262,6 +3262,7 @@ function Instance:_validateSequence(sessionId, steps)
   local out, estimate = {}, 0
   local pressed = {}
   local heldQuickkeys = {}  -- Quickey tuples a press/combo step leaves down for later steps (chord capability)
+  local orderedGroups = {}  -- tupleKey -> { list = { tk... }, index } for unbounded combos released in press order (review 10)
   local heldPcKeys = {}     -- PC-key tuples a press/combo step leaves down (KB-15: never next to a Quickey)
   -- The instance's live key records by tuple (held, releasing, unresolved; text records own no key), as a
   -- simulated state the steps update: a release step of a key this session holds removes it, so a later
@@ -3355,6 +3356,7 @@ function Instance:_validateSequence(sessionId, steps)
       -- Keys of this combo checked so far: a bounded combo's keys never enter heldQuickkeys, yet they are down
       -- together (review 5), so each next key is pair-checked against them too.
       local comboPeers = {}
+      local comboOrder = {}
       for k, ks in ipairs(step.keys) do
         if type(ks) ~= "table" then return stepFail(i, "bad-argument", "keys[" .. k .. "] must be a key spec table") end
         if ks.exclusive then return stepFail(i, "bad-argument", "key " .. k .. ": a combo cannot be exclusive") end
@@ -3382,18 +3384,28 @@ function Instance:_validateSequence(sessionId, steps)
         if tuple.quickkey then
           local cerr = self:_quickkeyCapabilityError(tuple, route, step.holdMs and "tap" or "hold", true, true)
           if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
-          local peers = {}
-          for pk, pv in pairs(heldQuickkeys) do peers[pk] = pv end
-          for pk, pv in pairs(comboPeers) do peers[pk] = pv end
-          cerr = self:_heldQuickkeyChordError(tk, peers, tuple, route and route.capabilities)
+          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple, route and route.capabilities, comboPeers)
           if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities, heldKey = cerr.heldKey }) end
           comboPeers[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities }
-          if not step.holdMs then heldQuickkeys[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities } end
+          comboOrder[#comboOrder + 1] = { tk = tk, probed = route.capabilities and route.capabilities.chordWith ~= nil }
         end
         s.specs[k] = spec
         s.keyNames[k] = route.logical or tuple.pcKey
         pressed[tk] = i
         if route.logical then pressed[route.logical] = i end
+      end
+      -- An unbounded combo leaves its keys down for later steps (added after its own keys were checked against
+      -- each other as one group, review 10).
+      if not step.holdMs then for tk, peer in pairs(comboPeers) do heldQuickkeys[tk] = peer end end
+      -- An unbounded combo with a probed code is released in press order: later release steps must keep it.
+      if not step.holdMs then
+        local probed = false
+        for _, o in ipairs(comboOrder) do if o.probed then probed = true end end
+        if probed then
+          local list = {}
+          for _, o in ipairs(comboOrder) do list[#list + 1] = o.tk end
+          for idx, o in ipairs(comboOrder) do orderedGroups[o.tk] = { list = list, index = idx } end
+        end
       end
       s.holdMs = step.holdMs
       estimate = estimate + (step.holdMs or 20)
@@ -3415,6 +3427,15 @@ function Instance:_validateSequence(sessionId, steps)
         return stepFail(i, terr.code, terr.message)
       end
       if not known then return stepFail(i, "bad-argument", "release of a key that no earlier step of this sequence presses and this session does not hold") end
+      local og = s.tupleKey and orderedGroups[s.tupleKey]
+      if og then
+        for idx = 1, og.index - 1 do
+          if heldQuickkeys[og.list[idx]] then
+            return stepFail(i, "out-of-order", string.format("release of %s before %s: the combo of an earlier step is released in press order (KB-28), release the earlier key first", tostring(s.logical), tostring(og.list[idx])))
+          end
+        end
+        orderedGroups[s.tupleKey] = nil
+      end
       if s.tupleKey then heldQuickkeys[s.tupleKey] = nil; heldPcKeys[s.tupleKey] = nil end
       s.spec = spec
       estimate = estimate + 20
@@ -3810,9 +3831,12 @@ function Instance:service(now)
   pressOrderGroups(due)
   for _, h in ipairs(due) do
     if out.work >= budget then break end
-    out.work = out.work + 1
-    local r = self:_attemptRelease(h, now, h.deadlineReason or "deadline")
-    if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
+    -- A later key of an ordered combo waits (still held, deadline kept) while an earlier one may be down.
+    if not self:_blockedByEarlier(h) then
+      out.work = out.work + 1
+      local r = self:_attemptRelease(h, now, h.deadlineReason or "deadline")
+      if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
+    end
   end
   out.pending = math.max(0, #due - out.work)
   -- KB-14: text-route readbacks and the temporary shortcut mode (interference check, delayed restore).
@@ -4179,7 +4203,7 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     -- A chord needs the flag on EVERY participating key: a held Quickey without chord evidence must not
     -- get a neighbour either (the hold's own stored flags decide, never the current policy).
     if simultaneous or (ctx.planned and next(ctx.planned)) then
-      cerr = self:_heldQuickkeyChordError(tupleKey(tuple), ctx.planned, tuple, route and route.capabilities)
+      cerr = self:_heldQuickkeyChordError(tupleKey(tuple), nil, tuple, route and route.capabilities, ctx.planned)
       if cerr then return nil, cerr end
     end
   end
@@ -4696,7 +4720,10 @@ local function chordPairAllowed(heldName, heldCaps, incomingName, incomingCaps)
   return true
 end
 
-function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming, incomingCaps)
+-- groupPeers: keys of the SAME combo (planned or earlier in the combo step); a probed pair is admitted only among
+-- them, because only a combo releases in the qualified order. Against a separately held key (live holds,
+-- extraHeld) any pair with a probed code is refused (review 10).
+function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming, incomingCaps, groupPeers)
   local function pairErrorFor(name, caps, state)
     local _, e = fail("unsupported", string.format("Quickey %s is %s; %s going down next to it (%s>%s) is not a pair the KB-28 probe qualified, refused before dispatch, nothing is substituted",
         tostring(name), state, tostring(incoming and incoming.quickkey), tostring(name), tostring(incoming and incoming.quickkey)),
@@ -4713,14 +4740,21 @@ function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming, i
     if h.quickkey and h.state ~= "released" and h.tupleKey ~= exceptTupleKey then
       local caps = h.route and h.route.capabilities or {}
       if not caps.chord then return errorFor(h.quickkey, caps, h.state == "held" and "held" or h.state) end
-      if incoming and incoming.quickkey and not chordPairAllowed(h.quickkey, caps, incoming.quickkey, incomingCaps) then return pairErrorFor(h.quickkey, caps, h.state == "held" and "held" or h.state) end
+      if incoming and incoming.quickkey and (caps.chordWith or (incomingCaps and incomingCaps.chordWith)) then return pairErrorFor(h.quickkey, caps, h.state == "held" and "held" or h.state) end
     end
   end
   for tk, held in pairs(extraHeld or {}) do
     if tk ~= exceptTupleKey and type(held) == "table" then
       local caps = held.capabilities or {}
       if not caps.chord then return errorFor(held.quickkey, caps, "left down by an earlier step") end
-      if incoming and incoming.quickkey and not chordPairAllowed(held.quickkey, caps, incoming.quickkey, incomingCaps) then return pairErrorFor(held.quickkey, caps, "left down by an earlier step") end
+      if incoming and incoming.quickkey and (caps.chordWith or (incomingCaps and incomingCaps.chordWith)) then return pairErrorFor(held.quickkey, caps, "left down by an earlier step") end
+    end
+  end
+  for tk, peer in pairs(groupPeers or {}) do
+    if tk ~= exceptTupleKey and type(peer) == "table" then
+      local caps = peer.capabilities or {}
+      if not caps.chord then return errorFor(peer.quickkey, caps, "an earlier key of this combo") end
+      if incoming and incoming.quickkey and not chordPairAllowed(peer.quickkey, caps, incoming.quickkey, incomingCaps) then return pairErrorFor(peer.quickkey, caps, "an earlier key of this combo") end
     end
   end
   return nil
@@ -5099,6 +5133,16 @@ function Instance:_maybeForgetSession(id)
   if s and s.state == "closed" and self:_sessionHoldCount(id) == 0 then self._sessions[id] = nil end
 end
 
+-- An ordered (press-order) combo key is not released while an earlier key of its group may still be down: after a
+-- refused or raised release the rest of the group stays held until recover() resolves the earlier one (review 10).
+function Instance:_blockedByEarlier(h)
+  if not (h.releaseInPressOrder and h.group) then return nil end
+  for _, other in pairs(self._holds) do
+    if other ~= h and other.group == h.group and other.seq < h.seq and (other.state == "held" or other.state == "releasing" or other.state == "unresolved") then return other end
+  end
+  return nil
+end
+
 -- Releases a list of holds (most recent press first, press order inside a pressOrderGroups combo).
 -- Returns { released = {...}, unresolved = {...}, skipped = n }.
 function Instance:_releaseHolds(list, now, reason)
@@ -5106,7 +5150,11 @@ function Instance:_releaseHolds(list, now, reason)
   pressOrderGroups(list)
   local out = { released = {}, unresolved = {}, attempted = 0 }
   for _, h in ipairs(list) do
-    if h.state == "held" or h.state == "unresolved" or h.state == "releasing" then
+    local blocker = (h.state == "held" or h.state == "unresolved" or h.state == "releasing") and self:_blockedByEarlier(h)
+    if blocker then
+      out.blocked = out.blocked or {}
+      out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = blocker.id }
+    elseif h.state == "held" or h.state == "unresolved" or h.state == "releasing" then
       out.attempted = out.attempted + 1
       local r = self:_attemptRelease(h, now, reason)
       if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
