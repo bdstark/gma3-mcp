@@ -3106,6 +3106,13 @@ function Instance:combo(sessionId, now, specs, opts)
     -- Earlier keys of the combo are not live yet; the pair check of the next key includes them (review 4).
     if plan.tuple.quickkey then plannedQuickkeys[plan.tupleKey] = { quickkey = plan.tuple.quickkey, capabilities = plan.route and plan.route.capabilities } end
   end
+  -- The release order is decided from the plans before anything goes down, so a rollback after a later key fails
+  -- already releases in the qualified order (review 8): press order when any key is peer-restricted (KB-28).
+  local pressOrder = false
+  for _, plan in ipairs(plans) do
+    local c = plan.route and plan.route.capabilities
+    if type(c) == "table" and c.chordWith then pressOrder = true end
+  end
   -- Dispatch in order. A failure releases what went down and reports everything.
   self._seq = self._seq + 1
   local group = string.format("g%d", self._seq)
@@ -3123,6 +3130,7 @@ function Instance:combo(sessionId, now, specs, opts)
     end
     hold.group = group
     hold.groupIndex = i
+    hold.releaseInPressOrder = pressOrder or nil
     if holdMs then
       hold.kind = "combo-tap"
       self:_setDeadline(hold, now + holdMs / 1000, "combo")
@@ -3131,12 +3139,6 @@ function Instance:combo(sessionId, now, specs, opts)
     end
     holds[#holds + 1] = hold
   end
-  local pressOrder = false
-  for _, h in ipairs(holds) do
-    local c = h.route and h.route.capabilities
-    if type(c) == "table" and c.chordWith then pressOrder = true end
-  end
-  for _, h in ipairs(holds) do h.releaseInPressOrder = pressOrder or nil end
   local reports = {}
   for _, h in ipairs(holds) do reports[#reports + 1] = self:_holdReport(h, now) end
   return { group = group, holds = reports, count = #reports,

@@ -303,6 +303,15 @@ do
   before = #console.cmds
   inst:service(5.11)
   check("...and releases NUM5 (first down) before NUM1", J(cmdsSince(before)) == J({ (p1[2]:gsub("^Press", "Unpress")), (p1[#p1]:gsub("^Press", "Unpress")) }) and pressedCount() == 0, J({ pressed = p1, released = cmdsSince(before) }))
+  -- Review 8: the order is set before dispatch, so a rollback after a later key fails releases in press order too.
+  local origPress, nPress = deps.executors.press, 0
+  deps.executors.press = function(...) nPress = nPress + 1; if nPress == 3 then console.cmds[#console.cmds + 1] = "Press refused"; return false, "refused" end return origPress(...) end
+  before = #console.cmds
+  local c3, err3 = inst:combo("s", 6, { { key = "NUM5" }, { key = "NUM1" }, { key = "THRU" } }, { holdMs = 100 })
+  deps.executors.press = origPress
+  local seen = cmdsSince(before)
+  local unpresses = {}; for _, cmd in ipairs(seen) do if cmd:find("^Unpress") then unpresses[#unpresses + 1] = cmd end end
+  check("a combo whose third key fails rolls back the first two in press order", c3 == nil and err3 and #unpresses == 2 and unpresses[1] == "Unpress Page 1.190" and unpresses[2] == "Unpress Page 1.191" and pressedCount() == 0, J({ err = err3, cmds = seen }))
 end
 
 -------------------------------------------------------------------------------
