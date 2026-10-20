@@ -3048,6 +3048,26 @@ function Instance:_dispatchDirectTap(s, plan, now)
   return self:_holdReport(hold, now, { note = "direct tap: Press Quickey " .. tostring(target and target.quickeyIndex) .. ", nothing to release" })
 end
 
+-- KB-28 review 7: a combo with a peer-restricted code (chordWith) releases in PRESS order, the order its rolled
+-- pairs were qualified in (first down, first up); every other list stays newest first. Only the positions the
+-- group's members already occupy are reordered, so the rest of the list keeps its order.
+local function pressOrderGroups(list)
+  local members = {}
+  for i, h in ipairs(list) do
+    if h.releaseInPressOrder and h.group then
+      local g = members[h.group]
+      if not g then g = { positions = {}, holds = {} }; members[h.group] = g end
+      g.positions[#g.positions + 1] = i
+      g.holds[#g.holds + 1] = h
+    end
+  end
+  for _, g in pairs(members) do
+    table.sort(g.holds, function(a, b) return a.seq < b.seq end)
+    for k, pos in ipairs(g.positions) do list[pos] = g.holds[k] end
+  end
+  return list
+end
+
 -- A combination: several keys pressed in order (e.g. { {key="MA"}, {key="STORE"} }). Every constituent
 -- key is resolved, admitted and preflighted by the backend BEFORE the first event goes out; one failure
 -- means nothing is dispatched. A press that fails midway releases what was already pressed (newest
@@ -3110,10 +3130,16 @@ function Instance:combo(sessionId, now, specs, opts)
     end
     holds[#holds + 1] = hold
   end
+  local pressOrder = false
+  for _, h in ipairs(holds) do
+    local c = h.route and h.route.capabilities
+    if type(c) == "table" and c.chordWith then pressOrder = true end
+  end
+  for _, h in ipairs(holds) do h.releaseInPressOrder = pressOrder or nil end
   local reports = {}
   for _, h in ipairs(holds) do reports[#reports + 1] = self:_holdReport(h, now) end
   return { group = group, holds = reports, count = #reports,
-           releaseOrder = "newest first" .. (holdMs and (" at the deadline in " .. holdMs .. " ms") or " on release/releaseAll") }
+           releaseOrder = (pressOrder and "press order (KB-28: qualified first down, first up)" or "newest first") .. (holdMs and (" at the deadline in " .. holdMs .. " ms") or " on release/releaseAll") }
 end
 
 -- selector: { hold = <id> } or a spec (key / pcKey + modifiers) owned by the session. Releasing an
@@ -3931,6 +3957,7 @@ function Instance:service(now)
     if h.state == "held" and h.deadline and now >= h.deadline then due[#due + 1] = h end
   end
   table.sort(due, function(a, b) if a.deadline == b.deadline then return a.seq > b.seq end return a.deadline < b.deadline end)
+  pressOrderGroups(due)
   for _, h in ipairs(due) do
     if out.work >= budget then break end
     out.work = out.work + 1
@@ -5222,9 +5249,11 @@ function Instance:_maybeForgetSession(id)
   if s and s.state == "closed" and self:_sessionHoldCount(id) == 0 then self._sessions[id] = nil end
 end
 
--- Releases a list of holds (most recent press first). Returns { released = {...}, unresolved = {...}, skipped = n }.
+-- Releases a list of holds (most recent press first, press order inside a pressOrderGroups combo).
+-- Returns { released = {...}, unresolved = {...}, skipped = n }.
 function Instance:_releaseHolds(list, now, reason)
   table.sort(list, function(a, b) return a.seq > b.seq end)
+  pressOrderGroups(list)
   local out = { released = {}, unresolved = {}, attempted = 0 }
   for _, h in ipairs(list) do
     if h.state == "held" or h.state == "unresolved" or h.state == "releasing" then

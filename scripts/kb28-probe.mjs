@@ -198,7 +198,14 @@ const dtapCmd = (s) => `Cmd('Press Quickey ${s.q}')`;
 const press = (conn, s) => { pressed.add(s.name); return lua(conn, `return Cmd('Press Page ${EXP}.${s.e}')`); };
 // Only an accepted Unpress clears the marker: after a refused one the key may still be down, so cleanup must try
 // again before it deletes anything (review 5).
-const unpress = async (conn, s) => { const r = await lua(conn, `return Cmd('Unpress Page ${EXP}.${s.e}')`); if (accepted(r)) pressed.delete(s.name); return r; };
+// A refused Unpress also stops the stage (review 7): nothing may rewrite or press the slot while its key may be
+// down; the throw goes to the caller's finally, where cleanup releases the slot before deleting it.
+const unpress = async (conn, s) => {
+  const r = await lua(conn, `return Cmd('Unpress Page ${EXP}.${s.e}')`);
+  if (!accepted(r)) throw new Error(`Unpress Page ${EXP}.${s.e} (${s.name}) was refused (${r}); stage stopped, the slot is kept for recovery`);
+  pressed.delete(s.name);
+  return r;
+};
 const accepted = (fbText) => typeof fbText === "string" && fbText.startsWith("OK");
 
 /** Escape through Keyboard() (an ESC Quickey never touches the command line, KB-10), up to three times: a

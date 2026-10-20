@@ -294,6 +294,15 @@ do
   before = #console.cmds
   inst:service(4.11)
   check("the chord releases newest first", J(cmdsSince(before)) == J({ "Unpress Page 1.191", "Unpress Page 1.190" }) and pressedCount() == 0, J(cmdsSince(before)))
+  -- KB-28 review 7: a combo with a peer-restricted code (NUM1, chordWith keypad) releases in press order, the
+  -- order its rolled pairs were qualified in.
+  before = #console.cmds
+  c, err = inst:combo("s", 5, { { key = "NUM5" }, { key = "NUM1" } }, { holdMs = 100 })
+  check("a NUM5 + NUM1 combo reports press-order release", c and c.releaseOrder:find("^press order"), J(err or c))
+  local p1 = cmdsSince(before)
+  before = #console.cmds
+  inst:service(5.11)
+  check("...and releases NUM5 (first down) before NUM1", J(cmdsSince(before)) == J({ (p1[2]:gsub("^Press", "Unpress")), (p1[#p1]:gsub("^Press", "Unpress")) }) and pressedCount() == 0, J({ pressed = p1, released = cmdsSince(before) }))
 end
 
 -------------------------------------------------------------------------------

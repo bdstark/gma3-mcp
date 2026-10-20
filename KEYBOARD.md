@@ -1397,7 +1397,9 @@ for a `codes = "qualified"` bank, names the qualified codes the bank lacks with 
 `reprovision`: tear down and provision again; adoption creates nothing). Chord evidence is per peer (`chordWith`,
 review 3): every KB-28 rolled pair had a digit in it, so a digit (NUM1 included) chords only next to keypad keys and
 the KB-28 operators and keywords (and THRU) only next to a digit; KB-10's NUM5, STORE and MA1 keep their unrestricted
-chord flag, and a pair outside a key's group is refused before dispatch. No MCP tool or TypeScript contract changed.
+chord flag, and a pair outside a key's group is refused before dispatch. A combo that contains a peer-restricted code
+releases in press order (first down, first up), the order the pairs were qualified in (review 7); other combos keep
+newest first. No MCP tool or TypeScript contract changed.
 
 ### Record (2026-10-20)
 

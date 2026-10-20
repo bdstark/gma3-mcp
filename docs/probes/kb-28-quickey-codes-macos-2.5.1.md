@@ -96,4 +96,6 @@ afterwards.
   for any new code and stays qualified for MA1 only.
 - Probe objects are owned by name and the `kb28-probe` Note; cleanup releases a slot this process pressed before deleting it (`cleanup --unpress` for an aborted run).
 - The bridge in this show was 0.25.1; the probe depends only on `lua`, `ping`, `feedback.read` and `programmer`.
-- Rolled pairs cover the listed combinations, not every pair; release order was always first-down first-up.
+- Rolled pairs cover the listed combinations, not every pair; release order was always first-down first-up, so the
+  module releases a combo that contains one of these peer-restricted codes in press order (newest first stays the
+  rule for the KB-10 MA1 + STORE chord).
