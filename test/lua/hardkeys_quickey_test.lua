@@ -463,6 +463,19 @@ do
   check("review 19: the step is uncertain and the sequence's cleanup names the key the rollback kept down", ev1 and ev1.state == "uncertain" and ev1.rollback and ev1.rollback.blocked == 1 and rep.cleanup and rep.cleanup.blocked == 1, J({ ev = ev1 and { state = ev1.state, rollback = ev1.rollback }, cleanup = rep and rep.cleanup }))
   inst:recover(nil, 3)
   check("...recover() in a later frame releases it", pressedCount() == 0, J(inst:status(3).holds))
+  -- Review 20: the frame map holds the current frame only; a service() call empties it.
+  inst:service(3.1)
+  check("the frame map is empty after a frame closes", next(inst._groupFrames) == nil, J(inst._groupFrames))
+  -- Review 20: a client release refused for the frame is marked blocked, so recover() releases it in a later frame.
+  local cc = inst:combo("s", 4, { { key = "NUM1" }, { key = "THRU" } })
+  inst:service(4.01)
+  assert(inst:release("s", 4.02, { hold = cc.holds[1].id }))
+  console.raise.frame = "frame break failed"
+  local rr, re = inst:release("s", 4.03, { hold = cc.holds[2].id })
+  check("a release refused for the frame is same-frame and marks the hold blocked", rr == nil and re.code == "same-frame" and inst._holds[cc.holds[2].id].blockedRelease == true and pressedCount() == 1, J(re))
+  inst:service(4.04)
+  inst:recover("s", 4.05)
+  check("...recover() in the next frame releases it", pressedCount() == 0, J(inst:status(4.05).holds))
 end
 
 -------------------------------------------------------------------------------
