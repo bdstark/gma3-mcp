@@ -2670,7 +2670,7 @@ function Instance:adoptBank(record, now)
         local q = BANK_QUALIFIED[e.name]
         local now_ = q and shallowCopy(q) or false
         local was = type(c.qualified) == "table" and c.qualified or false
-        if (now_ == false) ~= (was == false) or (now_ and (now_.tap ~= was.tap or now_.hold ~= was.hold or now_.chord ~= was.chord or (now_.direct or false) ~= (was.direct or false))) then requalified[#requalified + 1] = e.name end
+        if (now_ == false) ~= (was == false) or (now_ and (now_.tap ~= was.tap or now_.hold ~= was.hold or now_.chord ~= was.chord or now_.chordWith ~= was.chordWith or (now_.direct or false) ~= (was.direct or false))) then requalified[#requalified + 1] = e.name end
         e.qualified, e.note = now_, (q and q.note) or BANK_UNQUALIFIED_NOTES[e.name]
       end
       bank.codes[#bank.codes + 1] = e; bank.byName[e.name], bank.byIndex[e.index] = e, e
@@ -3213,6 +3213,8 @@ function Instance:combo(sessionId, now, specs, opts)
       -- the rollback, so recover() keeps first down, first up (review 13).
       local uh = type(derr) == "table" and derr.hold and self._holds[derr.hold] or nil
       if uh then uh.group, uh.groupIndex, uh.releaseInPressOrder = group, i, pressOrder or nil end
+      -- Review 16: an ordered pair's rollback goes out in a later frame than the press that failed.
+      if pressOrder and #holds > 0 and self:_separatesFrames() then pcall(self._adapter.separateFrames, self._adapter) end
       local rollback = self:_releaseHolds(holds, now, "combo-aborted")
       derr.message = "key " .. i .. " of the combo: " .. tostring(derr.message) .. string.format("; %d key(s) pressed before it were released (%d released, %d unresolved)", #holds, #rollback.released, #rollback.unresolved)
       derr.key = i
@@ -4150,15 +4152,18 @@ function Instance:service(now)
   end
   table.sort(due, function(a, b) if a.deadline == b.deadline then return a.seq > b.seq end return a.deadline < b.deadline end)
   pressOrderGroups(due)
+  local prevDue
   for _, h in ipairs(due) do
     if out.work >= budget then break end
     -- A later key of an ordered combo waits (still held, deadline kept) while an earlier one may be down.
     local blocker = self:_blockedByEarlier(h)
+    if not blocker and not self:_orderedFrameBreak(prevDue, h) then blocker = prevDue end
     if blocker then
       h.blockedRelease = true
       out.blocked = out.blocked or {}
       out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = blocker.id }
     else
+      prevDue = h
       out.work = out.work + 1
       local r = self:_attemptRelease(h, now, h.deadlineReason or "deadline")
       if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
@@ -5057,6 +5062,16 @@ function Instance:_separatesFrames()
   return self._adapter ~= nil and type(self._adapter.separateFrames) == "function"
 end
 
+-- Review 16: the probed pairs were also RELEASED one request (frame) per key, so consecutive releases inside one
+-- ordered group are separated the same way. Returns true when the next release may go out (no break needed, or the
+-- break went through), false when the break raised (the caller keeps the key down, reported as blocked).
+function Instance:_orderedFrameBreak(prev, h)
+  if not (prev and h.releaseInPressOrder and h.group and prev.group == h.group) then return true end
+  if not self:_separatesFrames() then return true end
+  local ok = pcall(self._adapter.separateFrames, self._adapter)
+  return ok
+end
+
 function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming, incomingCaps, groupPeers)
   local function pairErrorFor(name, caps, state)
     local _, e = fail("unsupported", string.format("Quickey %s is %s; %s going down next to it (%s>%s) is not a pair the KB-28 probe qualified, refused before dispatch, nothing is substituted",
@@ -5506,13 +5521,19 @@ function Instance:_releaseHolds(list, now, reason)
   table.sort(list, function(a, b) return a.seq > b.seq end)
   pressOrderGroups(list)
   local out = { released = {}, unresolved = {}, attempted = 0 }
+  local prev
   for _, h in ipairs(list) do
     local blocker = (h.state == "held" or h.state == "unresolved" or h.state == "releasing") and self:_blockedByEarlier(h)
     if blocker then
       h.blockedRelease = true  -- recover() releases it once the earlier key is resolved (review 11)
       out.blocked = out.blocked or {}
       out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = blocker.id }
+    elseif (h.state == "held" or h.state == "unresolved" or h.state == "releasing") and not self:_orderedFrameBreak(prev, h) then
+      h.blockedRelease = true
+      out.blocked = out.blocked or {}
+      out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = prev.id, reason = "the frame break before its release raised" }
     elseif h.state == "held" or h.state == "unresolved" or h.state == "releasing" then
+      prev = h
       out.attempted = out.attempted + 1
       local r = self:_attemptRelease(h, now, reason)
       if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end

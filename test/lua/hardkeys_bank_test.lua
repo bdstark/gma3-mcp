@@ -553,6 +553,14 @@ do
   local edit; for _, c in ipairs(ar.codes) do if c.name == "EDIT" then edit = c end end
   check("adoption recomputes each code's qualification from the loaded module and names the changed codes", ar.state == "ready" and edit.qualified and edit.qualified.hold == true and J(ar.requalified) == J({ "EDIT", "STORE", "NUM1" }) and ar.missingQualified == nil and ar.reprovision == nil, J({ ar.requalified, edit }))
   instR:dispose(3.3)
+  -- Review 16: only chordWith changed (a pre-review-9 record's "digit"): the code is requalified too.
+  local recW = newInst(); recW:adoptBank(dis.bank, 3.31)
+  local oldW = recW:dispose(3.32).bank
+  local hadThru = false
+  for _, c in ipairs(oldW.codes) do if c.name == "THRU" then hadThru = true; c.qualified = { tap = true, hold = true, chord = true, chordWith = "digit" } end end
+  local arW = newInst():adoptBank(oldW, 3.33)
+  local listed = false; for _, n in ipairs(arW.requalified or {}) do if n == "THRU" then listed = true end end
+  check("a code whose chordWith changed is named in requalified", hadThru and listed, J({ hadThru = hadThru, requalified = arW.requalified }))
   local inst3 = newInst("surface")
   a, err = inst3:adoptBank(dis.bank, 4)
   check("a record of another owner is not adopted", a == nil and err.code == "bank-foreign-owner", J(err))

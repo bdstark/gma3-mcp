@@ -1793,6 +1793,8 @@ local function logReleaseResult(prefix, r)
   if type(r) ~= "table" then return end
   for _, a in ipairs(r.released or {}) do log("%s released %s", prefix, describeAttempt(a)) end
   for _, a in ipairs(r.unresolved or {}) do logerr("%s UNRESOLVED %s", prefix, describeAttempt(a)) end
+  -- A later key of an ordered combo held back behind an unresolved earlier one is still down (KB-28 review 16).
+  for _, b in ipairs(r.blocked or {}) do logerr("%s STILL HELD %s (hold %s) behind unresolved %s; input recover releases both in order", prefix, tostring(b.logical), tostring(b.hold), tostring(b.after)) end
 end
 
 local function serviceModules(now)
