@@ -2616,7 +2616,7 @@ function Instance:adoptBank(record, now)
         local q = BANK_QUALIFIED[e.name]
         local now_ = q and shallowCopy(q) or false
         local was = type(c.qualified) == "table" and c.qualified or false
-        if (now_ == false) ~= (was == false) or (now_ and (now_.tap ~= was.tap or now_.hold ~= was.hold or now_.chord ~= was.chord)) then requalified[#requalified + 1] = e.name end
+        if (now_ == false) ~= (was == false) or (now_ and (now_.tap ~= was.tap or now_.hold ~= was.hold or now_.chord ~= was.chord or (now_.direct or false) ~= (was.direct or false))) then requalified[#requalified + 1] = e.name end
         e.qualified, e.note = now_, (q and q.note) or BANK_UNQUALIFIED_NOTES[e.name]
       end
       bank.codes[#bank.codes + 1] = e; bank.byName[e.name], bank.byIndex[e.index] = e, e
@@ -2999,7 +2999,8 @@ function Instance:tap(sessionId, now, spec, holdMs, ctx)
   -- is live (a direct tap next to an executor-held key is not qualified; that tap goes through an executor) or
   -- the spec says direct = false. The candidacy goes into the plan so the backend's preflight checks only what a
   -- direct tap needs (the Quickey), not an executor it will not use (review 1 of #75).
-  local directCandidate = type(self._adapter.tapDirect) == "function" and not (spec and spec.direct == false) and self:_liveQuickkeyCount() == 0
+  -- An exclusive tap (a long-press, e.g. STORE held to open its pop-up) stays executor-held until its deadline (review 3).
+  local directCandidate = type(self._adapter.tapDirect) == "function" and not (spec and (spec.direct == false or spec.exclusive)) and self:_liveQuickkeyCount() == 0
   local plan, perr = self:_planPress(sessionId, now, spec, { kind = "tap", fromSequence = ctx and ctx.fromSequence, direct = directCandidate or nil })
   if not plan then return nil, perr end
   if plan.duplicate then return fail("conflict", "tuple is already held by this session; a tap cannot be layered on a hold", { hold = plan.duplicate.id }) end
@@ -3623,6 +3624,9 @@ function Instance:_serviceSequence(job, now)
     if ev.state == "completed" then
       ev.finishedAt = now
       job.index = job.index + 1
+      -- KB-29: a direct tap completes at once; the next step waits for a later service call (a later console
+      -- frame), because Quickey taps issued in one frame reorder in a focused text field (review 3).
+      if ev.direct then break end
     elseif ev.state == "failed" or ev.state == "uncertain" then
       ev.finishedAt = now
       self:_failSequence(job, now, "step " .. job.index .. " (" .. st.kind .. ") " .. ev.state .. ": " .. tostring(ev.error))
@@ -3681,6 +3685,7 @@ function Instance:_startStep(job, st, ev, now)
     if job.state ~= "running" then return end
     if not h then stepError(ev, err); return end
     ev.hold, ev.pressOutcome, ev.tupleKey = h.id, h.pressOutcome, h.tupleKey
+    ev.direct = (h.target and h.target.direct) and true or nil
     self:_trackHold(job, h.id)
     if h.kind == "text" then
       -- KB-14: a text route completes within the press. Partial or uncertain delivery stops the sequence

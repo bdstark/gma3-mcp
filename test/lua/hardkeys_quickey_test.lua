@@ -621,9 +621,19 @@ do
   for _ = 1, 10 do tq = tq + 0.03; inst:service(tq) end
   local rq = qr and inst:sequenceStatus(qr.id, tq)
   check("a sequence step whose direct tap raised is uncertain, not failed", rq and rq.events and rq.events[1] and rq.events[1].state == "uncertain", J(rq and rq.events))
-  -- A sequence's tap steps take the direct path too.
+  -- An exclusive tap (a long-press) stays executor-held until its deadline (#75 review 3).
+  before = #console.cmds
+  h, err = inst:tap("s", 5.8, { key = "STORE", exclusive = true }, 50)
+  check("an exclusive tap of a direct-capable code is an executor hold, not a direct tap", h and not h.target.direct and has(cmdsSince(before), "Press Page"), J({ err = err, cmds = cmdsSince(before) }))
+  inst:service(5.9)
+  -- A sequence's tap steps take the direct path too, one per service call (#75 review 3).
   console.taps = {}
   local q = inst:startSequence("s", 6, { { kind = "tap", key = "NUM1" }, { kind = "tap", key = "THRU" }, { kind = "tap", key = "NUM5" } })
+  local atStart = #console.taps
+  inst:service(6.001)
+  local afterFirst = #console.taps
+  inst:service(6.002)
+  check("consecutive direct tap steps go out one per service call (the first at start)", atStart == 1 and afterFirst == 2 and #console.taps == 3, J({ atStart = atStart, afterFirst = afterFirst, taps = console.taps }))
   local t = 6
   for _ = 1, 20 do t = t + 0.03; inst:service(t) end
   check("sequence tap steps are direct taps, in order", q and inst:sequenceStatus(q.id, t).state == "completed" and J(console.taps) == J({ "NUM1", "THRU", "NUM5" }), J({ taps = console.taps }))
