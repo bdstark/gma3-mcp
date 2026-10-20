@@ -7,14 +7,14 @@ const BOT = 'chatgpt-codex-connector';
 const RECEIPT = '<!-- independent-review:v1 ';
 const SHA = /^[a-f0-9]{40}$/;
 const SENSITIVE = /(^|\/)(AGENTS\.md|\.github|\.codex)(\/|$)/;
-function official(comments, head) {
+function official(comments, head, securityRequired = false) {
   const summaries = comments.filter(c => c.user?.login === BOT && c.user?.type === 'Bot' && c.body?.includes('<!-- codex-review-state:v1 '));
   const latest = summaries.sort((a,b) => b.id-a.id)[0];
   if (!latest) return false;
   try {
     const state = JSON.parse(latest.body.match(/<!-- codex-review-state:v1 (.*?) -->/s)[1]);
     const clean = s => s?.commit_sha === head && s.status === 'completed' && s.has_any_findings === false && s.has_unresolved_findings === false;
-    return clean(state.code_review) && (!state.security_review?.commit_sha || clean(state.security_review));
+    return clean(state.code_review) && (securityRequired ? clean(state.security_review) : (!state.security_review?.commit_sha || clean(state.security_review)));
   } catch { return false; }
 }
 function verdict(raw, head, base) {
@@ -109,7 +109,7 @@ async function main({github:g, context:c, core, mode}) {
   const changed=await files(n);
   if (pr.changed_files>3000 || changed.some(f=>SENSITIVE.test(f.filename) || (f.previous_filename && SENSITIVE.test(f.previous_filename)))) throw Error('Review policy changes require manual merge');
   if (process.env.CURRENT_READY !== 'true' && !(await freshReview(pr))) { core.info('Waiting for independent review'); return; }
-  if (!official(await comments(n),pr.head.sha)) { core.info('Waiting for clean official code/security reviews on this head'); return; }
+  if (!official(await comments(n),pr.head.sha,r.repo!=='gma3-mcp')) { core.info('Waiting for clean official code/security reviews on this head'); return; }
   // Unresolved discussions are an independent veto, even if a summary is clean.
   let cursor=null;
   do {
@@ -128,7 +128,7 @@ async function main({github:g, context:c, core, mode}) {
   }
   const statuses=(await g.rest.repos.getCombinedStatusForRef({...r,ref:pr.head.sha})).data;
   if(statuses.statuses.length && statuses.state!=='success') { core.info('Commit status is pending or failing'); return; }
-  if(pr.mergeable!==true || pr.mergeable_state!=='clean') { core.info('GitHub merge state is not clean'); return; }
+  if(pr.mergeable!==true || !['clean','blocked'].includes(pr.mergeable_state)) { core.info('GitHub merge state is not clean'); return; }
   pr=await getPR(n);
   if(pr.head.sha!==process.env.HEAD_SHA || pr.base.sha!==process.env.BASE_SHA) throw Error('Head/base changed before approval');
   await g.rest.pulls.createReview({...r,pull_number:n,commit_id:pr.head.sha,event:'APPROVE',body:`Accepted ${pr.head.sha} after independent and official reviews, discussions and CI passed against ${pr.base.sha}.`});
