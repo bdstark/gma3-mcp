@@ -319,6 +319,22 @@ do
   check("NUM5 and STORE (both chord) may be held together", h and h2 and h2.target.executor == 191, J(err))
   local h3; h3, err = inst:press("s", 2.6, { key = "CLEAR" })
   check("CLEAR may not join (chord not qualified); nothing issued", h3 == nil and err.reason == "capability" and has(err.missing, "chord") and lastCmd() == "Press Page 1.191", J(err))
+  inst:releaseAll("s", 2.7)
+  -- KB-28 review: chord evidence is per peer group. NUM1 (digit, chordWith keypad) next to MA1 is not a qualified
+  -- pair; THRU (chordWith digit) joins a held NUM5 but not a held STORE.
+  h = inst:press("s", 2.8, { key = "NUM1" })
+  h2, err = inst:press("s", 2.81, { key = "MA1" })
+  check("MA1 next to a held NUM1 is refused: NUM1's chord evidence covers keypad keys only", h and h2 == nil and err.reason == "capability" and err.heldKey == "NUM1" and pressedCount() == 1, J(err))
+  inst:releaseAll("s", 2.82)
+  h = inst:press("s", 2.83, { key = "NUM5" })
+  h2, err = inst:press("s", 2.84, { key = "THRU" })
+  check("THRU joins a held digit (NUM5)", h and h2 and pressedCount() == 2, J(err))
+  inst:releaseAll("s", 2.85)
+  h = inst:press("s", 2.86, { key = "STORE" })
+  h2, err = inst:press("s", 2.87, { key = "THRU" })
+  check("THRU next to a held STORE is refused: THRU's chord evidence covers digits only", h and h2 == nil and err.heldKey == "STORE" and pressedCount() == 1, J(err))
+  local q2; q2, err = inst:startSequence("s", 2.88, { { kind = "press", key = "MA1" }, { kind = "tap", key = "NUM1" } })
+  check("the sequence preflight applies the same pair rule", q2 == nil and has(err.missing or {}, "chord"), J(err))
   inst:releaseAll("s", 3)
   check("refusals counted as refused, never raised", backend.counters.refused == 0 and backend.counters.raised == 0 and pressedCount() == 0, J(backend.counters))
   -- The sequence validator applies the same per-code flags before the first event.

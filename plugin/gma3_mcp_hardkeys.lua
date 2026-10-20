@@ -673,11 +673,19 @@ local BANK_ALIASES = { UNDO = "OOPS" }
 -- down until Unpress; `chord` is a hold next to another held bank key (KB-28: the second key goes down
 -- before the first comes up and the line equals two sequential taps). Every KB-28 code is qualified on
 -- the executor path only; stuck-key recovery (a direct Unpress Quickey) stays qualified for MA1 alone.
-local KB28_DIGIT = { tap = true, hold = true, chord = true }
+-- chordWith limits a chord to the peers the evidence covers (KB-28 review): every KB-28 rolled pair had a
+-- digit in it, so a digit chords only next to keypad keys and the other KB-28 codes only next to a digit.
+-- A code without chordWith (NUM5, STORE, MA1: KB-10) chords with any chord-capable peer that accepts it.
+local CHORD_GROUPS = {
+  digit  = { NUM0 = true, NUM1 = true, NUM2 = true, NUM3 = true, NUM4 = true, NUM5 = true, NUM6 = true, NUM7 = true, NUM8 = true, NUM9 = true },
+  keypad = { NUM0 = true, NUM1 = true, NUM2 = true, NUM3 = true, NUM4 = true, NUM5 = true, NUM6 = true, NUM7 = true, NUM8 = true, NUM9 = true,
+             PLUS = true, MINUS = true, DOT = true, SLASH = true, THRU = true, AT = true, UPDATE = true, EDIT = true, CUE = true, GROUP = true, PREVIEW = true },
+}
+local KB28_DIGIT = { tap = true, hold = true, chord = true, chordWith = "keypad" }
 local BANK_QUALIFIED = {
-  NUM1    = { tap = true, hold = true,  chord = true },
+  NUM1    = { tap = true, hold = true,  chord = true, chordWith = "keypad" },
   NUM5    = { tap = true, hold = true,  chord = true, note = "a direct Unpress Quickey re-activates it: stuck-key recovery is NOT qualified for NUM5" },
-  THRU    = { tap = true, hold = true,  chord = true },
+  THRU    = { tap = true, hold = true,  chord = true, chordWith = "digit" },
   FIXTURE = { tap = true, hold = true,  chord = false },
   PLEASE  = { tap = true, hold = true,  chord = false, note = "executes the command line; immediately after digits it is accepted in the same chunk outside a text pop-up" },
   CLEAR   = { tap = true, hold = true,  chord = false },
@@ -687,16 +695,16 @@ local BANK_QUALIFIED = {
   -- KB-28
   NUM0 = KB28_DIGIT, NUM2 = KB28_DIGIT, NUM3 = KB28_DIGIT, NUM4 = KB28_DIGIT,
   NUM6 = KB28_DIGIT, NUM7 = KB28_DIGIT, NUM8 = KB28_DIGIT, NUM9 = KB28_DIGIT,
-  PLUS    = { tap = true, hold = true,  chord = true },
-  MINUS   = { tap = true, hold = true,  chord = true },
-  DOT     = { tap = true, hold = true,  chord = true },
-  SLASH   = { tap = true, hold = true,  chord = true },
-  AT      = { tap = true, hold = true,  chord = true, note = "in the Edit Command pop-up it inserted nothing (at the start and mid-line)" },
-  UPDATE  = { tap = true, hold = true,  chord = true },
-  EDIT    = { tap = true, hold = true,  chord = true },
-  CUE     = { tap = true, hold = true,  chord = true },
-  GROUP   = { tap = true, hold = true,  chord = true },
-  PREVIEW = { tap = true, hold = true,  chord = true, note = "the Preview keyword on the command line, not the preview-mode toggle" },
+  PLUS    = { tap = true, hold = true,  chord = true, chordWith = "digit" },
+  MINUS   = { tap = true, hold = true,  chord = true, chordWith = "digit" },
+  DOT     = { tap = true, hold = true,  chord = true, chordWith = "digit" },
+  SLASH   = { tap = true, hold = true,  chord = true, chordWith = "digit" },
+  AT      = { tap = true, hold = true,  chord = true, chordWith = "digit", note = "in the Edit Command pop-up it inserted nothing (at the start and mid-line)" },
+  UPDATE  = { tap = true, hold = true,  chord = true, chordWith = "digit" },
+  EDIT    = { tap = true, hold = true,  chord = true, chordWith = "digit" },
+  CUE     = { tap = true, hold = true,  chord = true, chordWith = "digit" },
+  GROUP   = { tap = true, hold = true,  chord = true, chordWith = "digit" },
+  PREVIEW = { tap = true, hold = true,  chord = true, chordWith = "digit", note = "the Preview keyword on the command line, not the preview-mode toggle" },
   COPY    = { tap = true, hold = true,  chord = false, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
   MOVE    = { tap = true, hold = true,  chord = false, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
   DELETE  = { tap = true, hold = true,  chord = false, note = "a digit rolled into it opened the delete confirmation for the sheet's selected object: chord not tested further" },
@@ -1723,7 +1731,7 @@ function QuickeyBackend:quickkeyCapabilities(code)
   if not e.qualified then return { tap = false, hold = false, chord = false, note = "discovered only: no KB-10 evidence for this code" .. (e.note and ("; " .. e.note) or "") } end
   -- A tap on this backend IS a bounded executor hold (Press, then Unpress at the deadline), so a code
   -- qualified for holds is qualified for taps here (MA1: a direct tap holds nothing, an executor pair does).
-  return { tap = (e.qualified.tap or e.qualified.hold) and true or false, hold = e.qualified.hold and true or false, chord = e.qualified.chord and true or false, note = e.qualified.note }
+  return { tap = (e.qualified.tap or e.qualified.hold) and true or false, hold = e.qualified.hold and true or false, chord = e.qualified.chord and true or false, chordWith = e.qualified.chord and e.qualified.chordWith or nil, note = e.qualified.note }
 end
 
 -- Named requirements a route through this backend is missing right now (reported by describeRoute()).
@@ -3278,7 +3286,7 @@ function Instance:_validateSequence(sessionId, steps)
         if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
         if others then
           -- Every key already down when this one goes down (live holds and earlier steps) must chord too.
-          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple)
+          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple, route and route.capabilities)
           if cerr then return stepFail(i, cerr.code, cerr.message, { reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities, heldKey = cerr.heldKey }) end
         end
         if kind == "press" then heldQuickkeys[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities } end
@@ -3333,7 +3341,7 @@ function Instance:_validateSequence(sessionId, steps)
         if tuple.quickkey then
           local cerr = self:_quickkeyCapabilityError(tuple, route, step.holdMs and "tap" or "hold", true, true)
           if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities }) end
-          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple)
+          cerr = self:_heldQuickkeyChordError(tk, heldQuickkeys, tuple, route and route.capabilities)
           if cerr then return stepFail(i, cerr.code, "key " .. k .. ": " .. cerr.message, { key = k, reason = cerr.reason, missing = cerr.missing, capabilities = cerr.capabilities, heldKey = cerr.heldKey }) end
           if not step.holdMs then heldQuickkeys[tk] = { quickkey = tuple.quickkey, capabilities = route.capabilities } end
         end
@@ -4125,7 +4133,7 @@ function Instance:_planPress(sessionId, now, spec, ctx)
     -- A chord needs the flag on EVERY participating key: a held Quickey without chord evidence must not
     -- get a neighbour either (the hold's own stored flags decide, never the current policy).
     if simultaneous then
-      cerr = self:_heldQuickkeyChordError(tupleKey(tuple), nil, tuple)
+      cerr = self:_heldQuickkeyChordError(tupleKey(tuple), nil, tuple, route and route.capabilities)
       if cerr then return nil, cerr end
     end
   end
@@ -4633,7 +4641,22 @@ end
 -- adapter never changes that). Checks the live records (held, releasing, unresolved) and, for the sequence
 -- validator, the tuples earlier steps leave down (extraHeld: tupleKey -> { quickkey, capabilities }).
 -- Returns the structured error for the first held key without chord, or nil.
-function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming)
+-- Whether two chord-capable codes may be down together: each side's chordWith group (if any) must contain the other.
+local function chordPairAllowed(nameA, capsA, nameB, capsB)
+  local ga, gb = capsA and capsA.chordWith, capsB and capsB.chordWith
+  if ga and not (CHORD_GROUPS[ga] and CHORD_GROUPS[ga][nameB]) then return false end
+  if gb and not (CHORD_GROUPS[gb] and CHORD_GROUPS[gb][nameA]) then return false end
+  return true
+end
+
+function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming, incomingCaps)
+  local function pairErrorFor(name, caps, state)
+    local _, e = fail("unsupported", string.format("Quickey %s is %s; %s next to it is not a qualified chord (chord evidence: %s with %s, %s with %s; KB-28), refused before dispatch, nothing is substituted",
+        tostring(name), state, tostring(incoming and incoming.quickkey), tostring(name), tostring(caps.chordWith or "any chord code"),
+        tostring(incoming and incoming.quickkey), tostring(incomingCaps and incomingCaps.chordWith or "any chord code")),
+      { reason = "capability", missing = { "chord" }, capabilities = caps, heldKey = name, kind = "hold", pair = true })
+    return e
+  end
   local function errorFor(name, caps, state)
     local _, e = fail("unsupported", string.format("Quickey %s is %s and does not advertise chord (capabilities.quickkey = { tap = %s, hold = %s, chord = %s }); pressing %s next to it is refused before dispatch, nothing is substituted",
         tostring(name), state, tostring(caps.tap or false), tostring(caps.hold or false), tostring(caps.chord or false), tostring(incoming and incoming.quickkey or "another Quickey")),
@@ -4644,12 +4667,14 @@ function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming)
     if h.quickkey and h.state ~= "released" and h.tupleKey ~= exceptTupleKey then
       local caps = h.route and h.route.capabilities or {}
       if not caps.chord then return errorFor(h.quickkey, caps, h.state == "held" and "held" or h.state) end
+      if incoming and incoming.quickkey and not chordPairAllowed(h.quickkey, caps, incoming.quickkey, incomingCaps) then return pairErrorFor(h.quickkey, caps, h.state == "held" and "held" or h.state) end
     end
   end
   for tk, held in pairs(extraHeld or {}) do
     if tk ~= exceptTupleKey and type(held) == "table" then
       local caps = held.capabilities or {}
       if not caps.chord then return errorFor(held.quickkey, caps, "left down by an earlier step") end
+      if incoming and incoming.quickkey and not chordPairAllowed(held.quickkey, caps, incoming.quickkey, incomingCaps) then return pairErrorFor(held.quickkey, caps, "left down by an earlier step") end
     end
   end
   return nil

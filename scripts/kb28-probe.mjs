@@ -156,6 +156,12 @@ async function cleanup(conn, unpressAll = false) {
     const st = await readSlot(conn, s);
     if (execOurs(s, st) && (pressed.has(s.name) || unpressAll)) {
       const fu = await lua(conn, `return Cmd('Unpress Page ${EXP}.${s.e}')`);
+      if (!accepted(fu)) {
+        // The key may still be down: deleting its assignment would leave it stuck (KB-10). Keep the slot for recovery.
+        record(`${s.name}: Unpress refused (${fu}); Quickey ${s.q} and executor ${EXP}.${s.e} left in place for recovery`, false, fu);
+        out[s.name] = st;
+        continue;
+      }
       pressed.delete(s.name);
       note(`${s.name}: released before cleanup`, fu);
     }
@@ -234,11 +240,13 @@ async function preflight(A) {
   return ping;
 }
 
-async function runCmdline(A, codes) {
+async function runCmdline(A, codes, only) {
+  // only: the operator's --codes set (null = the whole default run). Every stage presses only selected codes.
+  const pick = (name) => !only || only.has(name);
   // 1. Taps: one token on Press, nothing on Unpress, the same in the chunk and on the next request.
   const tokens = {};
   for (const name of codes) {
-    if (!(await clearLine(A))) { record(`${name}: command line cleared before the tap`, false); continue; }
+    if (!(await clearLine(A))) { record(`${name}: command line cleared before the tap (stage stopped, nothing more pressed)`, false, await readCmd(A)); return; }
     const t = await tap(A, SLOTS.A, name);
     tokens[name] = t.afterPress;
     record(`${name} tap: Press puts a token on the line synchronously, Unpress adds nothing`,
@@ -246,7 +254,7 @@ async function runCmdline(A, codes) {
   }
   // 2. Holds: Press kept down across requests for 1.5 s inserts once (no auto-repeat), Unpress adds nothing.
   for (const name of codes) {
-    if (!(await clearLine(A))) { record(`${name}: command line cleared before the hold`, false); continue; }
+    if (!(await clearLine(A))) { record(`${name}: command line cleared before the hold (stage stopped, nothing more pressed)`, false, await readCmd(A)); return; }
     await code(A, SLOTS.A, name);
     const fp = await press(A, SLOTS.A);
     const down = await readCmd(A);
@@ -258,12 +266,13 @@ async function runCmdline(A, codes) {
     record(`${name} hold: one token while held 1.5 s, none on release, MA untouched`, accepted(fp) && accepted(fu) && down === tokens[name] && held === down && up === down && ma === false, { down, held, up, ma });
   }
   // 3. Rolling pairs: B down before A up gives the same line as two sequential taps.
-  for (const [a, b] of ROLLING) {
-    if (!(await clearLine(A))) { record(`${a}+${b}: command line cleared`, false); continue; }
+  for (const [a, b] of ROLLING.filter(([a, b]) => pick(a) && pick(b))) {
+    if (!(await clearLine(A))) { record(`${a}+${b}: command line cleared (stage stopped, nothing more pressed)`, false, await readCmd(A)); return; }
     await code(A, SLOTS.A, a); await code(A, SLOTS.B, b);
     await press(A, SLOTS.A); await unpress(A, SLOTS.A); await press(A, SLOTS.B); await unpress(A, SLOTS.B);
     const sequential = await readCmd(A);
-    await clearLine(A);
+    // The rolled pair is only comparable (and only safe) on an empty line.
+    if (!(await clearLine(A))) { record(`${a}+${b}: command line cleared after the sequential taps (stage stopped, nothing more pressed)`, false, { sequential, line: await readCmd(A) }); return; }
     const fa = await press(A, SLOTS.A);
     const fb2 = await press(A, SLOTS.B);
     const both = await readCmd(A);
@@ -274,7 +283,7 @@ async function runCmdline(A, codes) {
   }
   await clearLine(A);
   // 4. Toggles: Press flips the mode once, Unpress leaves it, a second tap flips it back.
-  for (const [name, reader] of Object.entries(TOGGLE_CODES)) {
+  for (const [name, reader] of Object.entries(TOGGLE_CODES).filter(([name]) => pick(name))) {
     await code(A, SLOTS.A, name);
     const read = () => fb(A, reader);
     const v0 = await read();
@@ -394,9 +403,12 @@ async function main() {
     await setup(A);
     ready = true;
     if (mode === "run") {
-      const codes = String(opt("--codes", TEXT_CODES.join(","))).split(",").filter(Boolean);
-      await runCmdline(A, codes);
-      await runFull(A);
+      const explicit = opt("--codes", null);
+      const only = explicit === null ? null : new Set(String(explicit).split(",").filter(Boolean));
+      // FULL and the toggles have their own stages; the tap/hold loops take the text codes.
+      const codes = only ? [...only].filter((c) => c !== "FULL" && !(c in TOGGLE_CODES)) : TEXT_CODES;
+      await runCmdline(A, codes, only);
+      if (!only || only.has("FULL")) await runFull(A);
     } else if (mode === "popup") {
       await runPopup(A);
     } else if (mode === "type") {

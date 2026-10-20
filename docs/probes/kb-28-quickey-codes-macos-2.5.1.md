@@ -79,7 +79,7 @@ afterwards.
 | Criterion | Answer |
 | --- | --- |
 | Tap / hold per code on the executor path | qualified for NUM0, NUM2–NUM4, NUM6–NUM9, PLUS, MINUS, DOT, SLASH, AT, UPDATE, EDIT, COPY, MOVE, DELETE, CUE, GROUP, MACRO, PREVIEW, FULL, HIGHLIGHT |
-| Chord (rolled pairs) | qualified for the digits, PLUS, MINUS, DOT, SLASH, AT, UPDATE, EDIT, CUE, GROUP, PREVIEW, and now NUM1 and THRU; not for COPY, MOVE, DELETE, MACRO, FULL, HIGHLIGHT |
+| Chord (rolled pairs) | qualified for the digits, PLUS, MINUS, DOT, SLASH, AT, UPDATE, EDIT, CUE, GROUP, PREVIEW, and now NUM1 and THRU, **only for the pairs tested**: every pair had a digit in it, so the module allows a digit next to keypad keys and the others next to a digit (`chordWith`); not for COPY, MOVE, DELETE, MACRO, FULL, HIGHLIGHT |
 | Text fields | keys reach the focused field (pop-up and calculator); order is kept when each key is its own request (frame); AT inserts nothing in the Edit Command pop-up |
 | Held/latched state at the end | MASTATE false, command line empty, programmer cleared, probe objects removed, show not saved |
 

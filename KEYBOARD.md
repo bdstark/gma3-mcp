@@ -1394,7 +1394,10 @@ surface can route them as Quickeys.
 tap/hold/chord flags and notes, upgrades NUM1 and THRU to chord, and names the per-frame ordering rule in the Quickey
 backend's limitations. `adoptBank()` recomputes a kept record's qualification from the loaded table (`requalified`) and,
 for a `codes = "qualified"` bank, names the qualified codes the bank lacks with the remedy (`missingQualified`,
-`reprovision`: tear down and provision again; adoption creates nothing). No MCP tool or TypeScript contract changed.
+`reprovision`: tear down and provision again; adoption creates nothing). Chord evidence is per peer (`chordWith`,
+review 3): every KB-28 rolled pair had a digit in it, so a digit (NUM1 included) chords only next to keypad keys and
+the KB-28 operators and keywords (and THRU) only next to a digit; KB-10's NUM5, STORE and MA1 keep their unrestricted
+chord flag, and a pair outside a key's group is refused before dispatch. No MCP tool or TypeScript contract changed.
 
 ### Record (2026-10-20)
 
