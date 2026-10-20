@@ -2,7 +2,7 @@
 'use strict';
 const cp = require('node:child_process');
 const OWNER = 'bdstark';
-const REPOS = new Set(['gma3-mcp', 'gma3-beat-sync', 'gma3-phrase-sync']);
+const REPOS = new Set(['gma3-mcp', 'gma3-beat-sync', 'gma3-phrase-sync', 'gma3-surface']);
 const BOT = 'chatgpt-codex-connector[bot]';
 const RECEIPT = '<!-- independent-review:v1 ';
 const SHA = /^[a-f0-9]{40}$/;

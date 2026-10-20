@@ -1,7 +1,7 @@
 # PR review, approval, merge and cleanup
 
 The reusable workflows in this repository serve only `bdstark/gma3-mcp`, `bdstark/gma3-beat-sync` and
-`bdstark/gma3-phrase-sync`. Callers pin an immutable revision. Each job fetches only the shared automation directory
+`bdstark/gma3-phrase-sync`, plus `bdstark/gma3-surface`. Callers pin an immutable revision. Each job fetches only the shared automation directory
 from its pinned controller revision. The candidate repository is fetched separately with trusted main checked out; PR commits are inspected as data using git diff/show, under its own
 licence and repository guidance. No product implementation is transferred between repositories.
 
