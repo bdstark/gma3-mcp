@@ -3014,7 +3014,9 @@ function Instance:tap(sessionId, now, spec, holdMs, ctx)
   -- An exclusive tap (a long-press, e.g. STORE held to open its pop-up) stays executor-held until its deadline (review 3).
   -- So does a tap with a sustained duration (holdMs above the default 50 ms): the caller asked for the key to stay
   -- down that long (review 4 of #75).
-  local directCandidate = type(self._adapter.tapDirect) == "function" and not (spec and (spec.direct == false or spec.exclusive))
+  -- (A non-table spec is left to _planPress, which refuses it as bad-argument; review 7 of #75.)
+  local sp = type(spec) == "table" and spec or nil
+  local directCandidate = type(self._adapter.tapDirect) == "function" and not (sp and (sp.direct == false or sp.exclusive))
     and (requestedHoldMs == nil or requestedHoldMs <= 50) and self:_liveQuickkeyCount() == 0
   local plan, perr = self:_planPress(sessionId, now, spec, { kind = "tap", fromSequence = ctx and ctx.fromSequence, direct = directCandidate or nil })
   if not plan then return nil, perr end

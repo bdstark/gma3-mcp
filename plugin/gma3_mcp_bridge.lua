@@ -6403,7 +6403,12 @@ state._closeClient = closeClient  -- exposed for local testing
 local serviceClients
 do
 local KEY_OPS = { ["input.press"] = true, ["input.tap"] = true, ["input.combo"] = true, ["input.sequence"] = true }
-local function lineOp(line) return line:match('"op"%s*:%s*"([%w%._]+)"') end
+-- The DECODED op decides (review 7 of #75): any valid JSON spelling of a key op is held back. Decoding happens
+-- only while the frame is taken; an undecodable line is answered (as invalid) by handleLine as usual.
+local function lineOp(line)
+  local ok, req = pcall(json.decode, line)
+  return ok and type(req) == "table" and type(req.op) == "string" and req.op or nil
+end
 serviceClients = function()
   state.keyFrame = state.serviceKeyFrame or false
   state.serviceKeyFrame = false

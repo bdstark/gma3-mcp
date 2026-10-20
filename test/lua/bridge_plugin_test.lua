@@ -2055,6 +2055,20 @@ do
     check("two clients with queued taps both get theirs within three frames", #sent2 == 2 and sent2[2]:find('"id":"u1"') ~= nil and #sent >= 1, json.encode({ sent2 = #sent2, sent = #sent }))
     for i = #state.clients, 1, -1 do if state.clients[i] == cl2 then table.remove(state.clients, i) end end
     fakeLines = {}
+    -- Review 7: the gate classifies the decoded op, so an escaped spelling of input.tap is held back too.
+    sent = {}
+    state.serviceKeyFrame = true
+    fakeLines = {}
+    local esc = '{"id":"e1","op":"input\\u002etap","args":{"key":"NUM5"}}'
+    cl.pending, cl.buf = nil, ""
+    table.insert(state.clients, cl)
+    local lines3 = { esc }
+    cl.sock.receive = function() local l = table.remove(lines3, 1); if l then return l end return nil, "timeout", "" end
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    check("an escaped input.tap is held back while the frame is taken", #sent == 0 and cl.pending ~= nil, json.encode({ sent = #sent, pending = cl.pending }))
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    check("...and runs on the next frame", #sent == 1 and sent[1]:find('"id":"e1"') ~= nil, json.encode(sent))
+    for i = #state.clients, 1, -1 do if state.clients[i] == cl then table.remove(state.clients, i) end end
     -- serviceModules() raises the flag when the hardkeys service itself pressed a key.
     local realService = hk.instance.service
     hk.instance.service = function(self, t) self._pressCount = (self._pressCount or 0) + 1; return realService(self, t) end
