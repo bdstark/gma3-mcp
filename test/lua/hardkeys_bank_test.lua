@@ -663,6 +663,24 @@ do
   local v = inst:verifyBank(4)
   check("the first bank is untouched", v.state == "ready" and console.quickeys[900].name == "MCP MA1", J(v.problems))
 
+  -- Review of #79: the suffix alone does not prove the console added it. Someone renaming the object to another
+  -- "#<n>" name after our readback (and before the rollback reads it) makes it no longer ours: it is kept.
+  local origRead, reads940 = deps.quickeys.read, 0
+  deps.quickeys.list = function() return {} end
+  deps.quickeys.read = function(index)
+    if index == 940 then
+      reads940 = reads940 + 1
+      -- reads of 940: preflight, the recheck, after create, the readback after the writes, then the rollback's
+      if reads940 == 5 and console.quickeys[940] then console.quickeys[940].name = "MCP MA1#3" end
+    end
+    return origRead(index)
+  end
+  r, err = other:provisionBank(staticSpec(), 4.5)
+  deps.quickeys.read, deps.quickeys.list = origRead, origList
+  check("a Quickey renamed to another '#<n>' after the readback is kept, not deleted", r == nil and err.code == "bank-partial" and err.failed.error:find("MCP MA1#2", 1, true)
+    and #err.removed == 0 and #err.kept == 1 and err.kept[1].index == 940 and console.quickeys[940] and console.quickeys[940].name == "MCP MA1#3", J(err and { err.failed, err.removed, err.kept }))
+  console.quickeys[940] = nil
+
   -- Only a "#<n>" suffix counts as the console's: any other change to the Name keeps the object.
   local origSet = deps.quickeys.set
   deps.quickeys.list = function() return {} end

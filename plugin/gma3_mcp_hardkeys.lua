@@ -2367,6 +2367,9 @@ function Instance:provisionBank(spec, now)
       if final.state ~= "owned" then
         local want = BANK_NAME_PREFIX .. p.name
         local renamed = final.read and tostring(final.read.name) ~= want and bankNameAsWritten(final.read.name, want)
+        -- The name the console stored in place of ours, read right after the write: the rollback deletes the object only
+        -- while it still carries exactly this name (a later rename by someone else keeps it, review of #79).
+        if renamed and rec.written.Name then rec.storedName = tostring(final.read.name) end
         failure = { index = p.index, code = p.name, error = "readback after the writes: " .. final.state .. (final.changed and (" (" .. table.concat(final.changed, "; ") .. ")") or (final.error and (": " .. final.error) or "")) .. "; the console accepted the writes but the object does not read back as expected"
           .. (renamed and ("; the console renamed it because another Quickey is named '" .. want .. "' (created after the preflight?)") or "") }
         break
@@ -2415,7 +2418,8 @@ end
 -- Undoes what the current provisionBank() call did after a failure: clears executors it assigned (only
 -- while they still hold the placeholder) and deletes objects it created that still read back as ours
 -- (marker written, or still exactly as created with nothing else written) and unchanged. A Name the console
--- stored with a "#<n>" suffix (the name was taken elsewhere in the pool) still reads back as written.
+-- stored with a "#<n>" suffix (the name was taken elsewhere in the pool) counts as written only while it is the
+-- exact name read back right after the write (rec.storedName): the suffix alone proves nothing.
 function Instance:_rollbackCreated(created, assigned, bank)
   local out = { removed = {}, kept = {}, cleared = {} }
   local d = self._deps
@@ -2465,7 +2469,7 @@ function Instance:_rollbackCreated(created, assigned, bank)
       local ours
       if rec.written.Note then
         ours = m ~= nil and m.owner == bank.owner and m.bank == bank.id and m.code == rec.name
-          and (rec.written.Code == nil or tostring(obj.code) == rec.written.Code) and (rec.written.Name == nil or bankNameAsWritten(obj.name, rec.written.Name))
+          and (rec.written.Code == nil or tostring(obj.code) == rec.written.Code) and (rec.written.Name == nil or tostring(obj.name) == rec.written.Name or (rec.storedName ~= nil and tostring(obj.name) == rec.storedName))
         if not ours then why = "the object no longer reads back as written (marker/code/name differ); kept" end
       else
         -- Nothing was written yet: a freshly created Quickey has an empty Note and no Code.
