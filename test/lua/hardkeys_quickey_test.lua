@@ -782,6 +782,20 @@ do
     for k = 190, 191 do console.executors["1." .. k] = "empty" end
     for qi in pairs(console.quickeys) do console.quickeys[qi] = nil end
   end
+  -- #75 review 10: a clear that returns but whose readback is unreadable keeps the Quickey the executor held.
+  do
+    local origAssign, origClear, origRead, nA, cleared = deps.executors.assign, deps.executors.clear, deps.executors.read, 0, {}
+    deps.executors.assign = function(...) nA = nA + 1; if nA == 3 then return false, "refused" end return origAssign(...) end
+    deps.executors.clear = function(page, index) cleared[execKey(page, index)] = true; return true end  -- returns, clears nothing
+    deps.executors.read = function(page, index) if cleared[execKey(page, index)] then error("read failed", 0) end return origRead(page, index) end
+    local bp, ep = inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0)
+    deps.executors.assign, deps.executors.clear, deps.executors.read = origAssign, origClear, origRead
+    local kept = 0
+    for k = 190, 191 do local x = console.executors["1." .. k]; if type(x) == "table" and x.quickey and console.quickeys[x.quickey] then kept = kept + 1 end end
+    check("an unreadable readback after a rollback clear keeps the executor's Quickey", bp == nil and ep.code == "bank-partial" and kept == 2 and #ep.kept >= 2, J({ err = ep and ep.message, kept = kept }))
+    for k = 190, 191 do console.executors["1." .. k] = "empty" end
+    for qi in pairs(console.quickeys) do console.quickeys[qi] = nil end
+  end
   local n = 0; for name in pairs(VK) do n = n + 1 end
   b, err = inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0)
   check("a static bank provisions with its own id letter", b and b.id == "bridge@q900.s1.190-209" and b.state == "ready", J(err or b))
@@ -813,8 +827,25 @@ do
   local inst2 = newInst()
   local a, aerr = inst2:adoptBank(dis.bank, 4)
   check("a static record is adopted with its map", a and a.state == "ready" and inst2._bank.staticByCode.MA1.index == maExec, J(aerr or a.problems))
+  -- #75 review 10: a static executor whose clear is refused keeps its code Quickey; the teardown is partial.
+  local maQ = inst2:bankTarget("MA1", 4.5).index
+  local origClear = deps.executors.clear
+  deps.executors.clear = function(page, index) if page == 1 and index == maExec then return false, "refused" end return origClear(page, index) end
+  local tp = inst2:teardownBank(4.6, { authorized = true })
+  deps.executors.clear = origClear
+  local left = 0; for _ in pairs(console.quickeys) do left = left + 1 end
+  check("teardown keeps the Quickey on a static executor it could not clear", tp and tp.complete == false and console.quickeys[maQ] ~= nil and console.executors["1." .. maExec].quickey == maQ and left == 1, J({ complete = tp and tp.complete, left = left, skipped = tp and tp.skipped }))
   local td = inst2:teardownBank(5, { authorized = true })
-  check("teardown clears every static executor and deletes the Quickeys", td and next(console.quickeys) == nil and console.executors["1.190"] == "empty", J(td))
+  check("teardown clears every static executor and deletes the Quickeys", td and td.complete and next(console.quickeys) == nil and console.executors["1.190"] == "empty" and console.executors["1." .. maExec] == "empty", J(td))
+  -- #75 review 10: an executor press that raised may have acted, so it counts as a press for the frame gates.
+  do
+    local inst3 = fresh()
+    local before3 = inst3:status(1).counters.presses
+    console.raise.press = "console blocked"
+    local h3, e3 = inst3:press("s", 1, { key = "NUM5" })
+    check("a raised executor press counts as a press (frame gate)", h3 == nil and e3.unresolved and inst3:status(1.01).counters.presses == before3 + 1, J({ e3, inst3:status(1.01).counters }))
+    inst3:recover(nil, 2)
+  end
 end
 
 -- KB-28 review 12: a press-order combo keeps its order across dispose/adopt, and the sequence preflight

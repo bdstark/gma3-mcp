@@ -2359,7 +2359,8 @@ function Instance:_rollbackCreated(created, assigned, bank)
       if okC and after and after.state == "empty" then out.cleared[#out.cleared + 1] = { executor = ref }
       else
         out.kept[#out.kept + 1] = { executor = ref, reason = okC and ("clear returned but the executor reads back " .. tostring(after and after.state)) or ("clear failed: " .. tostring(cerr)) }
-        local qi = holder(after or cls)
+        -- An unreadable readback after the clear says nothing: the executor keeps what it held before (review 10).
+        local qi = holder((after and after.state ~= "error") and after or cls)
         if qi then stillAssigned[qi] = ref end
       end
     elseif cls.state ~= "empty" then
@@ -2555,6 +2556,14 @@ function Instance:teardownBank(now, opts)
   local okShow, serr2 = self:_bankShowGate(bank)
   if not okShow then return nil, serr2 end
   local removed, skipped, cleared = {}, {}, {}
+  -- Review 10 of #75: a bank Quickey still referenced by an executor that was not confirmed empty is kept with it
+  -- (pool index -> executor), so no skipped executor points at a deleted object.
+  local keep = {}
+  local function keepFor(x, cls, ref)
+    local e = (cls and cls.state == "assigned" and bank.byName[cls.code]) or (cls and cls.state == "reserved" and bank.byName[BANK_PLACEHOLDER])
+      or (x.code and bank.byName[x.code]) or bank.byName[BANK_PLACEHOLDER]
+    if e then keep[e.index] = ref end
+  end
   -- Executors first: an assignment to a Quickey that is about to be deleted would dangle.
   for _, x in ipairs(bank.executors) do
     local ref = string.format("%d.%d", x.page, x.index)
@@ -2565,16 +2574,25 @@ function Instance:teardownBank(now, opts)
         local okC, cerr = bankOp(d.executors.clear, x.page, x.index)
         local after = okC and self:_classifyExecutor(x.page, x.index, bank) or nil
         if okC and after and after.state == "empty" then cleared[#cleared + 1] = { executor = ref, held = cls.state == "assigned" and cls.code or BANK_PLACEHOLDER }; x.state, x.assigned, x.problem = "released", nil, nil
-        else skipped[#skipped + 1] = { executor = ref, reason = okC and ("clear returned but the executor reads back " .. tostring(after and after.state)) or ("clear failed: " .. tostring(cerr)) } end
+        else
+          skipped[#skipped + 1] = { executor = ref, reason = okC and ("clear returned but the executor reads back " .. tostring(after and after.state)) or ("clear failed: " .. tostring(cerr)) }
+          keepFor(x, cls, ref)
+        end
       end
+      if type(d.executors.clear) ~= "function" then keepFor(x, cls, ref) end
     elseif cls.state ~= "empty" and cls.state ~= "missing" then
       skipped[#skipped + 1] = { executor = ref, reason = cls.error or (cls.state == "foreign" and "holds another bank's Quickey; left alone" or ("holds " .. tostring(cls.object and cls.object.class) .. " '" .. tostring(cls.object and cls.object.name) .. "', not ours; left alone")) }
+      -- An unreadable executor may still hold the Quickey the bank put on it.
+      if cls.state == "error" then keepFor(x, nil, ref) end
     end
   end
   local remaining = {}
   for _, e in ipairs(bank.codes) do
     local cls = self:_classifySlot(e.index, e, bank.owner, bank.id)
     if cls.state == "empty" then removed[#removed + 1] = { index = e.index, code = e.name, note = "already gone" }
+    elseif cls.state == "owned" and keep[e.index] then
+      e.state, e.problem = "kept", "still assigned to Page " .. keep[e.index] .. ", whose clear was not confirmed; kept with it"
+      skipped[#skipped + 1] = { index = e.index, code = e.name, reason = e.problem }; remaining[#remaining + 1] = e
     elseif cls.state == "owned" then
       local okD, derr = bankOp(d.quickeys.delete, e.index)
       local after = okD and self:_classifySlot(e.index, e, bank.owner, bank.id) or nil
@@ -4595,6 +4613,7 @@ function Instance:_dispatchPress(s, plan, now)
     if type(aOk) == "table" then msg = aOk.message; if type(aOk.target) == "table" then hold.target = aOk.target end end
     hold.dispatch.press = { ok = false, at = now, error = tostring(msg) }
     self:_markUnresolved(hold, now, "press raised an error; whether the key went down is unknown: " .. tostring(msg))
+    self._pressCount = self._pressCount + 1  -- it may have acted: it counts as a press for the frame gates (review 10 of #75)
     return nil, { code = "press-failed", message = "press raised an error: " .. tostring(msg), hold = hold.id, unresolved = true, target = hold.target }
   end
   if aOk == false then
