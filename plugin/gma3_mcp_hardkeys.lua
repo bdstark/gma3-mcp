@@ -667,8 +667,9 @@ local BANK_EXECUTOR_FUNCTIONS = { FLASH = true, BLACK = true, KILL = true, RATE1
 -- aliases are deduplicated by value with the alphabetically first name and reported.
 local BANK_ALIASES = { UNDO = "OOPS" }
 
--- `direct`: KB-10 tapped these codes as Press Quickey N alone (one complete activation; KB-29 adds the KB-28
--- codes): a tap of such a code needs no executor.
+-- `direct`: tapped as Press Quickey N alone, one complete activation (KB-10 for its codes; KB-29 for the KB-28
+-- codes: one token or action per tap, order kept one tap per request in a text pop-up, a calculator entry
+-- stored); a tap of such a code needs no executor.
 -- KB-10 evidence per code (onPC 2.5.1.0, macOS, executor path for holds), extended by KB-28 (the NX-K's
 -- remaining keys: docs/probes/kb-28-quickey-codes-macos-2.5.1.md). Everything else is discovered only.
 -- `tap` is a direct Press Quickey or an executor press/release pair; `hold` is an executor Press kept
@@ -683,7 +684,7 @@ local CHORD_GROUPS = {
   keypad = { NUM0 = true, NUM1 = true, NUM2 = true, NUM3 = true, NUM4 = true, NUM5 = true, NUM6 = true, NUM7 = true, NUM8 = true, NUM9 = true,
              PLUS = true, MINUS = true, DOT = true, SLASH = true, THRU = true, AT = true, UPDATE = true, EDIT = true, CUE = true, GROUP = true, PREVIEW = true },
 }
-local KB28_DIGIT = { tap = true, hold = true, chord = true, chordWith = "keypad" }
+local KB28_DIGIT = { tap = true, hold = true, chord = true, chordWith = "keypad", direct = true }
 local BANK_QUALIFIED = {
   NUM1    = { tap = true, hold = true,  chord = true, chordWith = "keypad", direct = true },
   NUM5    = { tap = true, hold = true,  chord = true, direct = true, note = "a direct Unpress Quickey re-activates it: stuck-key recovery is NOT qualified for NUM5" },
@@ -697,22 +698,22 @@ local BANK_QUALIFIED = {
   -- KB-28
   NUM0 = KB28_DIGIT, NUM2 = KB28_DIGIT, NUM3 = KB28_DIGIT, NUM4 = KB28_DIGIT,
   NUM6 = KB28_DIGIT, NUM7 = KB28_DIGIT, NUM8 = KB28_DIGIT, NUM9 = KB28_DIGIT,
-  PLUS    = { tap = true, hold = true,  chord = true, chordWith = "digit" },
-  MINUS   = { tap = true, hold = true,  chord = true, chordWith = "digit" },
-  DOT     = { tap = true, hold = true,  chord = true, chordWith = "digit" },
-  SLASH   = { tap = true, hold = true,  chord = true, chordWith = "digit" },
-  AT      = { tap = true, hold = true,  chord = true, chordWith = "digit", note = "in the Edit Command pop-up it inserted nothing (at the start and mid-line)" },
-  UPDATE  = { tap = true, hold = true,  chord = true, chordWith = "digit" },
-  EDIT    = { tap = true, hold = true,  chord = true, chordWith = "digit" },
-  CUE     = { tap = true, hold = true,  chord = true, chordWith = "digit" },
-  GROUP   = { tap = true, hold = true,  chord = true, chordWith = "digit" },
-  PREVIEW = { tap = true, hold = true,  chord = true, chordWith = "digit", note = "the Preview keyword on the command line, not the preview-mode toggle" },
-  COPY    = { tap = true, hold = true,  chord = false, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
-  MOVE    = { tap = true, hold = true,  chord = false, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
-  DELETE  = { tap = true, hold = true,  chord = false, note = "a digit rolled into it opened the delete confirmation for the sheet's selected object: chord not tested further" },
-  MACRO   = { tap = true, hold = true,  chord = false, note = "not rolled: a digit before it would run a show macro" },
-  FULL    = { tap = true, hold = true,  chord = false, note = "executes At Full on the selection (Dimmer 100) on Press; nothing on an empty selection" },
-  HIGHLIGHT = { tap = true, hold = true, chord = false, note = "toggles Highlight once per Press (the mode reads a frame later); Unpress leaves it" },
+  PLUS    = { tap = true, hold = true,  chord = true, direct = true, chordWith = "digit" },
+  MINUS   = { tap = true, hold = true,  chord = true, direct = true, chordWith = "digit" },
+  DOT     = { tap = true, hold = true,  chord = true, direct = true, chordWith = "digit" },
+  SLASH   = { tap = true, hold = true,  chord = true, direct = true, chordWith = "digit" },
+  AT      = { tap = true, hold = true,  chord = true, direct = true, chordWith = "digit", note = "in the Edit Command pop-up it inserted nothing (at the start and mid-line)" },
+  UPDATE  = { tap = true, hold = true,  chord = true, direct = true, chordWith = "digit" },
+  EDIT    = { tap = true, hold = true,  chord = true, direct = true, chordWith = "digit" },
+  CUE     = { tap = true, hold = true,  chord = true, direct = true, chordWith = "digit" },
+  GROUP   = { tap = true, hold = true,  chord = true, direct = true, chordWith = "digit" },
+  PREVIEW = { tap = true, hold = true,  chord = true, direct = true, chordWith = "digit", note = "the Preview keyword on the command line, not the preview-mode toggle" },
+  COPY    = { tap = true, hold = true,  chord = false, direct = true, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
+  MOVE    = { tap = true, hold = true,  chord = false, direct = true, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
+  DELETE  = { tap = true, hold = true,  chord = false, direct = true, note = "a digit rolled into it opened the delete confirmation for the sheet's selected object: chord not tested further" },
+  MACRO   = { tap = true, hold = true,  chord = false, direct = true, note = "not rolled: a digit before it would run a show macro" },
+  FULL    = { tap = true, hold = true,  chord = false, direct = true, note = "executes At Full on the selection (Dimmer 100) on Press; nothing on an empty selection" },
+  HIGHLIGHT = { tap = true, hold = true, chord = false, direct = true, note = "toggles Highlight once per Press (the mode reads a frame later); Unpress leaves it" },
 }
 -- Discovered codes with evidence that they do NOT behave as command-area keys through a Quickey.
 local BANK_UNQUALIFIED_NOTES = { ESC = "as a Quickey, ESC never touched the command line (direct and executor path)" }
