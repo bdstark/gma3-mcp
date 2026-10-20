@@ -2342,6 +2342,13 @@ end
 function Instance:_rollbackCreated(created, assigned, bank)
   local out = { removed = {}, kept = {}, cleared = {} }
   local d = self._deps
+  -- Quickeys still on an executor whose clear failed are kept, so no kept executor points at a deleted object
+  -- (review 6 of #75): pool index -> executor.
+  local stillAssigned = {}
+  local function holder(cls)
+    local e = cls.state == "assigned" and bank.byName[cls.code] or (cls.state == "reserved" and bank.byName[BANK_PLACEHOLDER]) or nil
+    return e and e.index
+  end
   for i = #assigned, 1, -1 do
     local x = assigned[i]
     local ref = string.format("%d.%d", x.page, x.index)
@@ -2350,7 +2357,11 @@ function Instance:_rollbackCreated(created, assigned, bank)
       local okC, cerr = bankOp(d.executors.clear, x.page, x.index)
       local after = okC and self:_classifyExecutor(x.page, x.index, bank) or nil
       if okC and after and after.state == "empty" then out.cleared[#out.cleared + 1] = { executor = ref }
-      else out.kept[#out.kept + 1] = { executor = ref, reason = okC and ("clear returned but the executor reads back " .. tostring(after and after.state)) or ("clear failed: " .. tostring(cerr)) } end
+      else
+        out.kept[#out.kept + 1] = { executor = ref, reason = okC and ("clear returned but the executor reads back " .. tostring(after and after.state)) or ("clear failed: " .. tostring(cerr)) }
+        local qi = holder(after or cls)
+        if qi then stillAssigned[qi] = ref end
+      end
     elseif cls.state ~= "empty" then
       out.kept[#out.kept + 1] = { executor = ref, reason = "no longer holds the placeholder (" .. cls.state .. "); left alone" }
     end
@@ -2359,7 +2370,8 @@ function Instance:_rollbackCreated(created, assigned, bank)
     local rec = created[i]
     local ok, obj, err = bankCall(d.quickeys.read, rec.index)
     local why
-    if not ok then why = "unreadable: " .. tostring(err)
+    if stillAssigned[rec.index] then why = "still assigned to Page " .. stillAssigned[rec.index] .. " (its clear failed); kept with it"
+    elseif not ok then why = "unreadable: " .. tostring(err)
     elseif obj == nil then out.removed[#out.removed + 1] = { index = rec.index, code = rec.name, note = "already gone" }
     else
       local m = parseBankMarker(obj.note)

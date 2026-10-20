@@ -1798,7 +1798,10 @@ end
 local function serviceModules(now)
   for key, rec in pairs(state.modules) do
     if rec.instance then
+      local pressesBefore = key == "hardkeys" and rec.instance._pressCount or nil
       local ok, res = pcall(rec.instance.service, rec.instance, now)
+      -- A key the service pressed (a running sequence's next step) counts for this frame's key gate (review 6 of #75).
+      if ok and pressesBefore and rec.instance and (rec.instance._pressCount or 0) > pressesBefore then state.serviceKeyFrame = true end
       if not ok then
         rec.error = "service: " .. tostring(res)
         logerr("module %s failed in service(): %s", key, tostring(res))
@@ -6391,22 +6394,35 @@ local function closeClient(i, reason)
 end
 state._closeClient = closeClient  -- exposed for local testing
 
--- One frame of client servicing: up to 64 request lines per client. KB-29 (reviews 4 and 5 of #75): a request that
--- presses console keys (input.press / input.tap / input.combo / input.sequence) sets state.keyFrame, and no further line of
--- any client is read in that frame; the rest stay in the socket buffers for the next frame. Quickey presses
--- issued in one console frame reorder in a focused text field, so pipelined key requests are spread out.
-local function serviceClients()
-  state.keyFrame = false
-  for i = #state.clients, 1, -1 do
-    local cl = state.clients[i]
+-- One frame of client servicing: up to 64 request lines per client. KB-29 (reviews 4-6 of #75): at most one
+-- key-producing request (input.press / input.tap / input.combo / input.sequence) runs per frame, counting a key the
+-- hardkeys service pressed this frame (state.serviceKeyFrame). A key request that finds the frame taken waits as
+-- the client's pending line for the next frame; every other request is still answered (in order: nothing behind a
+-- pending line of that client runs first). Quickey presses issued in one console frame reorder in a focused text
+-- field. Clients are visited from a rotating start, so one busy client cannot starve the others.
+local serviceClients
+do
+local KEY_OPS = { ["input.press"] = true, ["input.tap"] = true, ["input.combo"] = true, ["input.sequence"] = true }
+local function lineOp(line) return line:match('"op"%s*:%s*"([%w%._]+)"') end
+serviceClients = function()
+  state.keyFrame = state.serviceKeyFrame or false
+  state.serviceKeyFrame = false
+  local n = #state.clients
+  if n == 0 then return end
+  state.clientCursor = ((state.clientCursor or 0) % n) + 1
+  local order = {}
+  for k = 0, n - 1 do order[#order + 1] = state.clients[((state.clientCursor - 1 + k) % n) + 1] end
+  local closedClients = {}
+  for _, cl in ipairs(order) do
     local closed = false
     for _ = 1, 64 do
-      if state.keyFrame then break end
-      local line, rerr, partial = cl.sock:receive("*l")
+      local line, rerr, partial
+      if cl.pending then line, cl.pending = cl.pending, nil else line, rerr, partial = cl.sock:receive("*l") end
       if line then
         local full = cl.buf .. line
         cl.buf = ""
         if full ~= "" then
+          if state.keyFrame and KEY_OPS[lineOp(full) or ""] then cl.pending = full; break end
           local response = handleLine(cl, full)
           if not sendAll(cl.sock, response .. "\n") then closed = true; break end
         end
@@ -6416,13 +6432,17 @@ local function serviceClients()
         break
       end
     end
-    if closed then
-      closeClient(i)
-      log("client disconnected (%d total)", #state.clients)
+    if closed then closedClients[#closedClients + 1] = cl end
+  end
+  for _, cl in ipairs(closedClients) do
+    for i = #state.clients, 1, -1 do
+      if state.clients[i] == cl then closeClient(i); log("client disconnected (%d total)", #state.clients) end
     end
   end
 end
+end
 state._serviceClients = serviceClients  -- exposed for local testing
+state._serviceModules = serviceModules
 
 local function serverMain()
   local server, err = socket.bind(state.host, state.port)

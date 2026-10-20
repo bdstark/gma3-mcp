@@ -2020,7 +2020,7 @@ do
     co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
     local second = #sent
     co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
-    check("pipelined taps are served one per frame: open + tap, then tap, then ping", first == 2 and second == 3 and #sent == 4 and sent[4]:find('"id":"p"') ~= nil, json.encode({ first, second, #sent }))
+    check("pipelined taps are served one per frame: open + tap, then tap + ping (non-key requests are not held back)", first == 2 and second == 4 and #sent == 4 and sent[4]:find('"id":"p"') ~= nil, json.encode({ first, second, #sent }))
     -- ...and so are pipelined one-step sequences (their first step goes out at start, review 5 of #75).
     sent = {}
     for _, req in ipairs({ { id = "s1", op = "input.sequence", args = { steps = { { kind = "tap", key = "NUM5" } } } },
@@ -2032,6 +2032,37 @@ do
     for _ = 1, 3 do hk.instance:service(require("socket").gettime() + 1) end
     co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
     check("pipelined sequences are started one per frame", seqFirst == 1 and #sent == 2, json.encode({ seqFirst, #sent, sent }))
+    -- Review 6: a key the hardkeys service pressed this frame (a sequence's next step) takes the frame too; a
+    -- queued tap waits, a ping is still answered.
+    sent = {}
+    state.serviceKeyFrame = true
+    fakeLines[#fakeLines + 1] = json.encode({ id = "t3", op = "input.tap", args = { key = "NUM5" } })
+    fakeLines[#fakeLines + 1] = json.encode({ id = "p2", op = "ping", args = {} })
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    local held = #sent
+    co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co))
+    check("after a service-pressed key the queued tap waits a frame (and the ping behind it with it)", held == 0 and #sent == 2 and sent[1]:find('"id":"t3"') ~= nil, json.encode({ held, sent }))
+    -- Review 6: rotating start, so a second client's key request is not starved by the first one's stream.
+    local lines2, sent2 = {}, {}
+    local cl2 = { sock = { receive = function() local l = table.remove(lines2, 1); if l then return l end return nil, "timeout", "" end,
+                           send = function(_, data) sent2[#sent2 + 1] = data; return #data end }, buf = "", id = 998 }
+    table.insert(state.clients, cl2)
+    lines2[1] = json.encode({ id = "o2", op = "input.open", args = {} })
+    lines2[2] = json.encode({ id = "u1", op = "input.tap", args = { key = "NUM5" } })
+    sent = {}
+    for k = 1, 3 do fakeLines[#fakeLines + 1] = json.encode({ id = "a" .. k, op = "input.tap", args = { key = "NUM1" } }) end
+    for _ = 1, 3 do co = coroutine.create(function() state._serviceClients() end); assert(coroutine.resume(co)) end
+    check("two clients with queued taps both get theirs within three frames", #sent2 == 2 and sent2[2]:find('"id":"u1"') ~= nil and #sent >= 1, json.encode({ sent2 = #sent2, sent = #sent }))
+    for i = #state.clients, 1, -1 do if state.clients[i] == cl2 then table.remove(state.clients, i) end end
+    fakeLines = {}
+    -- serviceModules() raises the flag when the hardkeys service itself pressed a key.
+    local realService = hk.instance.service
+    hk.instance.service = function(self, t) self._pressCount = (self._pressCount or 0) + 1; return realService(self, t) end
+    state.serviceKeyFrame = false
+    state._serviceModules(require("socket").gettime())
+    hk.instance.service = realService
+    check("a key the hardkeys service pressed sets the frame flag for serviceClients", state.serviceKeyFrame == true)
+    state.serviceKeyFrame = false
     for i = #state.clients, 1, -1 do if state.clients[i] == cl then table.remove(state.clients, i) end end
   end
   check("input.status reports the backend's limitations and capabilities", r.ok and r.result.status.backend.name == "quickey" and r.result.status.backend.capabilities.keyboard == false and #r.result.status.backend.limitations >= 6 and r.result.status.routing.default == "quickkey", J(r.result.status.backend.capabilities))

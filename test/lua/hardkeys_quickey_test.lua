@@ -681,6 +681,20 @@ do
   local inst = newInst()
   local b, err = inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 4, static = true } }, 0)
   check("a static bank smaller than its code list is refused before anything is created", b == nil and err.code == "bank-invalid" and err.message:find("one executor per code") and next(console.quickeys) == nil, J(err))
+  -- #75 review 6: a static provisioning that fails after some assignments and cannot clear them keeps the Quickeys
+  -- those executors still hold (no kept executor points at a deleted Quickey).
+  do
+    local origAssign, origClear, nA = deps.executors.assign, deps.executors.clear, 0
+    deps.executors.assign = function(...) nA = nA + 1; if nA == 3 then return false, "refused" end return origAssign(...) end
+    deps.executors.clear = function() return false, "refused" end
+    local bp, ep = inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0)
+    deps.executors.assign, deps.executors.clear = origAssign, origClear
+    local dangling = 0
+    for k = 190, 191 do local x = console.executors["1." .. k]; if type(x) == "table" and x.quickey and not console.quickeys[x.quickey] then dangling = dangling + 1 end end
+    check("a failed static provisioning keeps the Quickeys its uncleared executors hold", bp == nil and ep.code == "bank-partial" and dangling == 0 and type(console.executors["1.190"]) == "table", J({ err = ep and ep.message, dangling = dangling }))
+    for k = 190, 191 do console.executors["1." .. k] = "empty" end
+    for qi in pairs(console.quickeys) do console.quickeys[qi] = nil end
+  end
   local n = 0; for name in pairs(VK) do n = n + 1 end
   b, err = inst:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0)
   check("a static bank provisions with its own id letter", b and b.id == "bridge@q900.s1.190-209" and b.state == "ready", J(err or b))
