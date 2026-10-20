@@ -55,18 +55,19 @@ test('gate requires current reviews, CI, base, discussions and clean state befor
  const previous={...process.env};
  Object.assign(process.env,{PR_NUMBER:'1',HEAD_SHA:head,BASE_SHA:base,CURRENT_READY:'true'});
  try {
-  for(const scenario of ['pass','official-finding','unresolved','failed-ci','old-base','not-mergeable','head-changed','sensitive']){
+  for(const scenario of ['pass','official-finding','unresolved','failed-ci','old-base','failed-codeql','not-mergeable','head-changed','sensitive']){
    const writes=[];
    let reads=0;
    const pr={number:1,state:'open',draft:false,user:{login:'bdstark'},head:{sha:head,ref:'feature',repo:{full_name:'bdstark/gma3-mcp'}},base:{sha:base,ref:'main'},changed_files:1,mergeable:true,mergeable_state:'clean',merged:false};
    const g={paginate:async(fn)=>{
     if(fn===g.rest.pulls.listFiles)return [{filename:scenario==='sensitive'?'.github/workflows/ci.yml':'src/a.ts'}];
     if(fn===g.rest.issues.listComments)return [comment(scenario==='official-finding'?{...state,has_any_findings:true}:state)];
+    if(fn===g.rest.checks?.listForRef)return [{id:1,name:'CodeQL',app:{slug:'github-advanced-security'},status:'completed',conclusion:scenario==='failed-codeql'?'failure':'success'}];
     if(fn===g.rest.actions.listWorkflowRunsForRepo)return ['CI','CodeQL'].map(name=>({id:1,name,event:'pull_request',status:'completed',conclusion:scenario==='failed-ci'?'failure':'success',pull_requests:[{number:1,base:{sha:scenario==='old-base'?head:base}}]}));
     return [];
    },graphql:async()=>({repository:{pullRequest:{reviewThreads:{nodes:[{isResolved:scenario!=='unresolved'}],pageInfo:{hasNextPage:false}}}}}),rest:{
     pulls:{get:async()=>{reads++;return {data:{...pr,head:{...pr.head,sha:scenario==='head-changed'&&reads>1?base:head},mergeable:scenario!=='not-mergeable'}}},listFiles:()=>{},createReview:async()=>writes.push('approve'),merge:async()=>{writes.push('merge');pr.merged=true;return {data:{merged:true}}},list:()=>{}},
-    issues:{listComments:()=>{}},actions:{listWorkflowRunsForRepo:()=>{}},repos:{getCombinedStatusForRef:async()=>({data:{statuses:[],state:'pending'}}),getBranch:async()=>({data:{protected:false,commit:{sha:head}}})},git:{deleteRef:async()=>writes.push('delete')}
+    checks:{listForRef:()=>{}},issues:{listComments:()=>{}},actions:{listWorkflowRunsForRepo:()=>{}},repos:{getCombinedStatusForRef:async()=>({data:{statuses:[],state:'pending'}}),getBranch:async()=>({data:{protected:false,commit:{sha:head}}})},git:{deleteRef:async()=>writes.push('delete')}
    }};
    const run=()=>main({github:g,context:{repo:{owner:'bdstark',repo:'gma3-mcp'}},core:{info(){}},mode:'gate'});
    if(['head-changed','sensitive'].includes(scenario))await assert.rejects(run);else await run();

@@ -37,7 +37,8 @@ Approval and squash merge require all of the following:
 - A completed, clean official Codex code review on that head; phrase-sync and beat-sync also require their enabled
   Security Review. MCP accepts an absent Security Review because it is currently disabled there.
 - No unresolved review discussions.
-- Latest `CI` run (and `CodeQL` for MCP) succeeds for this PR, head and current base, with no failing/pending commit statuses.
+- Latest `CI` run succeeds for this PR, head and current base; MCP also requires the current-head `CodeQL` check from
+  GitHub Advanced Security, with no failing/pending commit statuses.
 - GitHub reports the PR mergeable. GitHub enforces any additional required checks and approvals when the API merges.
 - Neither old nor new filenames touch `.github`, `.codex` or `AGENTS.md`. Those policy changes require manual review/merge.
 

@@ -60,7 +60,7 @@ async function main({github:g, context:c, core, mode}) {
     // Ignore ordinary comments and other workflow activity, avoiding feedback loops and API-key abuse.
     if (c.eventName === 'issue_comment' && !(p.comment?.user?.login === BOT && p.comment.user.type === 'Bot')) { core.setOutput('matrix','[]'); return; }
     if (c.eventName === 'pull_request_review' && p.review?.user?.login !== BOT) { core.setOutput('matrix','[]'); return; }
-    if (c.eventName === 'workflow_run' && p.workflow_run?.event !== 'pull_request') { core.setOutput('matrix','[]'); return; }
+    if (c.eventName === 'workflow_run' && !['pull_request','dynamic'].includes(p.workflow_run?.event)) { core.setOutput('matrix','[]'); return; }
     const number = p.pull_request?.number || (p.issue?.pull_request && p.issue.number) || Number(p.inputs?.pr_number || 0);
     const candidates = number ? [await getPR(number)] : await all(g.rest.pulls.list,{state:'open'});
     const matrix=[];
@@ -119,12 +119,18 @@ async function main({github:g, context:c, core, mode}) {
     cursor=threads.pageInfo.hasNextPage?threads.pageInfo.endCursor:null;
   } while(cursor);
   const runs=await all(g.rest.actions.listWorkflowRunsForRepo,{head_sha:pr.head.sha});
-  const needed=r.repo==='gma3-mcp'?['CI','CodeQL']:['CI'];
+  const needed=['CI'];
   for (const name of needed) {
     const run=runs.filter(x=>x.name===name && x.event==='pull_request' && x.pull_requests.some(p=>p.number===n)).sort((a,b)=>b.id-a.id)[0];
     if(!run || run.status!=='completed' || run.conclusion!=='success') { core.info(`Waiting for successful ${name}`); return; }
     // Require CI against this current base, not just an older merge candidate.
     if(run.pull_requests.find(p=>p.number===n)?.base.sha!==pr.base.sha) { core.info('CI base is stale; rebase/rerun CI'); return; }
+  }
+  if (r.repo === 'gma3-mcp') {
+    // Default CodeQL is a dynamic workflow named 'PR #N', not a 'CodeQL' pull_request run.
+    const checks=await all(g.rest.checks.listForRef,{ref:pr.head.sha});
+    const codeql=checks.filter(x=>x.name==='CodeQL' && x.app?.slug==='github-advanced-security').sort((a,b)=>b.id-a.id)[0];
+    if(!codeql || codeql.status!=='completed' || codeql.conclusion!=='success') { core.info('Waiting for GitHub CodeQL'); return; }
   }
   const statuses=(await g.rest.repos.getCombinedStatusForRef({...r,ref:pr.head.sha})).data;
   if(statuses.statuses.length && statuses.state!=='success') { core.info('Commit status is pending or failing'); return; }
