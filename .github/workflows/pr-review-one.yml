@@ -30,7 +30,7 @@ jobs:
         if: inputs.review
         with:
           repository: bdstark/gma3-mcp
-          ref: 82ea67ec7f085e3091c9bd3b16b04cb850c49533
+          ref: 7c5d0c7358c903124ee4a2ef2e29031b8eac6931
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -86,7 +86,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 82ea67ec7f085e3091c9bd3b16b04cb850c49533
+          ref: 7c5d0c7358c903124ee4a2ef2e29031b8eac6931
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -120,7 +120,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 82ea67ec7f085e3091c9bd3b16b04cb850c49533
+          ref: 7c5d0c7358c903124ee4a2ef2e29031b8eac6931
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 82ea67ec7f085e3091c9bd3b16b04cb850c49533
+          ref: 7c5d0c7358c903124ee4a2ef2e29031b8eac6931
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
