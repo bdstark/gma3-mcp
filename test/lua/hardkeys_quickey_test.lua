@@ -602,6 +602,16 @@ do
   console.fail.qpress = { err = "Illegal Command", count = 1 }
   h, err = inst:tap("s", 5, { key = "THRU" }, 50)
   check("a direct tap the console refuses is press-failed and leaves no record", h == nil and err.code == "press-failed" and err.message:find("Illegal Command") and inst:status(5).capacity.used == 0 and liveHold(inst, 5) == nil, J(err))
+  -- A direct tap that raises is uncertain (it may have acted), never a plain failure (#13 review 1).
+  console.raise.qpress = "console busy"
+  h, err = inst:tap("s", 5.5, { key = "THRU" }, 50)
+  check("a raised direct tap is reported as uncertain with its target, no record left", h == nil and err.code == "press-uncertain" and err.uncertain == true and err.target and err.target.direct == true and liveHold(inst, 5.5) == nil, J(err))
+  console.raise.qpress = "console busy"
+  local qr = inst:startSequence("s", 5.6, { { kind = "tap", key = "NUM1" } })
+  local tq = 5.6
+  for _ = 1, 10 do tq = tq + 0.03; inst:service(tq) end
+  local rq = qr and inst:sequenceStatus(qr.id, tq)
+  check("a sequence step whose direct tap raised is uncertain, not failed", rq and rq.events and rq.events[1] and rq.events[1].state == "uncertain", J(rq and rq.events))
   -- A sequence's tap steps take the direct path too.
   console.taps = {}
   local q = inst:startSequence("s", 6, { { kind = "tap", key = "NUM1" }, { kind = "tap", key = "THRU" }, { kind = "tap", key = "NUM5" } })

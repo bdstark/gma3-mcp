@@ -3023,9 +3023,12 @@ function Instance:_dispatchDirectTap(s, plan, now)
   self._now = now
   local ok, aOk, _, err, target = pcall(self._adapter.tapDirect, self._adapter, copyTuple(plan.tuple))
   if not ok then
+    -- The command may already have acted: the outcome is uncertain, not a failure (nothing is left down, so
+    -- no record is kept; a sequence classifies the step as uncertain through err.uncertain).
     local msg = type(aOk) == "table" and aOk.message or aOk
+    local target = type(aOk) == "table" and type(aOk.target) == "table" and aOk.target or nil
     self:_dropHold(hold)
-    return fail("press-failed", "direct tap raised an error: " .. tostring(msg) .. " (a direct tap leaves nothing down; whether it acted is unknown)")
+    return fail("press-uncertain", "direct tap raised an error: " .. tostring(msg) .. " (a direct tap leaves nothing down; whether it acted is unknown)", { uncertain = true, direct = true, target = target })
   end
   if aOk == false then
     self:_dropHold(hold)
@@ -3627,7 +3630,7 @@ end
 local function stepError(ev, err)
   ev.code = type(err) == "table" and err.code or nil
   ev.error = codeMessage(err)
-  if type(err) == "table" and err.unresolved then ev.state = "uncertain"; ev.hold = err.hold else ev.state = "failed" end
+  if type(err) == "table" and (err.unresolved or err.uncertain) then ev.state = "uncertain"; ev.hold = err.hold else ev.state = "failed" end
   if type(err) == "table" and err.pressed then
     ev.pressed = #err.pressed
     ev.rollback = err.rollback and { released = #(err.rollback.released or {}), unresolved = #(err.rollback.unresolved or {}) } or nil
