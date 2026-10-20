@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 'use strict';
-const fs = require('node:fs');
+const cp = require('node:child_process');
 const OWNER = 'bdstark';
 const REPOS = new Set(['gma3-mcp', 'gma3-beat-sync', 'gma3-phrase-sync']);
-const BOT = 'chatgpt-codex-connector';
+const BOT = 'chatgpt-codex-connector[bot]';
 const RECEIPT = '<!-- independent-review:v1 ';
 const SHA = /^[a-f0-9]{40}$/;
 const SENSITIVE = /(^|\/)(AGENTS\.md|\.github|\.codex)(\/|$)/;
@@ -37,7 +37,14 @@ function receipt(review, head, base) {
     return r.head === head && r.base === base && ['ready','changes_requested','incomplete'].includes(r.verdict) && Number.isSafeInteger(r.run) ? r : null;
   } catch { return null; }
 }
-async function main({github:g, context:c, core, mode}) {
+async function deleteBranchAtomically(repo, branch, sha) {
+  if (!process.env.GH_AUTOMATION_TOKEN) throw Error('Missing branch cleanup token');
+  cp.execFileSync('git',['check-ref-format',`refs/heads/${branch}`]);
+  const auth=Buffer.from(`x-access-token:${process.env.GH_AUTOMATION_TOKEN}`).toString('base64');
+  // Git's receive-pack compares the old object ID atomically; a later push makes this lease fail.
+  cp.execFileSync('git',['-C','policy','push',`--force-with-lease=refs/heads/${branch}:${sha}`,`https://github.com/${repo}.git`,`:refs/heads/${branch}`],{env:{...process.env,GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:'http.https://github.com/.extraheader',GIT_CONFIG_VALUE_0:`AUTHORIZATION: basic ${auth}`},stdio:['ignore','pipe','pipe']});
+}
+async function main({github:g, context:c, core, mode, deleteBranch = deleteBranchAtomically}) {
   const r = c.repo;
   if (r.owner !== OWNER || !REPOS.has(r.repo)) throw Error('Repository is outside the authorized allowlist');
   const full = `${r.owner}/${r.repo}`;
@@ -88,7 +95,7 @@ async function main({github:g, context:c, core, mode}) {
     if (children.length) { core.info('Retargeted stacked PRs; retained parent branch. Dispatch cleanup again after rebasing.'); return; }
     const branch=(await g.rest.repos.getBranch({...r,branch:pr.head.ref})).data;
     if (branch.protected || branch.commit.sha !== pr.head.sha) { core.info('Retained protected or advanced source branch'); return; }
-    await g.rest.git.deleteRef({...r,ref:`heads/${pr.head.ref}`});
+    await deleteBranch(full,pr.head.ref,pr.head.sha);
     core.info(`Deleted merged source branch ${pr.head.ref}`);
   }
   if (mode === 'cleanup') {
@@ -136,12 +143,13 @@ async function main({github:g, context:c, core, mode}) {
   if(statuses.statuses.length && statuses.state!=='success') { core.info('Commit status is pending or failing'); return; }
   if(pr.mergeable!==true || !['clean','blocked'].includes(pr.mergeable_state)) { core.info('GitHub merge state is not clean'); return; }
   pr=await getPR(n);
-  if(pr.head.sha!==process.env.HEAD_SHA || pr.base.sha!==process.env.BASE_SHA) throw Error('Head/base changed before approval');
+  if(!eligible(pr,full) || pr.head.sha!==process.env.HEAD_SHA || pr.base.sha!==process.env.BASE_SHA) throw Error('Eligibility or head/base changed before approval');
   await g.rest.pulls.createReview({...r,pull_number:n,commit_id:pr.head.sha,event:'APPROVE',body:`Accepted ${pr.head.sha} after independent and official reviews, discussions and CI passed against ${pr.base.sha}.`});
   // GITHUB_TOKEN is not an admin bypass token; GitHub still enforces branch protections.
   const merged=(await g.rest.pulls.merge({...r,pull_number:n,sha:pr.head.sha,merge_method:'squash'})).data;
   if(!merged.merged) throw Error(merged.message || 'GitHub did not merge');
   pr=await getPR(n);
+  await g.rest.actions.createWorkflowDispatch({...r,workflow_id:'pr-automation.yml',ref:'main',inputs:{pr_number:''}});
   await cleanup();
 }
 module.exports={main,official,verdict,eligible,receipt};

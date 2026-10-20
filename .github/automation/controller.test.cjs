@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
 const {official,verdict,eligible,receipt,main}=require('./controller.cjs');
 const head='a'.repeat(40),base='b'.repeat(40);
 const state={commit_sha:head,status:'completed',has_any_findings:false,has_unresolved_findings:false};
-const comment=(code=state,security={commit_sha:null},user={login:'chatgpt-codex-connector',type:'Bot'})=>({id:1,user,body:`<!-- codex-review-state:v1 ${JSON.stringify({code_review:code,security_review:security})} -->`});
+const comment=(code=state,security={commit_sha:null},user={login:'chatgpt-codex-connector[bot]',type:'Bot'})=>({id:1,user,body:`<!-- codex-review-state:v1 ${JSON.stringify({code_review:code,security_review:security})} -->`});
 test('only a completed clean official review for this head counts',()=>{
  assert.equal(official([comment()],head),true);
  for(const patch of [{commit_sha:base},{status:'running'},{has_any_findings:true},{has_unresolved_findings:true},{has_any_findings:null}]) assert.equal(official([comment({...state,...patch})],head),false);
@@ -55,7 +55,7 @@ test('gate requires current reviews, CI, base, discussions and clean state befor
  const previous={...process.env};
  Object.assign(process.env,{PR_NUMBER:'1',HEAD_SHA:head,BASE_SHA:base,CURRENT_READY:'true'});
  try {
-  for(const scenario of ['pass','official-finding','unresolved','failed-ci','old-base','failed-codeql','not-mergeable','head-changed','sensitive']){
+  for(const scenario of ['pass','official-finding','unresolved','failed-ci','old-base','failed-codeql','not-mergeable','head-changed','retargeted','sensitive']){
    const writes=[];
    let reads=0;
    const pr={number:1,state:'open',draft:false,user:{login:'bdstark'},head:{sha:head,ref:'feature',repo:{full_name:'bdstark/gma3-mcp'}},base:{sha:base,ref:'main'},changed_files:1,mergeable:true,mergeable_state:'clean',merged:false};
@@ -66,12 +66,15 @@ test('gate requires current reviews, CI, base, discussions and clean state befor
     if(fn===g.rest.actions.listWorkflowRunsForRepo)return ['CI','CodeQL'].map(name=>({id:1,name,event:'pull_request',status:'completed',conclusion:scenario==='failed-ci'?'failure':'success',pull_requests:[{number:1,base:{sha:scenario==='old-base'?head:base}}]}));
     return [];
    },graphql:async()=>({repository:{pullRequest:{reviewThreads:{nodes:[{isResolved:scenario!=='unresolved'}],pageInfo:{hasNextPage:false}}}}}),rest:{
-    pulls:{get:async()=>{reads++;return {data:{...pr,head:{...pr.head,sha:scenario==='head-changed'&&reads>1?base:head},mergeable:scenario!=='not-mergeable'}}},listFiles:()=>{},createReview:async()=>writes.push('approve'),merge:async()=>{writes.push('merge');pr.merged=true;return {data:{merged:true}}},list:()=>{}},
-    checks:{listForRef:()=>{}},issues:{listComments:()=>{}},actions:{listWorkflowRunsForRepo:()=>{}},repos:{getCombinedStatusForRef:async()=>({data:{statuses:[],state:'pending'}}),getBranch:async()=>({data:{protected:false,commit:{sha:head}}})},git:{deleteRef:async()=>writes.push('delete')}
+    pulls:{get:async()=>{reads++;return {data:{...pr,head:{...pr.head,sha:scenario==='head-changed'&&reads>1?base:head},base:{...pr.base,ref:scenario==='retargeted'&&reads>1?'feature':'main'},mergeable:scenario!=='not-mergeable'}}},listFiles:()=>{},createReview:async()=>writes.push('approve'),merge:async()=>{writes.push('merge');pr.merged=true;return {data:{merged:true}}},list:()=>{}},
+    checks:{listForRef:()=>{}},issues:{listComments:()=>{}},actions:{listWorkflowRunsForRepo:()=>{},createWorkflowDispatch:async()=>writes.push('rescan')},repos:{getCombinedStatusForRef:async()=>({data:{statuses:[],state:'pending'}}),getBranch:async()=>({data:{protected:false,commit:{sha:head}}})},git:{deleteRef:async()=>writes.push('delete')}
    }};
-   const run=()=>main({github:g,context:{repo:{owner:'bdstark',repo:'gma3-mcp'}},core:{info(){}},mode:'gate'});
-   if(['head-changed','sensitive'].includes(scenario))await assert.rejects(run);else await run();
-   assert.deepEqual(writes,scenario==='pass'?['approve','merge','delete']:[],scenario);
+   const run=()=>main({github:g,context:{repo:{owner:'bdstark',repo:'gma3-mcp'}},core:{info(){}},mode:'gate',deleteBranch:async()=>writes.push('delete')});
+   if(['head-changed','retargeted','sensitive'].includes(scenario))await assert.rejects(run);else await run();
+   assert.deepEqual(writes,scenario==='pass'?['approve','merge','rescan','delete']:[],scenario);
   }
  } finally {for(const key of ['PR_NUMBER','HEAD_SHA','BASE_SHA','CURRENT_READY']){if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];}}
+});
+test('the short UI bot name is not accepted as a REST identity',()=>{
+ assert.equal(official([comment(state,{}, {login:'chatgpt-codex-connector',type:'Bot'})],head),false);
 });
