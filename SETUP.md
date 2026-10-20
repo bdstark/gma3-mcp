@@ -4,7 +4,7 @@ Gaps found by running the MCP server as an end user would: an agent started a ne
 requests, with no knowledge of this repository. The fixes and features below cover what it could not do with
 structured tools, and the bugs it hit.
 
-Identifiers SU-01 through SU-20 are provisional. SU-11 to SU-20 come from the second field test. Bugs come first, then features in the order they block show setup.
+Identifiers SU-01 through SU-21 are provisional. SU-11 to SU-20 come from the second field test; SU-21 from a gap review. Bugs come first, then features in the order they block show setup.
 These are proposals; console API support must be established by the probes described below.
 
 ## The field test
@@ -840,6 +840,51 @@ dialog (KB-25 handles dialogs). This time it answered `OK`, and the bridge kept 
   without `overwrite`, never answers another dialog, and reports the file written.
 - SaveShow is queued with CmdIndirect, so a dialog cannot stall the bridge.
 
+## SU-21 — Tags
+
+**Request:** Create tags, assign them to sequences, groups, macros and other objects, read which objects carry a tag,
+and change a tag's kill and forwarding settings, without raw commands or Lua.
+
+**Depends on:** SU-12 (batch forms and result shape).
+
+**Repository:** gma3-mcp.
+
+**Lua changes:** Yes: a `tags` read op (the pool, each tag's settings, and its references through `GetReferences()`),
+and the object reads resolving a `TAGS` list of handles to tag numbers and names.
+
+**Evidence:** no tool reads or writes tags. `gma3_get_object` returns `TAGS` as unresolved handles
+(`#BC000E42:0,#BC000E44:0`), and listing a tag's children shows only its first reference. Tags are how a busking
+show groups sequences for Kill Instant / Kill Delayed and for playback commands sent to every tagged sequence.
+
+**Probe:** [su-21-tags-macos-2.5.1.md](docs/probes/su-21-tags-macos-2.5.1.md).
+- The pool is show-wide at `ShowData().Tags`, sparse.
+- `Store`/`Label`/`Delete Tag` and `Assign [Off] Tag … At …` work by number, by name and over ranges, on sequences,
+  groups, macros, macro lines, tags and cue parts (a cue's tag lands on its Part 0).
+- An object's `TAGS` reads `name:protect` by default and `#handle:protect` in the Edit role. Names keep colons and
+  lose commas.
+- `tag:GetReferences()` lists every reference; `Children()` lists only the first. `Set("Tags", "")` is ignored.
+- `Go+`/`Off Tag` reach every tagged sequence. Invalid `TagType`/`Action` values are silently ignored.
+
+**Status:** proposed.
+
+### Acceptance criteria
+
+- `gma3_tags` lists the tags (number, name, type, Forward Commands, action, appearance, note, reference count) and,
+  per tag, the objects that carry it (class, data pool, number, name, address, protect), from `GetReferences()`.
+- `gma3_get_object`, `gma3_list_children` and `gma3_objects` return `TAGS` as a list of `{ tag, name, protect }`
+  instead of raw handles.
+- `gma3_store_tag` creates or renames tags in a batch, refusing an occupied number unless asked, and reports names the
+  console changed (commas stripped).
+- `gma3_assign_tag` assigns and unassigns tags on object ranges in a batch (by tag number or name), sets `protect`
+  per reference, and reads every object's `TAGS` back. A cue target is reported as its part.
+- `gma3_configure_tag` sets type, Forward Commands, action, appearance and note, refusing values outside the enum
+  before sending and reading each one back.
+- Deleting a tag reports the objects it was removed from.
+- Selecting objects by tag ("every sequence tagged Encore") is answered from the reverse lookup, without the agent
+  scanning pools.
+- A live test (`test/live/tags.live.ts`) covers create, assign over a range, protect, unassign, delete and
+  `Go+`/`Off Tag` on reserved objects.
+
 ## Recommended delivery order
 
 SU-01 and SU-02 first (bridges 0.25.1 and 0.25.2). Then SU-03: without import, a new show cannot be set up without Lua or a
@@ -852,6 +897,7 @@ From the second field test:
 - SU-13 and SU-14 build on it.
 - SU-15's probe (does `cmd` expand `$variables`) is small. Run it early, since SU-14 depends on its answer.
 - SU-16, SU-18, SU-19 and SU-20 are independent.
+- SU-21 (tags) is independent; its probe is done.
 - SU-17's `resync` is independent. Its plugin tools wait for the interface that bdstark/gma3-beat-sync's BS-01 and BS-02
   define.
 
