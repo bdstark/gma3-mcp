@@ -30,7 +30,7 @@ jobs:
         if: inputs.review
         with:
           repository: bdstark/gma3-mcp
-          ref: ce5fb16a962ff1e5fa510858e8a3bb5f753a84ae
+          ref: f6d9c227674e4df777f8f5e31af9d6b19daf647a
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -86,7 +86,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: ce5fb16a962ff1e5fa510858e8a3bb5f753a84ae
+          ref: f6d9c227674e4df777f8f5e31af9d6b19daf647a
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -103,6 +103,9 @@ jobs:
           script: |
             await require('./policy/.github/automation/controller.cjs').main({github, context, core, mode:'publish'});
   accept:
+    concurrency:
+      group: pr-merge-${{ github.repository }}
+      cancel-in-progress: false
     needs: publish
     if: vars.PR_MERGE_ENABLED == 'true'
     runs-on: ubuntu-latest
@@ -110,19 +113,20 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-      actions: read
+      actions: write
       checks: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: ce5fb16a962ff1e5fa510858e8a3bb5f753a84ae
+          ref: f6d9c227674e4df777f8f5e31af9d6b19daf647a
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
       - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PR_NUMBER: ${{ inputs.number }}
+          GH_AUTOMATION_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ inputs.head }}
           BASE_SHA: ${{ inputs.base }}
           CURRENT_READY: ${{ needs.publish.outputs.ready }}
@@ -130,6 +134,9 @@ jobs:
           script: |
             await require('./policy/.github/automation/controller.cjs').main({github, context, core, mode:'gate'});
   cleanup:
+    concurrency:
+      group: pr-merge-${{ github.repository }}
+      cancel-in-progress: false
     if: inputs.cleanup && vars.PR_MERGE_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -140,13 +147,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: ce5fb16a962ff1e5fa510858e8a3bb5f753a84ae
+          ref: f6d9c227674e4df777f8f5e31af9d6b19daf647a
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
       - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PR_NUMBER: ${{ inputs.number }}
+          GH_AUTOMATION_TOKEN: ${{ github.token }}
         with:
           script: |
             await require('./policy/.github/automation/controller.cjs').main({github, context, core, mode:'cleanup'});

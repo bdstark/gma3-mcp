@@ -57,8 +57,13 @@ need to trigger another workflow: the current controller performs the merge dire
 
 ## Cleanup and stacked PRs
 
+Merge and cleanup jobs serialize repository-wide and recheck eligibility after acquiring that serialization.
+After an automated merge the controller explicitly dispatches another scan: GITHUB_TOKEN pushes alone do not trigger
+new workflows. Other PRs whose CI base is stale still need rebase/current-base CI before acceptance.
+
 After merge, cleanup only handles a source branch in the same repository whose tip still equals the merged head.
-Protected, advanced and default branches are retained. For stacked PRs it first retargets their base to the merged PR's
+Deletion uses a Git receive-pack SHA lease rather than an unconditional REST delete, so advancement between the read
+and deletion is rejected atomically. Protected, advanced and default branches are retained. For stacked PRs it first retargets their base to the merged PR's
 base and retains the parent branch for recovery. Rebase the children and rerun CI/review; then dispatch cleanup for the
 merged parent PR. Cleanup does not rewrite dependent branches or blindly delete them.
 
@@ -67,6 +72,9 @@ merged parent PR. Cleanup does not rewrite dependent branches or blindly delete 
 Set `PR_MERGE_ENABLED=false` to stop approval/merge/cleanup while retaining reviews. Set `PR_AUTOMATION_ENABLED=false`
 to stop the service entirely. Neither switch cancels a mutation already sent to GitHub. Leave repository automatic branch
 deletion off while using the stack-aware controller.
+
+Use strict up-to-date required CI protection where available, and avoid concurrent manual writes to main during
+automatic acceptance; repository-wide serialization covers this controller, not external maintainers.
 
 Controller tests: `node --test .github/automation/controller.test.cjs`. Workflow validation: `actionlint`.
 When changing the controller, commit it first and bump the immutable controller ref in both reusable workflows; then
