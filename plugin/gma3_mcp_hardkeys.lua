@@ -2814,6 +2814,7 @@ function Instance:_endInteraction(ia, now, reason, finalState, keepHolds)
     end
     local rel = self:_releaseHolds(list, now, reason)
     result.released, result.unresolved, result.attempted = rel.released, rel.unresolved, rel.attempted
+    result.blocked = rel.blocked  -- later keys of an ordered combo kept down behind an unresolved earlier one (review 14)
   end
   -- Finished interactions are kept briefly for status(); the ids are never reused.
   self._endedInteractions[#self._endedInteractions + 1] = ia.id
@@ -2956,7 +2957,16 @@ function Instance:combo(sessionId, now, specs, opts)
   local group = string.format("g%d", self._seq)
   local holds = {}
   for i, plan in ipairs(plans) do
-    local hold, derr = self:_dispatchPress(s, plan, now)
+    local hold, derr
+    -- Review 14: each key of an ordered (probed) pair goes out in its own console frame.
+    if pressOrder and i > 1 then
+      local okF, ferr = pcall(self._adapter.separateFrames, self._adapter)
+      if not okF then
+        local _, e = fail("dispatch-failed", "the frame break before it raised (" .. tostring(ferr) .. "); it was not pressed")
+        derr = e
+      end
+    end
+    if not derr then hold, derr = self:_dispatchPress(s, plan, now) end
     if not hold then
       -- A press that raised left an unresolved record (it may be down): it joins the group with its order before
       -- the rollback, so recover() keeps first down, first up (review 13).
@@ -2980,6 +2990,13 @@ function Instance:combo(sessionId, now, specs, opts)
       hold.kind = "combo"
     end
     holds[#holds + 1] = hold
+  end
+  -- Review 14: an ordered group comes up first down, first up, so a later key cannot come up before an earlier
+  -- one: every member takes the group's EARLIEST deadline, which no member's own maximum hold then exceeds.
+  if pressOrder and not holdMs then
+    local first
+    for _, h in ipairs(holds) do if h.deadline and (first == nil or h.deadline < first) then first = h.deadline end end
+    if first then for _, h in ipairs(holds) do if h.deadline ~= first then self:_setDeadline(h, first, h.deadlineReason or "max-hold") end end end
   end
   local reports = {}
   for _, h in ipairs(holds) do reports[#reports + 1] = self:_holdReport(h, now) end
@@ -3778,6 +3795,13 @@ function Instance:_finishSequence(job, now, reason, keepHolds)
     local rel = self:_releaseHolds(list, now, reason)
     job.cleanup = { attempted = rel.attempted, released = #rel.released, unresolved = #rel.unresolved,
                     unresolvedHolds = (#rel.unresolved > 0) and (function() local t = {} for _, a in ipairs(rel.unresolved) do t[#t + 1] = a.hold end return t end)() or nil }
+    -- Review 14: a later key of an ordered combo kept down behind an unresolved earlier one is still down and
+    -- awaits recover(), so it is reported with the unresolved ones.
+    if rel.blocked and #rel.blocked > 0 then
+      job.cleanup.blocked = #rel.blocked
+      job.cleanup.blockedHolds = {}
+      for _, b in ipairs(rel.blocked) do job.cleanup.blockedHolds[#job.cleanup.blockedHolds + 1] = b.hold end
+    end
   end
   job.finishedAt = now
   if job.autoInteraction then
@@ -3854,6 +3878,7 @@ function Instance:service(now)
       out.interactionsExpired[#out.interactionsExpired + 1] = ia.id
       for _, a in ipairs(r.released or {}) do out.released[#out.released + 1] = a end
       for _, a in ipairs(r.unresolved or {}) do out.unresolved[#out.unresolved + 1] = a end
+      for _, b in ipairs(r.blocked or {}) do out.blocked = out.blocked or {}; out.blocked[#out.blocked + 1] = b end
     end
   end
   -- Due hold deadlines, oldest deadline first.
@@ -3861,12 +3886,33 @@ function Instance:service(now)
   for _, h in pairs(self._holds) do
     if h.state == "held" and h.deadline and now >= h.deadline then due[#due + 1] = h end
   end
+  -- Review 14: a due later key of an ordered combo brings the earlier held keys of its group due with it (their
+  -- deadline moves up to its own), so the group comes up in press order without exceeding the later key's bound.
+  local isDue = {}
+  for _, h in ipairs(due) do isDue[h] = true end
+  for i = 1, #due do
+    local h = due[i]
+    if h.releaseInPressOrder and h.group then
+      for _, other in pairs(self._holds) do
+        if not isDue[other] and other.group == h.group and other.seq < h.seq and other.state == "held" then
+          self:_setDeadline(other, h.deadline, h.deadlineReason or "max-hold")
+          isDue[other] = true
+          due[#due + 1] = other
+        end
+      end
+    end
+  end
   table.sort(due, function(a, b) if a.deadline == b.deadline then return a.seq > b.seq end return a.deadline < b.deadline end)
   pressOrderGroups(due)
   for _, h in ipairs(due) do
     if out.work >= budget then break end
     -- A later key of an ordered combo waits (still held, deadline kept) while an earlier one may be down.
-    if self:_blockedByEarlier(h) then h.blockedRelease = true else
+    local blocker = self:_blockedByEarlier(h)
+    if blocker then
+      h.blockedRelease = true
+      out.blocked = out.blocked or {}
+      out.blocked[#out.blocked + 1] = { hold = h.id, logical = h.logical, after = blocker.id }
+    else
       out.work = out.work + 1
       local r = self:_attemptRelease(h, now, h.deadlineReason or "deadline")
       if h.state == "released" or h.state == "retained" then out.released[#out.released + 1] = r else out.unresolved[#out.unresolved + 1] = r end
@@ -4760,6 +4806,10 @@ end
 -- groupPeers: keys of the SAME combo (planned or earlier in the combo step); a probed pair is admitted only among
 -- them, because only a combo releases in the qualified order. Against a separately held key (live holds,
 -- extraHeld) any pair with a probed code is refused (review 10).
+function Instance:_separatesFrames()
+  return self._adapter ~= nil and type(self._adapter.separateFrames) == "function"
+end
+
 function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming, incomingCaps, groupPeers)
   local function pairErrorFor(name, caps, state)
     local _, e = fail("unsupported", string.format("Quickey %s is %s; %s going down next to it (%s>%s) is not a pair the KB-28 probe qualified, refused before dispatch, nothing is substituted",
@@ -4805,6 +4855,16 @@ function Instance:_heldQuickkeyChordError(exceptTupleKey, extraHeld, incoming, i
       local caps = peer.capabilities or {}
       if not caps.chord then return errorFor(peer.quickkey, caps, "an earlier key of this combo") end
       if incoming and incoming.quickkey and not chordPairAllowed(peer.quickkey, caps, incoming.quickkey, incomingCaps) then return pairErrorFor(peer.quickkey, caps, "an earlier key of this combo") end
+      -- Review 14: the KB-28 pairs were rolled one request (console frame) per key; pressed in one frame, keyword-like
+      -- keys land before the digits pressed ahead of them (the pop-up record: NUM1 THRU NUM5 gave ' Thru 15'). A probed
+      -- pair goes down only through a backend that puts each press in its own frame (adapter.separateFrames); no
+      -- shipped backend has one, so on the console such a combo is refused until frame-separated dispatch is qualified.
+      if incoming and incoming.quickkey and (caps.chordWith or (incomingCaps and incomingCaps.chordWith)) and not self:_separatesFrames() then
+        local _, e = fail("unsupported", string.format("%s>%s was qualified with each key in its own console frame, and backend '%s' presses a combo in one frame (keywords would land before the digit); refused before dispatch, nothing is substituted",
+            tostring(peer.quickkey), tostring(incoming.quickkey), tostring(self._adapter and self._adapter.name or "none")),
+          { reason = "same-frame", missing = { "frame separation" }, heldKey = peer.quickkey, kind = "hold", pair = true })
+        return e
+      end
     end
   end
   return nil

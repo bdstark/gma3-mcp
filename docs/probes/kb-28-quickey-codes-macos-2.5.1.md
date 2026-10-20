@@ -88,6 +88,9 @@ afterwards.
 - `gma3_mcp_hardkeys` 0.11.0 adds the codes above to `BANK_QUALIFIED` with these flags and notes.
 - A surface that types into dialogs dispatches at most one key press per console frame; several presses in one
   plugin tick can reorder a text field.
+- The rolled pairs were pressed one request (frame) per key, so they qualify that lifecycle only. A combo presses its
+  keys in one call, which is one frame on the shipped backends; the module refuses a combo with a probed code there
+  (review 14 of #74) until a frame-separated or same-frame pair is probed.
 - NEXT, PREV and MENU (selection stepping and a window) were not probed and stay on the shortcut table.
 
 ## Limitations
