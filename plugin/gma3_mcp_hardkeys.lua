@@ -1748,8 +1748,11 @@ end
 function QuickeyBackend:_deps()
   local d = self.instance._deps
   local x = type(d) == "table" and d.executors or nil
-  if type(x) ~= "table" or type(x.press) ~= "function" or type(x.unpress) ~= "function" or type(x.assign) ~= "function" then
-    return nil, "console deps executors.press / unpress / assign are missing (consoleDeps(_G) provides them)"
+  -- A static bank presses the executor its code already sits on and never assigns (review 18): assign is not needed.
+  local bank = self.instance._bank
+  local static = bank and bank.spec and bank.spec.executors and bank.spec.executors.static
+  if type(x) ~= "table" or type(x.press) ~= "function" or type(x.unpress) ~= "function" or (not static and type(x.assign) ~= "function") then
+    return nil, static and "console deps executors.press / unpress are missing (consoleDeps(_G) provides them)" or "console deps executors.press / unpress / assign are missing (consoleDeps(_G) provides them)"
   end
   return x
 end
@@ -2594,8 +2597,11 @@ function Instance:teardownBank(now, opts)
       -- foreign object or an empty executor references none of ours).
       e = (cls.state == "assigned" and bank.byName[cls.code]) or (cls.state == "reserved" and bank.byName[BANK_PLACEHOLDER]) or nil
     else
-      -- Unreadable or unknown: whatever the bank put there may still be on it.
+      -- Unreadable or unknown: whatever the bank put there may still be on it, and what the last verification found
+      -- on it (x.assigned, an operator's move, review 18) as well.
       e = (x.code and bank.byName[x.code]) or bank.byName[BANK_PLACEHOLDER]
+      local seen = x.assigned and bank.byName[x.assigned]
+      if seen and seen ~= e then keep[seen.index] = ref end
     end
     if e then keep[e.index] = ref end
   end
@@ -2751,8 +2757,12 @@ function Instance:adoptBank(record, now)
     -- A partial record may list displaced codes without an executor (review 17); a complete one maps every code.
     if any and not all and not partial then return fail("bad-argument", "the static record gives an executor for some codes but not all") end
     -- Only the placeholder left (review 12): no code has a position to lose.
-    if partial and hasCode and not any then return fail("bad-argument", "the partial static record does not carry its codes' executors, so their original positions are unknown; tear it down from its own version or delete the objects by hand") end
+    -- A record written by this module says its positions are complete (staticPositions, review 18): its survivors may
+    -- all be displaced codes without one. Only an older record without positions is refused.
+    if partial and hasCode and not any and record.staticPositions ~= true then return fail("bad-argument", "the partial static record does not carry its codes' executors, so their original positions are unknown; tear it down from its own version or delete the objects by hand") end
   end
+  -- A positionless survivor of a staticPositions record has no executor: it is never packed onto the first ones.
+  if s.executors.static and record.staticPositions == true and partial then positions = positions or {} end
   local okMap, mapErr = applyStaticMap(bank, positions, partial)
   if not okMap then return fail("bad-argument", "the record's " .. mapErr) end
   if not record.show or record.show == "" then return fail("bad-argument", "the record carries no show identity") end
@@ -2774,7 +2784,8 @@ function Instance:_bankRecord()
                           executor = (not e.placeholder and own) and own.index or nil }  -- a static code's own executor (review 11 of #75)
   end
   return { id = bank.id, owner = bank.owner, spec = { quickeys = bank.spec.quickeys, executors = bank.spec.executors, codes = bank.spec.codes, label = bank.spec.label },
-           show = bank.show, createdAt = bank.createdAt, partial = bank.partial or nil, codes = codes, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries }
+           show = bank.show, createdAt = bank.createdAt, partial = bank.partial or nil, codes = codes,
+           staticPositions = (bank.spec.executors and bank.spec.executors.static) and true or nil, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries }
 end
 
 -- Bounded freshness check from service(): the show identity is re-read every config.bankCheckMs; a

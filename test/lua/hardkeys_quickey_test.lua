@@ -944,8 +944,15 @@ do
   check("a partial static record carries MA1's executor and adoption keeps it there", maRec and maRec.executor == maExec and a2 and maX and maX.index == maExec and misassigned == 0, J({ err = aerr2, rec = maRec, at = maX and maX.index, misassigned = misassigned }))
   local stripped = {}; for k, v in pairs(dis2.bank) do stripped[k] = v end
   stripped.codes = {}; for i, c in ipairs(dis2.bank.codes) do local cc = {}; for k, v in pairs(c) do cc[k] = v end; cc.executor = nil; stripped.codes[i] = cc end
+  -- Review 18: a record this module wrote says its positions are complete (staticPositions): a positionless survivor
+  -- is a displaced code and adopts; an older record without that mark is refused rather than packed.
+  check("a static record carries staticPositions", dis2.bank.staticPositions == true, J(dis2.bank.staticPositions))
+  local iN = newInst()
+  local aN, eN = iN:adoptBank(stripped, 4.84)
+  check("...so a record whose survivors have no position adopts, without packing them onto the first executors", aN ~= nil and iN._bank.staticByCode and iN._bank.staticByCode.MA1 == nil, J({ err = eN, map = iN._bank and iN._bank.staticByCode }))
+  stripped.staticPositions = nil
   local a3, aerr3 = newInst():adoptBank(stripped, 4.85)
-  check("...a partial static record without positions is refused, not packed", a3 == nil and aerr3.code == "bad-argument" and aerr3.message:find("original positions"), J(aerr3))
+  check("...a legacy partial static record without positions is refused, not packed", a3 == nil and aerr3.code == "bad-argument" and aerr3.message:find("original positions"), J(aerr3))
   local td = inst2:teardownBank(5, { authorized = true })
   check("teardown clears every static executor and deletes the Quickeys", td and td.complete and next(console.quickeys) == nil and console.executors["1.190"] == "empty" and console.executors["1." .. maExec] == "empty", J(td))
   -- #75 review 11: a clear that returns while another bank Quickey turns up on the executor keeps THAT Quickey.
@@ -1050,6 +1057,33 @@ do
     local recs = {}; for _, c in ipairs(d10.bank and d10.bank.codes or {}) do recs[c.name] = c end
     local a10, e10 = newInst():adoptBank(d10.bank, 3)
     check("a displaced code keeps no position, MA1 keeps its holder, and the partial record adopts", t10 and recs.MA1 and recs.MA1.executor == stE and recs.STORE and recs.STORE.executor == nil and a10 ~= nil, J({ ma = recs.MA1, st = recs.STORE, err = e10 }))
+  end
+  -- #75 review 18: a static hold needs no assign dependency; an executor unreadable at teardown keeps the Quickey the
+  -- last verification found on it.
+  do
+    newConsole(); pageWithExecutors(1, 190, 20)
+    local i11 = newInst()
+    local b11 = assert(i11:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0))
+    local maE, stE; for i, c in ipairs(b11.codes) do if c.name == "MA1" then maE = 189 + i elseif c.name == "STORE" then stE = 189 + i end end
+    local savedAssign = deps.executors.assign
+    deps.executors.assign = nil
+    assert(i11:enableInput(HK.quickeyBackend(i11)))
+    i11:openSession({ id = "s", leaseMs = 120000 }, 0)
+    console.cmds = {}
+    local h11, e11 = i11:press("s", 1, { key = "MA1" })
+    check("a static hold goes out without the assign dependency", h11 and J(console.cmds) == J({ "Press Page 1." .. maE }), J({ err = e11, cmds = console.cmds }))
+    if h11 then i11:release("s", 1.1, { hold = h11.id }) end
+    deps.executors.assign = savedAssign
+    i11:closeSession("s", 1.2)
+    local maQ = i11:bankTarget("MA1", 2).index
+    console.executors["1." .. stE] = { quickey = maQ }  -- the operator moved MA1 onto STORE's executor
+    console.executors["1." .. maE] = "empty"
+    i11:verifyBank(3)
+    local origRead = deps.executors.read
+    deps.executors.read = function(page, index) if page == 1 and index == stE then error("read failed", 0) end return origRead(page, index) end
+    local t11 = i11:teardownBank(4, { authorized = true })
+    deps.executors.read = origRead
+    check("teardown keeps the Quickey the last verification found on an executor that is now unreadable", t11 and t11.complete == false and console.quickeys[maQ] ~= nil, J({ complete = t11 and t11.complete, skipped = t11 and t11.skipped }))
   end
   -- #75 review 10: an executor press that raised may have acted, so it counts as a press for the frame gates.
   do
