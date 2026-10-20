@@ -24,26 +24,36 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
       result: ${{ steps.codex.outputs.final-message }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: inputs.review
         with:
           repository: bdstark/gma3-mcp
-          ref: 7c5d0c7358c903124ee4a2ef2e29031b8eac6931
+          ref: 1afa6408bf59c91837b254470e83ffe2c327fa5d
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
+      - name: Recheck review after acquiring the PR lock
+        id: existing
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ inputs.number }}
+          HEAD_SHA: ${{ inputs.head }}
+          BASE_SHA: ${{ inputs.base }}
+        with:
+          script: |
+            await require('./policy/.github/automation/controller.cjs').main({github, context, core, mode:'review-check'});
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: inputs.review
+        if: steps.existing.outputs.review == 'true'
         with:
           ref: main
           fetch-depth: 0
           persist-credentials: false
           path: candidate
       - name: Prepare immutable review context
-        if: inputs.review
+        if: steps.existing.outputs.review == 'true'
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PR_NUMBER: ${{ inputs.number }}
@@ -62,7 +72,7 @@ jobs:
             require('node:fs').writeFileSync('review-context.json', JSON.stringify({head_sha:pr.head.sha,base_sha:pr.base.sha,requirements:pr.body}));
       # Last step: the reviewer has no write token, and candidate scripts are never run.
       - name: Independent offline review
-        if: inputs.review
+        if: steps.existing.outputs.review == 'true'
         id: codex
         uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1
         with:
@@ -87,7 +97,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 7c5d0c7358c903124ee4a2ef2e29031b8eac6931
+          ref: 1afa6408bf59c91837b254470e83ffe2c327fa5d
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -122,7 +132,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 7c5d0c7358c903124ee4a2ef2e29031b8eac6931
+          ref: 1afa6408bf59c91837b254470e83ffe2c327fa5d
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy
@@ -151,7 +161,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: 7c5d0c7358c903124ee4a2ef2e29031b8eac6931
+          ref: 1afa6408bf59c91837b254470e83ffe2c327fa5d
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy

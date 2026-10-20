@@ -12,8 +12,7 @@ licence and repository guidance. No product implementation is transferred betwee
 2. Add Actions variables `PR_AUTOMATION_ENABLED=true` and `PR_MERGE_ENABLED=false` to start in review-only mode.
 3. Merge the workflow PRs manually after review. Workflow/policy changes deliberately cannot merge themselves.
 4. Run **Actions → PR automation → Run workflow**, optionally entering a PR number. Check the independent review
-   and the official review on the same head. A manual dispatch reruns the independent review; normal events reuse
-   its result until the head or base changes. Missing credentials or malformed/incomplete output never authorizes a merge.
+   and the official review on the same head. All triggers, including manual dispatch, reuse the verified independent review until the head or base changes. The job rechecks under its per-PR lock before any paid review. Missing credentials or malformed/incomplete output never authorizes a merge.
 5. Before enabling merges, test a clean PR, an actionable finding followed by a fix, failing CI, an intervening head/base
    change and stacked cleanup. Unit tests cover the controller's acceptance and cleanup boundaries; a real Actions
    smoke run is still required. Keep the chat monitor until those checks pass.

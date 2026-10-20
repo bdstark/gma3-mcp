@@ -58,7 +58,13 @@ async function main({github:g, context:c, core, mode, deleteBranch = deleteBranc
       const proof = receipt(rv,pr.head.sha,pr.base.sha);
       if (!proof) continue;
       const run = (await g.rest.actions.getWorkflowRun({...r,run_id:proof.run})).data;
-      if (run.path === '.github/workflows/pr-automation.yml' && run.status === 'completed' && run.conclusion === 'success' && run.repository.full_name === full) return proof;
+      if (run.path !== '.github/workflows/pr-automation.yml' || run.status !== 'completed' || run.repository.full_name !== full) continue;
+      if (run.conclusion === 'success') return proof;
+      // Acceptance/cleanup can fail after the paid review was published. Reuse that review only when both
+      // producing jobs succeeded; a failed later job must not buy another review for identical head/base.
+      const jobs=await all(g.rest.actions.listJobsForWorkflowRun,{run_id:proof.run,filter:'latest'});
+      const passed=suffix=>jobs.some(j=>j.name.endsWith(suffix) && j.status==='completed' && j.conclusion==='success');
+      if (passed(' / independent') && passed(' / publish')) return proof;
     }
     return null;
   }
@@ -79,7 +85,7 @@ async function main({github:g, context:c, core, mode, deleteBranch = deleteBranc
       const changed=await files(pr.number);
       // Policy/workflow changes need a human merge, including this bootstrap PR.
       if (pr.changed_files > 3000 || changed.some(f=>SENSITIVE.test(f.filename) || (f.previous_filename && SENSITIVE.test(f.previous_filename)))) continue;
-      matrix.push({number:pr.number,head:pr.head.sha,base:pr.base.sha,review:c.eventName === 'workflow_dispatch' || !(await reviewEvidence(pr)),cleanup:false});
+      matrix.push({number:pr.number,head:pr.head.sha,base:pr.base.sha,review:!(await reviewEvidence(pr)),cleanup:false});
     }
     core.setOutput('matrix',JSON.stringify(matrix));
     return;
@@ -104,6 +110,14 @@ async function main({github:g, context:c, core, mode, deleteBranch = deleteBranc
     return;
   }
   if (!eligible(pr,full) || pr.head.sha!==process.env.HEAD_SHA || pr.base.sha!==process.env.BASE_SHA) throw Error('PR head/base changed or is no longer eligible');
+  if (mode === 'review-check') {
+    // This runs only after acquiring the reusable workflow's per-PR concurrency lock. The planner's result
+    // may be stale by then because another trigger was queued while a previous review was in flight.
+    const proof=await reviewEvidence(pr);
+    core.setOutput('review',String(!proof));
+    core.info(proof ? 'Reusing independent review for this exact head/base; no API call' : 'No verified review for this head/base');
+    return;
+  }
   if (mode === 'publish') {
     const v=verdict(process.env.REVIEW_JSON,pr.head.sha,pr.base.sha);
     const proof={head:pr.head.sha,base:pr.base.sha,verdict:v.verdict,run:c.runId};

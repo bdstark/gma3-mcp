@@ -103,3 +103,40 @@ test('review notifications hand off through workflow_run, never a privileged dir
  assert.match(one,/OPENAI_API_KEY: \{required: true\}/);
  for(const f of ['pr-review-service.yml','pr-automation.yml']) assert.match(fs.readFileSync(path.join(root,f),'utf8'),/OPENAI_API_KEY: \$\{\{ secrets.OPENAI_API_KEY \}\}/);
  });
+
+test('queued triggers buy one review per head/base across all four repositories',async()=>{
+ const original={PR_NUMBER:process.env.PR_NUMBER,HEAD_SHA:process.env.HEAD_SHA,BASE_SHA:process.env.BASE_SHA};
+ try {
+ for(const repo of ['gma3-mcp','gma3-beat-sync','gma3-phrase-sync','gma3-surface']) {
+  Object.assign(process.env,{PR_NUMBER:'9',HEAD_SHA:head,BASE_SHA:base});
+  const full=`bdstark/${repo}`, saved=[];
+  let pr={number:9,state:'open',draft:false,user:{login:'bdstark'},head:{sha:head,repo:{full_name:full}},base:{ref:'main',sha:base}};
+  const g={paginate:async()=>saved,rest:{pulls:{get:async()=>({data:pr}),listReviews(){}},actions:{getWorkflowRun:async()=>({data:{path:'.github/workflows/pr-automation.yml',status:'completed',conclusion:'success',repository:{full_name:full}}})}}};
+  const context={repo:{owner:'bdstark',repo},payload:{},eventName:'workflow_run'};
+  const check=async()=>{const out={};await main({github:g,context,core:{setOutput:(k,v)=>out[k]=v,info(){}},mode:'review-check'});return out.review;};
+  // Both plans were made with no receipt; execution is serialized by the workflow's PR lock.
+  let paid=0;
+  if(await check()==='true') {paid++;saved.push({id:1,user:{login:'github-actions[bot]',type:'Bot'},commit_id:head,body:`<!-- independent-review:v1 ${JSON.stringify({head,base,verdict:'ready',run:42})} -->`});}
+  if(await check()==='true') paid++;
+  assert.equal(paid,1,repo);
+  assert.equal(await check(),'false',`${repo}: manual or repeated trigger reuses receipt`);
+  pr={...pr,base:{ref:'main',sha:'c'.repeat(40)}};process.env.BASE_SHA=pr.base.sha;
+  assert.equal(await check(),'true',`${repo}: new base needs review`);
+  pr={...pr,base:{ref:'main',sha:base},head:{...pr.head,sha:'d'.repeat(40)}};process.env.BASE_SHA=base;process.env.HEAD_SHA=pr.head.sha;
+  assert.equal(await check(),'true',`${repo}: new head needs review`);
+ }
+ } finally {for(const [k,v] of Object.entries(original)) if(v===undefined) delete process.env[k];else process.env[k]=v;}
+});
+test('a later gate failure reuses successful independent/publish jobs, but not failed review jobs',async()=>{
+ const original={PR_NUMBER:process.env.PR_NUMBER,HEAD_SHA:process.env.HEAD_SHA,BASE_SHA:process.env.BASE_SHA};
+ try {
+ Object.assign(process.env,{PR_NUMBER:'9',HEAD_SHA:head,BASE_SHA:base});
+ const pr={number:9,state:'open',draft:false,user:{login:'bdstark'},head:{sha:head,repo:{full_name:'bdstark/gma3-mcp'}},base:{ref:'main',sha:base}};
+ const rv={id:1,user:{login:'github-actions[bot]',type:'Bot'},commit_id:head,body:`<!-- independent-review:v1 ${JSON.stringify({head,base,verdict:'changes_requested',run:42})} -->`};
+ for(const good of [true,false]) {
+  const g={paginate:async(fn)=>fn===g.rest.pulls.listReviews?[rv]:[{name:'service / pr / independent',status:'completed',conclusion:good?'success':'failure'},{name:'service / pr / publish',status:'completed',conclusion:'success'}],rest:{pulls:{get:async()=>({data:pr}),listReviews(){}},actions:{listJobsForWorkflowRun(){},getWorkflowRun:async()=>({data:{path:'.github/workflows/pr-automation.yml',status:'completed',conclusion:'failure',repository:{full_name:'bdstark/gma3-mcp'}}})}}};
+  const out={};await main({github:g,context:{repo:{owner:'bdstark',repo:'gma3-mcp'}},core:{setOutput:(k,v)=>out[k]=v,info(){}},mode:'review-check'});
+  assert.equal(out.review,good?'false':'true');
+ }
+ }finally{for(const[k,v]of Object.entries(original))if(v===undefined)delete process.env[k];else process.env[k]=v;}
+});
