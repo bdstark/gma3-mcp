@@ -35,6 +35,24 @@ as `slotColors: "unset"` and asks; this page is the answer.
 The gobo 8 photo shows a faint second copy of the pattern up and to the left. It is a reflection in the optics, not
 part of the gobo.
 
+### Gobo images for the 3D view
+
+[shehds-180w-beam/gobo-images](shehds-180w-beam/gobo-images) has one image per slot, traced from the photos, named
+`SHEHDS180W_G1_<slot>_<name>.png` (slot 01 is Open). Each is a 512 × 512 greyscale PNG: white where light passes, black
+where it is blocked, the open aperture filling the square.
+
+- **Tracing.** Each photo was thresholded on its least-saturated light (white light is bright in all three channels,
+  the cyan halo around it is not), squashed back by the photos' 7% vertical stretch, cropped around the pattern's
+  centre (its bounding box for the asymmetric Wi-Fi), smoothed and given a hard edge.
+- **Scale.** The open beam's width against the clock gives the aperture in each photo. Where a pattern would reach
+  past 94% of the aperture's radius, the crop was widened so nothing is cut off, so the sizes of patterns that fill
+  the wheel are approximate. The three reducers are drawn as clean circles at 80%, 66% and 51% of open.
+- **Rotation** is as photographed.
+
+The images are traced from photos, not supplied by the manufacturer. Soft or blurred details in a photo (the knobs on
+Bones, where the Daisy's petals meet the centre) are only as accurate as the photo. None of them has been imported
+into a show yet.
+
 ## Colour wheel (C1)
 
 Names are what the colour looked like by eye. The hues were measured on the light spilling around the spot, because
@@ -84,4 +102,4 @@ different part of it, so the 18 copies run from violet on one side through blue 
 The type has two effect wheels with media, E (2 slots) and E2 (3 slots). The counts suggest the prism (open, prism)
 is E and the frost and gradient are E2, but that has not been checked against the type.
 
-These names, swatches and the prism, frost and gradient notes have not been written to the show's fixture type yet.
+These names, swatches, gobo images and the prism, frost and gradient notes have not been written to the show's fixture type yet.
