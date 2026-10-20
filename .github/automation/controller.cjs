@@ -44,7 +44,7 @@ async function deleteBranchAtomically(repo, branch, sha) {
   // Git's receive-pack compares the old object ID atomically; a later push makes this lease fail.
   cp.execFileSync('git',['-C','policy','push',`--force-with-lease=refs/heads/${branch}:${sha}`,`https://github.com/${repo}.git`,`:refs/heads/${branch}`],{env:{...process.env,GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:'http.https://github.com/.extraheader',GIT_CONFIG_VALUE_0:`AUTHORIZATION: basic ${auth}`},stdio:['ignore','pipe','pipe']});
 }
-async function main({github:g, context:c, core, mode, deleteBranch = deleteBranchAtomically}) {
+async function main({github:g, context:c, core, mode, deleteBranch = deleteBranchAtomically, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
   const r = c.repo;
   if (r.owner !== OWNER || !REPOS.has(r.repo)) throw Error('Repository is outside the authorized allowlist');
   const full = `${r.owner}/${r.repo}`;
@@ -113,8 +113,15 @@ async function main({github:g, context:c, core, mode, deleteBranch = deleteBranc
     return;
   }
   if (mode !== 'gate') throw Error('Unknown controller mode');
+  // GitHub computes mergeability asynchronously; a null answer is not a conflict.
+  for (let attempt=0; pr.mergeable===null && attempt<4; attempt++) {
+    await wait(3000);
+    pr=await getPR(n);
+    if (!eligible(pr,full) || pr.head.sha!==process.env.HEAD_SHA || pr.base.sha!==process.env.BASE_SHA) throw Error('Eligibility or head/base changed while checking mergeability');
+  }
   const changed=await files(n);
   if (pr.changed_files>3000 || changed.some(f=>SENSITIVE.test(f.filename) || (f.previous_filename && SENSITIVE.test(f.previous_filename)))) throw Error('Review policy changes require manual merge');
+  if (process.env.CURRENT_READY === 'false') { core.info('Fresh independent review is not ready'); return; }
   if (process.env.CURRENT_READY !== 'true' && (await reviewEvidence(pr))?.verdict !== 'ready') { core.info('Waiting for independent review'); return; }
   if (!official(await comments(n),pr.head.sha,r.repo!=='gma3-mcp')) { core.info('Waiting for clean official code/security reviews on this head'); return; }
   // Unresolved discussions are an independent veto, even if a summary is clean.
