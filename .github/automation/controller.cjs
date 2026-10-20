@@ -34,7 +34,7 @@ function receipt(review, head, base) {
   if (review.user?.login !== 'github-actions[bot]' || review.user?.type !== 'Bot' || review.commit_id !== head) return null;
   try {
     const r = JSON.parse(review.body.split(RECEIPT)[1].split(' -->')[0]);
-    return r.head === head && r.base === base && r.verdict === 'ready' && Number.isSafeInteger(r.run) ? r : null;
+    return r.head === head && r.base === base && ['ready','changes_requested','incomplete'].includes(r.verdict) && Number.isSafeInteger(r.run) ? r : null;
   } catch { return null; }
 }
 async function main({github:g, context:c, core, mode}) {
@@ -46,14 +46,14 @@ async function main({github:g, context:c, core, mode}) {
   const comments = n => all(g.rest.issues.listComments,{issue_number:n});
   const reviews = n => all(g.rest.pulls.listReviews,{pull_number:n});
   const files = n => all(g.rest.pulls.listFiles,{pull_number:n});
-  async function freshReview(pr) {
+  async function reviewEvidence(pr) {
     for (const rv of (await reviews(pr.number)).sort((a,b)=>b.id-a.id)) {
       const proof = receipt(rv,pr.head.sha,pr.base.sha);
       if (!proof) continue;
       const run = (await g.rest.actions.getWorkflowRun({...r,run_id:proof.run})).data;
-      if (run.path === '.github/workflows/pr-automation.yml' && run.status === 'completed' && run.conclusion === 'success' && run.repository.full_name === full) return true;
+      if (run.path === '.github/workflows/pr-automation.yml' && run.status === 'completed' && run.conclusion === 'success' && run.repository.full_name === full) return proof;
     }
-    return false;
+    return null;
   }
   if (mode === 'prepare') {
     const p=c.payload;
@@ -71,7 +71,7 @@ async function main({github:g, context:c, core, mode}) {
       const changed=await files(pr.number);
       // Policy/workflow changes need a human merge, including this bootstrap PR.
       if (pr.changed_files > 3000 || changed.some(f=>SENSITIVE.test(f.filename) || (f.previous_filename && SENSITIVE.test(f.previous_filename)))) continue;
-      matrix.push({number:pr.number,head:pr.head.sha,base:pr.base.sha,review:!(await freshReview(pr)),cleanup:false});
+      matrix.push({number:pr.number,head:pr.head.sha,base:pr.base.sha,review:c.eventName === 'workflow_dispatch' || !(await reviewEvidence(pr)),cleanup:false});
     }
     core.setOutput('matrix',JSON.stringify(matrix));
     return;
@@ -108,7 +108,7 @@ async function main({github:g, context:c, core, mode}) {
   if (mode !== 'gate') throw Error('Unknown controller mode');
   const changed=await files(n);
   if (pr.changed_files>3000 || changed.some(f=>SENSITIVE.test(f.filename) || (f.previous_filename && SENSITIVE.test(f.previous_filename)))) throw Error('Review policy changes require manual merge');
-  if (process.env.CURRENT_READY !== 'true' && !(await freshReview(pr))) { core.info('Waiting for independent review'); return; }
+  if (process.env.CURRENT_READY !== 'true' && (await reviewEvidence(pr))?.verdict !== 'ready') { core.info('Waiting for independent review'); return; }
   if (!official(await comments(n),pr.head.sha,r.repo!=='gma3-mcp')) { core.info('Waiting for clean official code/security reviews on this head'); return; }
   // Unresolved discussions are an independent veto, even if a summary is clean.
   let cursor=null;
