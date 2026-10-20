@@ -293,8 +293,9 @@ export function sequenceResult(op: string, target: Record<string, unknown>, rep:
     warnings.push(`sequence ${rep.id} was still running when the tool stopped waiting; it continues on the console (bounded by its lease) and is never replayed. Read gma3_hardkeys_status or sequence ${rep.id} later; do not resend it.`);
   }
   if (rep.state === "aborted") warnings.push(`sequence ${rep.id} was aborted: ${rep.error ?? "unknown reason"}`);
-  const cleanup = rep.cleanup as { unresolved?: number; released?: number } | undefined;
+  const cleanup = rep.cleanup as { unresolved?: number; released?: number; blocked?: number } | undefined;
   if (cleanup?.unresolved) warnings.push(`${cleanup.unresolved} key(s) pressed by the sequence could not be released and stay as unresolved records: see gma3_hardkeys_status; the operator may need "input recover"`);
+  if (cleanup?.blocked) warnings.push(`${cleanup.blocked} more key(s) of an ordered combo are still held behind that unresolved release; "input recover" releases them in order`);
   if (cleanup?.released) warnings.push(`${cleanup.released} key(s) still held at the end of the sequence were released (newest first)`);
   return buildResult({
     operation: op,
@@ -640,6 +641,14 @@ function releaseSteps(r: Record<string, unknown>, prefix = "release"): StepResul
   }
   for (const a of (r.unresolved as Array<Record<string, unknown>>) ?? []) {
     steps.push({ name: `${prefix} ${String(a.logical ?? a.tupleKey ?? a.hold)}`, status: "unknown", op: "input.release", error: `release unresolved: ${String(a.error ?? "unconfirmed")}; the record is kept for recovery`, detail: a });
+  }
+  // A later key of an ordered combo held back behind an unresolved earlier one is still down (KB-28 review 16).
+  for (const a of (r.blocked as Array<Record<string, unknown>>) ?? []) {
+    // Review 19: a frame-gate deferral (a.reason) is not an unresolved predecessor: only this key is still down.
+    const why = a.reason
+      ? `not released in this frame: ${String(a.reason)}; still held, a later release or "input recover" releases it`
+      : `not released: it waits behind ${String(a.after)}, an earlier key of its ordered combo whose release is unresolved; still held, recover() releases both in order`;
+    steps.push({ name: `${prefix} ${String(a.logical ?? a.hold)}`, status: "unknown", op: "input.release", error: why, detail: a });
   }
   return steps;
 }
