@@ -4,7 +4,7 @@ Gaps found by running the MCP server as an end user would: an agent started a ne
 requests, with no knowledge of this repository. The fixes and features below cover what it could not do with
 structured tools, and the bugs it hit.
 
-Identifiers SU-01 through SU-20 are provisional. SU-11 to SU-20 come from the second field test. Bugs come first, then features in the order they block show setup.
+Identifiers SU-01 through SU-21 are provisional. SU-11 to SU-20 come from the second field test; SU-21 from a gap review. Bugs come first, then features in the order they block show setup.
 These are proposals; console API support must be established by the probes described below.
 
 ## The field test
@@ -840,6 +840,74 @@ dialog (KB-25 handles dialogs). This time it answered `OK`, and the bridge kept 
   without `overwrite`, never answers another dialog, and reports the file written.
 - SaveShow is queued with CmdIndirect, so a dialog cannot stall the bridge.
 
+## SU-21 — Tags
+
+**Request:** Create tags, assign them to sequences, groups, macros and other objects, read which objects carry a tag,
+and change a tag's kill and forwarding settings, without raw commands or Lua.
+
+**Depends on:** SU-12 (batch forms and result shape).
+
+**Repository:** gma3-mcp.
+
+**Lua changes:** Yes: a `tags` read op (the pool, each tag's settings, and its references through `GetReferences()`),
+and the object reads resolving a `TAGS` list of handles to tag numbers and names.
+
+**Evidence:** no tool reads or writes tags. `gma3_get_object` returns `TAGS` as unresolved handles
+(`#BC000E42:0,#BC000E44:0`), and listing a tag's children shows only its first reference. Tags are how a busking
+show groups sequences for Kill Instant / Kill Delayed and for playback commands sent to every tagged sequence.
+
+**Probe:** [su-21-tags-macos-2.5.1.md](docs/probes/su-21-tags-macos-2.5.1.md).
+- The pool is show-wide at `ShowData().Tags`, sparse.
+- `Store`/`Label`/`Delete Tag` and `Assign [Off] Tag … At …` work by number, by name and over ranges, on sequences,
+  groups, macros, macro lines, tags and cue parts (a cue's tag lands on its Part 0).
+- An object's `TAGS` reads `name:protect` by default and `#handle:protect` in the Edit role. Names keep colons and
+  lose commas.
+- `tag:GetReferences()` lists every reference; `Children()` lists only the first. `Set("Tags", "")` is ignored.
+- `Go+`/`Off Tag` reach every tagged sequence. Invalid `TagType` values are silently ignored.
+- `Action` ignores every Lua `Set`; `Set Tag N Property "Action" "<token>"` applies each `TagActionToken` (None,
+  Pool Default, Go+, Off, Flash, Temp, Top, Toggle, Pause, List Reference) and answers `Not allowed` to anything else.
+- Not probed: Kill Instant / Kill Delayed and Protect in playback, playback with Forward Commands off, objects of
+  another data pool, two tags with one name, and writing or clearing a tag's appearance.
+
+**Status:** proposed.
+
+### Acceptance criteria
+
+- `gma3_tags` lists the tags (number, name, type, Forward Commands, action, appearance, note, reference count) and,
+  per tag, the objects that carry it (class, data pool, number, name, address, protect), from `GetReferences()`.
+  It filters by tag (numbers, a range or names) and by referencing class, and pages tags and each tag's references
+  separately (`limit`/`offset`), reporting totals and whether a page is incomplete, so a full show stays within the
+  response budget.
+- `gma3_get_object`, `gma3_list_children` and `gma3_objects` return `TAGS` as a list of `{ tag, name, protect }`
+  instead of raw handles.
+- `gma3_store_tag` creates or renames tags in a batch, refusing an occupied number unless asked. Names go through
+  `objectName()` like every other tool, so a comma (which the console strips) is refused before anything is sent.
+- `gma3_delete_tag` deletes tags in a batch, reporting before and after the objects each was removed from (from
+  `GetReferences()`), and reads back that the slot is empty and no object still carries the tag.
+- `gma3_assign_tag` assigns and unassigns tags on object ranges in a batch, sets `protect` per reference, and reads
+  every object's `TAGS` back. A cue target is reported as its part.
+  - A tag given by name is resolved to its number before dispatch; a name matching more than one tag (or none) is
+    refused, and the command always addresses the tag by number.
+  - Pool targets (sequences, groups, macros) take `data_pool` like the other tools (`src/tools/datapool.ts`). The
+    qualified command form is probed first, and the live test tags same-numbered sequences in two data pools and
+    checks that only the intended one changed.
+- `gma3_configure_tag` sets type, Forward Commands, action and note, refusing values outside the enums before
+  sending and reading each one back. `Action` is written with `Set Tag N Property "Action" "<token>"`, since Lua
+  `Set` ignores it. Appearance stays read-only until a probe establishes how it is written (by number, name or
+  handle) and cleared.
+- Tag playback is verified: `gma3_playback` with a tag target resolves a tag name to one tag number first (refusing a
+  name that matches several tags or none, as `gma3_assign_tag` does), dispatches by number, resolves the tag's
+  sequences through `GetReferences()` and reads each one's state back a frame later, instead of returning `notRead`.
+  With Forward Commands off it reports that the command reaches no tagged sequence.
+- Selecting objects by tag ("every sequence tagged Encore") is answered from the reverse lookup, without the agent
+  scanning pools.
+- Kill behaviour is probed and then tested live with several sequences running: Kill Instant and Kill Delayed (others
+  released at once / after the started sequence's fade), and a protected reference left running. Until that probe,
+  the tools document `TagType` and `protect` as settings whose playback effect is unverified.
+- A live test (`test/live/tags.live.ts`) covers create, assign over a range and in a second data pool, an ambiguous
+  name refused, protect, unassign, delete, `Go+`/`Off Tag` read back per sequence, `Go+ Tag` with Forward Commands
+  off (no tagged sequence starts) and then on again, and the kill scenarios, on reserved objects.
+
 ## Recommended delivery order
 
 SU-01 and SU-02 first (bridges 0.25.1 and 0.25.2). Then SU-03: without import, a new show cannot be set up without Lua or a
@@ -852,6 +920,8 @@ From the second field test:
 - SU-13 and SU-14 build on it.
 - SU-15's probe (does `cmd` expand `$variables`) is small. Run it early, since SU-14 depends on its answer.
 - SU-16, SU-18, SU-19 and SU-20 are independent.
+- SU-21 (tags) is independent. Its first probe is recorded; the data-pool command form, kill and protect behaviour,
+  Forward Commands off, same-named tags and appearance writes still need probing before the tools that use them.
 - SU-17's `resync` is independent. Its plugin tools wait for the interface that bdstark/gma3-beat-sync's BS-01 and BS-02
   define.
 
