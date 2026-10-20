@@ -1403,7 +1403,14 @@ in (review 7); releasing one of its keys before an earlier one is refused (`out-
 preflight as well, and a later key stays down while an earlier one's release is unresolved (review 10); other combos
 keep newest first. A probed pair is admitted only between keys of the same combo: next to a separately held key it is
 refused, because only a combo releases in the qualified order (review 10). Such a combo takes at most two keys (only
-pairs were rolled), and recover() also releases a later key held back behind a refused release (review 11). No MCP tool or TypeScript contract changed.
+pairs were rolled), and recover() also releases a later key held back behind a refused release (review 11). The
+pairs were rolled one request, so one console frame, per key, and the pop-up record shows a keyword pressed in the same
+frame as a digit landing before it (review 14): a probed pair goes down only through a backend that breaks the frame
+between its presses (`adapter.separateFrames`). No shipped backend has one, so on the console a combo with a probed
+code is refused before dispatch (`reason = "same-frame"`) until frame-separated dispatch is qualified; KB-10's
+MA1 + STORE chord is unaffected. An ordered group's keys share its earliest deadline, a due later key brings the
+earlier keys of its group due with it, and the sequence and interaction cleanup reports carry the keys held back
+behind an unresolved release (`blocked`, review 14). No MCP tool or TypeScript contract changed.
 
 ### Record (2026-10-20)
 

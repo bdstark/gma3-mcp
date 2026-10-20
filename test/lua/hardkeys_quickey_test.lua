@@ -150,6 +150,17 @@ local function pageWithExecutors(page, first, count)
   for i = 0, count - 1 do console.executors[execKey(page, first + i)] = "empty" end
 end
 local SPEC = { authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 8 } }
+-- Review 14: the KB-28 pairs were rolled one console frame per key. The fake backend marks a frame break between the
+-- presses of an ordered pair (console.frames counts them, console.frameAt records the command count at each break).
+local function withFrames(b)
+  b.separateFrames = function()
+    local f, e = maybeFail("frame"); if f == false then error(e, 0) end
+    console.frames = (console.frames or 0) + 1
+    console.frameAt = console.frameAt or {}
+    console.frameAt[#console.frameAt + 1] = #console.cmds
+  end
+  return b
+end
 local function newInst(opts)
   opts = opts or {}
   local config = { requireInteraction = false }
@@ -166,6 +177,7 @@ local function fresh(opts)
     assert(b, "provisionBank failed: " .. J(err))
   end
   local backend = HK.quickeyBackend(inst)
+  if not opts.sameFrame then withFrames(backend) end
   if not opts.disabled then
     local ok, err = inst:enableInput(backend)
     assert(ok, "enableInput failed: " .. J(err))
@@ -332,6 +344,65 @@ do
   local afterRA = pressedCount()
   local rc = inst:recover("s", 6.3)
   check("recover() releases the combo key held back behind a refused release, in order", cr and afterRA == 2 and ra2.blocked and #ra2.blocked == 1 and pressedCount() == 0 and rc.attempted == 2, J({ afterRA = afterRA, blocked = ra2.blocked, attempted = rc.attempted }))
+end
+
+-- KB-28 review 14: the probed pairs were rolled one console frame per key.
+do
+  local inst = fresh({ sameFrame = true })
+  local n0 = #console.cmds
+  local c, err = inst:combo("s", 1, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 100 })
+  check("a probed pair is refused on a backend without frame separation, nothing dispatched", c == nil and err.reason == "same-frame" and #console.cmds == n0 and pressedCount() == 0, J(err))
+  local q, qerr = inst:startSequence("s", 2, { { kind = "combo", keys = { { key = "NUM1" }, { key = "THRU" } }, holdMs = 50 } })
+  check("...and a sequence with that combo is refused at preflight", q == nil and qerr.reason == "same-frame" and #console.cmds == n0, J(qerr))
+  local c2, err2 = inst:combo("s", 3, { { key = "MA1" }, { key = "STORE" } }, { holdMs = 50 })
+  check("...while an unrestricted KB-10 chord (MA1 + STORE) still goes down in one call", c2 and c2.count == 2, J(err2))
+  inst:service(3.1)
+end
+do
+  local inst = fresh()
+  console.frames, console.frameAt = 0, {}
+  local n0 = #console.cmds
+  local c = inst:combo("s", 1, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 100 })
+  local cmds = cmdsSince(n0)
+  local firstPress
+  for i, cmd in ipairs(cmds) do if cmd:find("^Press") then firstPress = i; break end end
+  check("a probed pair breaks the frame once, after the first key's press and before the second's", c and console.frames == 1 and firstPress and console.frameAt[1] == n0 + firstPress and cmds[#cmds]:find("^Press"), J({ frames = console.frames, at = console.frameAt, cmds = cmds }))
+  inst:service(1.11)
+  -- A frame break that raises stops the combo: the first key is released, the second never pressed.
+  console.raise.frame = "frame break failed"
+  local c2, err2 = inst:combo("s", 2, { { key = "NUM1" }, { key = "THRU" } }, { holdMs = 100 })
+  check("a raising frame break releases the first key and does not press the second", c2 == nil and err2.key == 2 and err2.rollback and #err2.rollback.released == 1 and pressedCount() == 0, J(err2))
+  -- Comment: the group takes its earliest maximum hold, so THRU (1 s) is never held past its bound by NUM1 (30 s).
+  local c3 = inst:combo("s", 3, { { key = "NUM1", maxHoldMs = 30000 }, { key = "THRU", maxHoldMs = 1000 } })
+  local d1, d2 = c3 and inst._holds[c3.holds[1].id].deadline, c3 and inst._holds[c3.holds[2].id].deadline
+  check("an ordered combo's keys share its earliest maximum-hold deadline", d1 == 4 and d2 == 4, J({ d1, d2 }))
+  local nb = #console.cmds
+  inst:service(4.01)
+  local unp = {}; for _, cmd in ipairs(cmdsSince(nb)) do if cmd:find("^Unpress") then unp[#unp + 1] = cmd end end
+  check("...and both come up at it, NUM1 first", #unp == 2 and pressedCount() == 0 and unp[1] == ("Unpress Page 1." .. c3.holds[1].target.executor), J(cmdsSince(nb)))
+  -- A later key that becomes due on its own (here its deadline moved up) brings the earlier held key due with it.
+  local c4 = inst:combo("s", 5, { { key = "NUM1" }, { key = "THRU" } })
+  inst._holds[c4.holds[2].id].deadline = 5.5
+  nb = #console.cmds
+  inst:service(5.51)
+  unp = {}; for _, cmd in ipairs(cmdsSince(nb)) do if cmd:find("^Unpress") then unp[#unp + 1] = cmd end end
+  check("a due later key releases its group in press order at its own deadline", #unp == 2 and pressedCount() == 0 and unp[1] == ("Unpress Page 1." .. c4.holds[1].target.executor), J(cmdsSince(nb)))
+  -- Cleanup reports carry the later key held back behind an unresolved earlier one.
+  local ia = inst:beginInteraction("s", 6, { leaseMs = 10000 })
+  local c5 = inst:combo("s", 6.1, { { key = "NUM1" }, { key = "THRU" } }, { interaction = ia.id })
+  console.fail.unpress = { err = "Object not found", count = 1 }
+  local er = inst:endInteraction("s", ia.id, 6.2)
+  check("endInteraction reports the blocked later key of the ordered combo", c5 and er.blocked and #er.blocked == 1 and er.blocked[1].hold == c5.holds[2].id and pressedCount() == 2, J(er))
+  inst:recover(nil, 6.3)
+  check("...recover() releases both", pressedCount() == 0, J(inst:status(6.3).holds))
+  local q = inst:startSequence("s", 7, { { kind = "combo", keys = { { key = "NUM1" }, { key = "THRU" } } }, { kind = "wait", ms = 10 } })
+  local t = 7
+  console.fail.unpress = { err = "Object not found", count = 1 }  -- the combo presses; its cleanup's first Unpress fails
+  for _ = 1, 8 do t = t + 0.01; inst:service(t) end
+  local rep = q and inst:sequenceStatus(q.id, t)
+  check("a sequence's cleanup report counts the blocked later key", rep and rep.cleanup and rep.cleanup.blocked == 1 and rep.cleanup.unresolved == 1 and #rep.cleanup.blockedHolds == 1, J(rep and rep.cleanup))
+  inst:recover(nil, t + 1)
+  check("...and recover() releases both", pressedCount() == 0)
 end
 
 -------------------------------------------------------------------------------
@@ -580,7 +651,7 @@ do
   rc = inst2:recover(nil, 8)
   check("a keyboard record is not released through the Quickey backend", #rc.unresolved == 1 and rc.unresolved[1].error:find("originates from backend 'keyboard'") and #cmdsSince(before) == 0, J(rc))
   -- A Quickey record without a target (pre-0.8.0 shape) is refused, never re-resolved.
-  local inst3 = newInst(); inst3:adoptBank(dis.bank, 9); inst3:enableInput(HK.quickeyBackend(inst3))
+  local inst3 = newInst(); inst3:adoptBank(dis.bank, 9); inst3:enableInput(withFrames(HK.quickeyBackend(inst3)))
   inst3:adopt({ { quickkey = "NUM5", quickkeyCode = 72, backend = "quickey", tupleKey = "quickkey:#72", unresolved = { reason = "x" } } }, 9)
   before = #console.cmds
   rc = inst3:recover(nil, 10)
@@ -759,7 +830,7 @@ do
   check("dispose hands back the combo's order group with both records", og == 2, J(dis.records))
   local inst2 = newInst()
   inst2:adopt({ dis.records[2], dis.records[1] }, 3)  -- handed back in the wrong order on purpose
-  assert(inst2:enableInput(HK.quickeyBackend(inst2)))
+  assert(inst2:enableInput(withFrames(HK.quickeyBackend(inst2))))
   inst2:adoptBank(dis.bank, 4)
   local before = #console.cmds
   inst2:recover(nil, 5)
