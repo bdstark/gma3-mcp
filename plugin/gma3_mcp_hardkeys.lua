@@ -2989,6 +2989,7 @@ end
 function Instance:tap(sessionId, now, spec, holdMs, ctx)
   checkReady(self, "tap")
   checkNow(now, "tap")
+  local requestedHoldMs = holdMs
   holdMs = holdMs or 50
   if type(holdMs) ~= "number" or holdMs <= 0 or holdMs > self._config.maxTapMs then
     return fail("bad-argument", "holdMs must be a number in (0, " .. self._config.maxTapMs .. "]")
@@ -3000,7 +3001,10 @@ function Instance:tap(sessionId, now, spec, holdMs, ctx)
   -- the spec says direct = false. The candidacy goes into the plan so the backend's preflight checks only what a
   -- direct tap needs (the Quickey), not an executor it will not use (review 1 of #75).
   -- An exclusive tap (a long-press, e.g. STORE held to open its pop-up) stays executor-held until its deadline (review 3).
-  local directCandidate = type(self._adapter.tapDirect) == "function" and not (spec and (spec.direct == false or spec.exclusive)) and self:_liveQuickkeyCount() == 0
+  -- So does a tap with a sustained duration (holdMs above the default 50 ms): the caller asked for the key to stay
+  -- down that long (review 4 of #75).
+  local directCandidate = type(self._adapter.tapDirect) == "function" and not (spec and (spec.direct == false or spec.exclusive))
+    and (requestedHoldMs == nil or requestedHoldMs <= 50) and self:_liveQuickkeyCount() == 0
   local plan, perr = self:_planPress(sessionId, now, spec, { kind = "tap", fromSequence = ctx and ctx.fromSequence, direct = directCandidate or nil })
   if not plan then return nil, perr end
   if plan.duplicate then return fail("conflict", "tuple is already held by this session; a tap cannot be layered on a hold", { hold = plan.duplicate.id }) end

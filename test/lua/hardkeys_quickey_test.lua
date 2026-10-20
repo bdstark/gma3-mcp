@@ -630,6 +630,11 @@ do
   for _ = 1, 10 do tq = tq + 0.03; inst:service(tq) end
   local rq = qr and inst:sequenceStatus(qr.id, tq)
   check("a sequence step whose direct tap raised is uncertain, not failed", rq and rq.events and rq.events[1] and rq.events[1].state == "uncertain", J(rq and rq.events))
+  -- A sustained tap (holdMs above the 50 ms default) stays executor-held too (#75 review 4).
+  before = #console.cmds
+  h, err = inst:tap("s", 5.7, { key = "NUM5" }, 2000)
+  check("a 2 s tap of a direct-capable code is an executor hold, not a direct tap", h and not h.target.direct and has(cmdsSince(before), "Press Page"), J({ err = err, cmds = cmdsSince(before) }))
+  inst:releaseAll("s", 5.75); inst:service(5.76)
   -- An exclusive tap (a long-press) stays executor-held until its deadline (#75 review 3).
   before = #console.cmds
   h, err = inst:tap("s", 5.8, { key = "STORE", exclusive = true }, 50)

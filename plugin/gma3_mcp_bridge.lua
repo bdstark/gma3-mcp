@@ -154,7 +154,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.36.0"
+local VERSION      = "0.37.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -2198,7 +2198,7 @@ end
 local function pressSpec(args)
   return { key = args.key, pcKey = args.pcKey, shift = args.shift, ctrl = args.ctrl, alt = args.alt, numlock = args.numlock,
            display = args.display, executor = args.executor, maxHoldMs = args.maxHoldMs, exclusive = args.exclusive, interaction = args.interaction,
-           prefer = args.prefer }
+           prefer = args.prefer, direct = args.direct }
 end
 
 -- Opens the connection's session on demand (the KB-05 entry points do this so one call suffices).
@@ -2277,6 +2277,7 @@ end
 
 ops["input.press"] = function(args, ctx)
   requireInputEnabled()
+  state.keyFrame = true  -- KB-29: no further request line is read this frame (see serviceClients)
   local _, sid = ownSession(ctx, true)
   local h, err = inputInstance().instance:press(sid, now(), pressSpec(args))
   if not h then raise(err) end
@@ -2285,6 +2286,7 @@ end
 
 ops["input.tap"] = function(args, ctx)
   requireInputEnabled()
+  state.keyFrame = true
   local _, sid = ownSession(ctx, true)
   local h, err = inputInstance().instance:tap(sid, now(), pressSpec(args), args.holdMs)
   if not h then raise(err) end
@@ -2296,6 +2298,7 @@ end
 -- dispatched when any key fails validation.
 ops["input.combo"] = function(args, ctx)
   requireInputEnabled()
+  state.keyFrame = true
   local _, sid = ownSession(ctx, true)
   local inst = inputInstance().instance
   if type(inst.combo) ~= "function" then error("[no-module] the loaded hardkeys module has no combo() (KB-04 needs 0.3.0 or newer)", 0) end
@@ -6387,6 +6390,39 @@ local function closeClient(i, reason)
 end
 state._closeClient = closeClient  -- exposed for local testing
 
+-- One frame of client servicing: up to 64 request lines per client. KB-29 (review 4 of #75): a request that
+-- presses console keys (input.press / input.tap / input.combo) sets state.keyFrame, and no further line of
+-- any client is read in that frame; the rest stay in the socket buffers for the next frame. Quickey presses
+-- issued in one console frame reorder in a focused text field, so pipelined key requests are spread out.
+local function serviceClients()
+  state.keyFrame = false
+  for i = #state.clients, 1, -1 do
+    local cl = state.clients[i]
+    local closed = false
+    for _ = 1, 64 do
+      if state.keyFrame then break end
+      local line, rerr, partial = cl.sock:receive("*l")
+      if line then
+        local full = cl.buf .. line
+        cl.buf = ""
+        if full ~= "" then
+          local response = handleLine(cl, full)
+          if not sendAll(cl.sock, response .. "\n") then closed = true; break end
+        end
+      else
+        if partial and partial ~= "" then cl.buf = cl.buf .. partial end
+        if rerr == "closed" then closed = true end
+        break
+      end
+    end
+    if closed then
+      closeClient(i)
+      log("client disconnected (%d total)", #state.clients)
+    end
+  end
+end
+state._serviceClients = serviceClients  -- exposed for local testing
+
 local function serverMain()
   local server, err = socket.bind(state.host, state.port)
   if not server then
@@ -6423,30 +6459,7 @@ local function serverMain()
       end
     end
 
-    -- service existing clients
-    for i = #state.clients, 1, -1 do
-      local cl = state.clients[i]
-      local closed = false
-      for _ = 1, 64 do
-        local line, rerr, partial = cl.sock:receive("*l")
-        if line then
-          local full = cl.buf .. line
-          cl.buf = ""
-          if full ~= "" then
-            local response = handleLine(cl, full)
-            if not sendAll(cl.sock, response .. "\n") then closed = true; break end
-          end
-        else
-          if partial and partial ~= "" then cl.buf = cl.buf .. partial end
-          if rerr == "closed" then closed = true end
-          break
-        end
-      end
-      if closed then
-        closeClient(i)
-        log("client disconnected (%d total)", #state.clients)
-      end
-    end
+    serviceClients()
 
     coroutine.yield()
   end

@@ -322,16 +322,26 @@ async function runCmdline(A, codes, only) {
     await code(A, SLOTS.A, name);
     const read = () => fb(A, reader);
     if (DIRECT) {
-      // A direct tap flips the mode once (nothing more 400 ms later), a second one restores it.
+      // A direct tap flips the mode once (nothing more 400 ms later), a second one restores it. A direct tap leaves
+      // nothing down, so the finally can always tap once more to put the mode back at its baseline (review 4 of #75).
       const v0 = await read();
-      const fp = await lua(A, `return ${dtapCmd(SLOTS.A)}`);
-      const v1 = await settle(read, v0);
-      await sleep(400);
-      const v2 = await read();
-      const fp2 = await lua(A, `return ${dtapCmd(SLOTS.A)}`);
-      const v3 = await settle(read, v2);
-      const line = await readCmd(A);
-      record(`${name} direct tap toggles ${reader} once, a second one restores it`, accepted(fp) && accepted(fp2) && v0 !== undefined && v1 !== v0 && v2 === v1 && v3 === v0 && line === "", { v0, v1, v2, v3, line });
+      try {
+        const fp = await lua(A, `return ${dtapCmd(SLOTS.A)}`);
+        const v1 = await settle(read, v0);
+        await sleep(400);
+        const v2 = await read();
+        const fp2 = await lua(A, `return ${dtapCmd(SLOTS.A)}`);
+        const v3 = await settle(read, v2);
+        const line = await readCmd(A);
+        record(`${name} direct tap toggles ${reader} once, a second one restores it`, accepted(fp) && accepted(fp2) && v0 !== undefined && v1 !== v0 && v2 === v1 && v3 === v0 && line === "", { v0, v1, v2, v3, line });
+      } finally {
+        const now = await read().catch(() => undefined);
+        if (v0 !== undefined && now !== undefined && now !== v0) {
+          await code(A, SLOTS.A, name).catch(() => {});
+          await lua(A, `return ${dtapCmd(SLOTS.A)}`).catch(() => {});
+          note(`${name}: ${reader} restored to ${v0}`, await settle(read, now).catch(() => undefined));
+        }
+      }
       continue;
     }
     const v0 = await read();
