@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MIT
+name: PR automation tests
+on:
+  pull_request:
+    paths: ['.github/automation/**', '.github/workflows/pr-*.yml']
+  push:
+    branches: [main]
+    paths: ['.github/automation/**', '.github/workflows/pr-*.yml']
+permissions:
+  contents: read
+jobs:
+  controller:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: node --test .github/automation/controller.test.cjs

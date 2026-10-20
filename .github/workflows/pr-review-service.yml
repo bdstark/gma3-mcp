@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MIT
+name: Reusable PR review service
+on:
+  workflow_call:
+    secrets:
+      OPENAI_API_KEY:
+        required: false
+permissions:
+  contents: read
+jobs:
+  plan:
+    if: vars.PR_AUTOMATION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bdstark/gma3-mcp
+          ref: 8bbf30e7f92cd7e2fbd2dfba299be1df4ff498ac
+          persist-credentials: false
+          sparse-checkout: .github/automation
+          path: policy
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        id: plan
+        with:
+          script: |
+            await require('./policy/.github/automation/controller.cjs').main({github, context, core, mode:'prepare'});
+  pr:
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]' && needs.plan.outputs.matrix != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/pr-review-one.yml
+    with:
+      number: ${{ matrix.pr.number }}
+      head: ${{ matrix.pr.head }}
+      base: ${{ matrix.pr.base }}
+      review: ${{ matrix.pr.review }}
+      cleanup: ${{ matrix.pr.cleanup }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      checks: read

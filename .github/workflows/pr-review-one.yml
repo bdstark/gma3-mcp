@@ -1,0 +1,147 @@
+# SPDX-License-Identifier: MIT
+name: Review one PR
+on:
+  workflow_call:
+    inputs:
+      number: {type: number, required: true}
+      head: {type: string, required: true}
+      base: {type: string, required: true}
+      review: {type: boolean, required: true}
+      cleanup: {type: boolean, required: true}
+    secrets:
+      OPENAI_API_KEY: {required: false}
+permissions:
+  contents: read
+concurrency:
+  group: independent-${{ github.repository }}-${{ inputs.number }}
+  cancel-in-progress: false
+jobs:
+  independent:
+    if: '!inputs.cleanup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      result: ${{ steps.codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: inputs.review
+        with:
+          repository: bdstark/gma3-mcp
+          ref: 8bbf30e7f92cd7e2fbd2dfba299be1df4ff498ac
+          persist-credentials: false
+          sparse-checkout: .github/automation
+          path: policy
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: inputs.review
+        with:
+          ref: ${{ inputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: candidate
+      - name: Prepare immutable review context
+        if: inputs.review
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ inputs.number }}
+          HEAD_SHA: ${{ inputs.head }}
+          BASE_SHA: ${{ inputs.base }}
+          REVIEW_KEY: ${{ secrets.OPENAI_API_KEY }}
+        with:
+          script: |
+            if (!process.env.REVIEW_KEY) throw new Error('Configure OPENAI_API_KEY in repository Actions secrets');
+            const pr = (await github.rest.pulls.get({...context.repo, pull_number:Number(process.env.PR_NUMBER)})).data;
+            if (pr.head.sha !== process.env.HEAD_SHA || pr.base.sha !== process.env.BASE_SHA) throw new Error('Review head/base changed');
+            require('node:fs').writeFileSync('review-context.json', JSON.stringify({head_sha:pr.head.sha,base_sha:pr.base.sha,requirements:pr.body}));
+      # Last step: the reviewer has no write token, and candidate scripts are never run.
+      - name: Independent offline review
+        if: inputs.review
+        id: codex
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          working-directory: candidate
+          prompt-file: ${{ github.workspace }}/policy/.github/automation/review.md
+          output-schema-file: ${{ github.workspace }}/policy/.github/automation/review-schema.json
+          codex-home: ${{ runner.temp }}/independent-codex
+          sandbox: read-only
+          safety-strategy: drop-sudo
+          allow-users: bdstark
+  publish:
+    needs: independent
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      ready: ${{ steps.publish.outputs.ready }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bdstark/gma3-mcp
+          ref: 8bbf30e7f92cd7e2fbd2dfba299be1df4ff498ac
+          persist-credentials: false
+          sparse-checkout: .github/automation
+          path: policy
+      - name: Publish independent findings
+        id: publish
+        if: needs.independent.outputs.result != ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ inputs.number }}
+          HEAD_SHA: ${{ inputs.head }}
+          BASE_SHA: ${{ inputs.base }}
+          REVIEW_JSON: ${{ needs.independent.outputs.result }}
+        with:
+          script: |
+            await require('./policy/.github/automation/controller.cjs').main({github, context, core, mode:'publish'});
+  accept:
+    needs: publish
+    if: vars.PR_MERGE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      checks: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bdstark/gma3-mcp
+          ref: 8bbf30e7f92cd7e2fbd2dfba299be1df4ff498ac
+          persist-credentials: false
+          sparse-checkout: .github/automation
+          path: policy
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ inputs.number }}
+          HEAD_SHA: ${{ inputs.head }}
+          BASE_SHA: ${{ inputs.base }}
+          CURRENT_READY: ${{ needs.publish.outputs.ready }}
+        with:
+          script: |
+            await require('./policy/.github/automation/controller.cjs').main({github, context, core, mode:'gate'});
+  cleanup:
+    if: inputs.cleanup && vars.PR_MERGE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bdstark/gma3-mcp
+          ref: 8bbf30e7f92cd7e2fbd2dfba299be1df4ff498ac
+          persist-credentials: false
+          sparse-checkout: .github/automation
+          path: policy
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ inputs.number }}
+        with:
+          script: |
+            await require('./policy/.github/automation/controller.cjs').main({github, context, core, mode:'cleanup'});
