@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bdstark/gma3-mcp
-          ref: a113dac9e2b0b4bb41381f6270a97bb3b2cd41c5
+          ref: 82ea67ec7f085e3091c9bd3b16b04cb850c49533
           persist-credentials: false
           sparse-checkout: .github/automation
           path: policy

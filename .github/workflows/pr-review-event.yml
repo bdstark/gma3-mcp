@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+name: PR review event
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+permissions: {}
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      # No checkout, secrets, artifacts or PR-controlled expressions. The trusted
+      # default-branch workflow_run listener independently fetches current PR state.
+      - run: 'true'
