@@ -742,8 +742,24 @@ local function bankId(owner, spec)
 end
 -- KB-29: the static executor of each code: the bank's codes in bank order on the executors in order; executors
 -- beyond the codes hold the placeholder. Sets x.code on the bank's executor entries (nil = placeholder).
-local function applyStaticMap(bank)
+-- positions (code -> executor number, from a kept record, review 11 of #75) restores the original layout instead,
+-- which a partially torn-down bank (fewer codes than it was provisioned with) needs.
+local function applyStaticMap(bank, positions)
   if not (bank.spec and bank.spec.executors and bank.spec.executors.static) then return true end
+  if positions then
+    bank.staticByCode = {}
+    local byIndex = {}
+    for _, x in ipairs(bank.executors) do byIndex[x.index] = x; x.code = nil end
+    for _, e in ipairs(bank.codes) do
+      if not e.placeholder then
+        local x = byIndex[positions[e.name]]
+        if not x or x.code then return nil, string.format("static position of %s (executor %s) is outside the bank or taken twice", e.name, tostring(positions[e.name])) end
+        x.code = e.name
+        bank.staticByCode[e.name] = x
+      end
+    end
+    return true
+  end
   local codes = {}
   for _, e in ipairs(bank.codes) do if not e.placeholder then codes[#codes + 1] = e.name end end
   if #codes > #bank.executors then
@@ -2576,7 +2592,8 @@ function Instance:teardownBank(now, opts)
         if okC and after and after.state == "empty" then cleared[#cleared + 1] = { executor = ref, held = cls.state == "assigned" and cls.code or BANK_PLACEHOLDER }; x.state, x.assigned, x.problem = "released", nil, nil
         else
           skipped[#skipped + 1] = { executor = ref, reason = okC and ("clear returned but the executor reads back " .. tostring(after and after.state)) or ("clear failed: " .. tostring(cerr)) }
-          keepFor(x, cls, ref)
+          -- A readable readback names what the executor holds now (review 11); otherwise what it held before.
+          keepFor(x, (after and after.state ~= "error") and after or cls, ref)
         end
       end
       if type(d.executors.clear) ~= "function" then keepFor(x, cls, ref) end
@@ -2680,7 +2697,20 @@ function Instance:adoptBank(record, now)
   -- cleanup only. A complete record without it predates the executor reservation and is refused.
   if not hasPlaceholder and not partial then return fail("bad-argument", "the record has no reservation placeholder entry; it predates the executor reservation and cannot be adopted (tear down from its own version, or delete the objects by hand)") end
   for i = 0, s.executors.count - 1 do bank.executors[#bank.executors + 1] = { page = s.executors.page, index = s.executors.first + i, state = "unverified" } end
-  local okMap, mapErr = applyStaticMap(bank)
+  -- A static record carries each code's executor (review 11 of #75); a partial one must, since packing its survivors
+  -- from the first executor would move them.
+  local positions
+  if s.executors.static then
+    local all, any = true, false
+    for _, c in ipairs(record.codes) do
+      if type(c) == "table" and not c.placeholder then
+        if type(c.executor) == "number" then positions = positions or {}; positions[c.name] = c.executor; any = true else all = false end
+      end
+    end
+    if any and not all then return fail("bad-argument", "the static record gives an executor for some codes but not all") end
+    if partial and not any then return fail("bad-argument", "the partial static record does not carry its codes' executors, so their original positions are unknown; tear it down from its own version or delete the objects by hand") end
+  end
+  local okMap, mapErr = applyStaticMap(bank, positions)
   if not okMap then return fail("bad-argument", "the record's " .. mapErr) end
   if not record.show or record.show == "" then return fail("bad-argument", "the record carries no show identity") end
   self._bank = bank
@@ -2695,7 +2725,11 @@ function Instance:_bankRecord()
   local bank = self._bank
   if not bank then return nil end
   local codes = {}
-  for _, e in ipairs(bank.codes) do codes[#codes + 1] = { name = e.name, value = e.value, index = e.index, qualified = e.qualified, note = e.note, placeholder = e.placeholder } end
+  for _, e in ipairs(bank.codes) do
+    local own = bank.staticByCode and bank.staticByCode[e.name]
+    codes[#codes + 1] = { name = e.name, value = e.value, index = e.index, qualified = e.qualified, note = e.note, placeholder = e.placeholder,
+                          executor = (not e.placeholder and own) and own.index or nil }  -- a static code's own executor (review 11 of #75)
+  end
   return { id = bank.id, owner = bank.owner, spec = { quickeys = bank.spec.quickeys, executors = bank.spec.executors, codes = bank.spec.codes, label = bank.spec.label },
            show = bank.show, createdAt = bank.createdAt, partial = bank.partial or nil, codes = codes, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries }
 end

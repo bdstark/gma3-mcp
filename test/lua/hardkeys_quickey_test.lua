@@ -835,8 +835,37 @@ do
   deps.executors.clear = origClear
   local left = 0; for _ in pairs(console.quickeys) do left = left + 1 end
   check("teardown keeps the Quickey on a static executor it could not clear", tp and tp.complete == false and console.quickeys[maQ] ~= nil and console.executors["1." .. maExec].quickey == maQ and left == 1, J({ complete = tp and tp.complete, left = left, skipped = tp and tp.skipped }))
+  -- #75 review 11: the partial record keeps every surviving code's own executor, so adoption does not pack MA1 onto
+  -- the first executor (where it would read as misassigned).
+  local dis2 = inst2:dispose(4.7)
+  local maRec; for _, c in ipairs(dis2.bank.codes) do if c.name == "MA1" then maRec = c end end
+  inst2 = newInst()
+  local a2, aerr2 = inst2:adoptBank(dis2.bank, 4.8)
+  local maX = inst2._bank.staticByCode and inst2._bank.staticByCode.MA1
+  local misassigned = 0; for _, x in ipairs(inst2._bank.executors) do if x.state == "misassigned" then misassigned = misassigned + 1 end end
+  check("a partial static record carries MA1's executor and adoption keeps it there", maRec and maRec.executor == maExec and a2 and maX and maX.index == maExec and misassigned == 0, J({ err = aerr2, rec = maRec, at = maX and maX.index, misassigned = misassigned }))
+  local stripped = {}; for k, v in pairs(dis2.bank) do stripped[k] = v end
+  stripped.codes = {}; for i, c in ipairs(dis2.bank.codes) do local cc = {}; for k, v in pairs(c) do cc[k] = v end; cc.executor = nil; stripped.codes[i] = cc end
+  local a3, aerr3 = newInst():adoptBank(stripped, 4.85)
+  check("...a partial static record without positions is refused, not packed", a3 == nil and aerr3.code == "bad-argument" and aerr3.message:find("original positions"), J(aerr3))
   local td = inst2:teardownBank(5, { authorized = true })
   check("teardown clears every static executor and deletes the Quickeys", td and td.complete and next(console.quickeys) == nil and console.executors["1.190"] == "empty" and console.executors["1." .. maExec] == "empty", J(td))
+  -- #75 review 11: a clear that returns while another bank Quickey turns up on the executor keeps THAT Quickey.
+  do
+    newConsole(); pageWithExecutors(1, 190, 20)
+    local i5 = newInst()
+    local b5 = assert(i5:provisionBank({ authorized = true, quickeys = { first = 900 }, executors = { page = 1, first = 190, count = 20, static = true }, codes = "qualified" }, 0))
+    local maQ5, stQ5 = i5:bankTarget("MA1", 0).index, i5:bankTarget("STORE", 0).index
+    local maE5; for i, c in ipairs(b5.codes) do if c.name == "MA1" then maE5 = 189 + i end end
+    local origClear = deps.executors.clear
+    deps.executors.clear = function(page, index)
+      if page == 1 and index == maE5 then console.executors["1." .. index] = { quickey = stQ5 }; return true end  -- another writer
+      return origClear(page, index)
+    end
+    local t5 = i5:teardownBank(1, { authorized = true })
+    deps.executors.clear = origClear
+    check("teardown keeps the Quickey the executor holds after the clear, not the one it held before", t5 and t5.complete == false and console.quickeys[stQ5] ~= nil and console.quickeys[maQ5] == nil and console.executors["1." .. maE5].quickey == stQ5, J({ complete = t5 and t5.complete, skipped = t5 and t5.skipped }))
+  end
   -- #75 review 10: an executor press that raised may have acted, so it counts as a press for the frame gates.
   do
     local inst3 = fresh()
