@@ -4234,12 +4234,14 @@ do
   local XML_HEADER_READ = 16 * 1024
   local headerCache = {}
 
+  -- The library's folder; nil and a reason when GetPath fails. No path type at all means the console has no such
+  -- library (nil, no reason).
   local function sourcePath(src)
     local pt = Enums.PathType and Enums.PathType[src.path]
     if pt == nil then return nil end
     local ok, p = pcall(GetPath, pt)
     if ok and type(p) == "string" and p ~= "" then return p end
-    return nil
+    return nil, "GetPath(" .. src.path .. ") " .. (ok and "returned no path" or ("failed: " .. tostring(p)))
   end
 
   -- Named and numeric references in one pass over the original text, so a reference's output is never decoded again
@@ -4272,9 +4274,22 @@ do
     -- The markup of an XML text: comments, CDATA and processing instructions removed, and the text cut at one left
     -- open (the header read stops at 16 KB), so an element inside them is never taken for a real one (review of PR #84).
     local function markupOnly(text)
-      text = text:gsub("<!%-%-.-%-%->", ""):gsub("<!%[CDATA%[.-%]%]>", ""):gsub("<%?.-%?>", "")
-      local open = text:find("<!--", 1, true) or text:find("<![CDATA[", 1, true) or text:find("<?", 1, true)
-      return open and text:sub(1, open - 1) or text
+      -- In document order, so the delimiters inside a skipped section stay inert (a "<!--" inside CDATA is text).
+      local sections = { { "<!--", "-->" }, { "<![CDATA[", "]]>" }, { "<?", "?>" } }
+      local out, pos = {}, 1
+      while true do
+        local at, sec
+        for _, d in ipairs(sections) do
+          local found = text:find(d[1], pos, true)
+          if found and (not at or found < at) then at, sec = found, d end
+        end
+        if not at then out[#out + 1] = text:sub(pos); break end
+        out[#out + 1] = text:sub(pos, at - 1)
+        local close = text:find(sec[2], at + #sec[1], true)
+        if not close then break end
+        pos = close + #sec[2]
+      end
+      return table.concat(out)
     end
     -- The attributes of the start tag whose name ends at pos: either quote, a '>' inside a value is fine.
     local function tagAttrs(text, pos)
@@ -4317,16 +4332,19 @@ do
 
   local function lower(v) return v and tostring(v):lower() or nil end
 
-  -- Every library file of the requested sources, without reading their contents.
+  -- Every library file of the requested sources, without reading their contents, and the scans that failed (a
+  -- library whose folder or listing could not be read; review of PR #84: a write must not take it for empty).
   local function listLibrary(wanted)
-    local entries, paths = {}, {}
+    local entries, paths, failed = {}, {}, {}
     for _, src in ipairs(LIB_SOURCES) do
       if wanted == nil or wanted[src.id] then
-        local base = sourcePath(src)
+        local base, why = sourcePath(src)
         paths[src.id] = base or false
+        if why then failed[#failed + 1] = src.id .. ": " .. why end
         if base then
           for _, ext in ipairs(src.exts) do
             local ok, list = pcall(DirList, base, "*." .. ext)
+            if not (ok and type(list) == "table") then failed[#failed + 1] = src.id .. " *." .. ext .. ": DirList " .. (ok and ("returned a " .. type(list)) or ("failed: " .. tostring(list))) end
             if ok and type(list) == "table" then
               for _, e in ipairs(list) do
                 local name = e.name
@@ -4342,7 +4360,7 @@ do
       end
     end
     table.sort(entries, function(a, b) if a.source ~= b.source then return a.source < b.source end return a.file:lower() < b.file:lower() end)
-    return entries, paths
+    return entries, paths, failed
   end
 
   -- Show types matching a library entry by manufacturer and name, ignoring case (a .pxml file name carries
@@ -4526,7 +4544,9 @@ do
   -- one file, and Import Library could not tell the entries apart (review of PR #84). Refused on every platform.
   local function sameName(file)
     local out, want = {}, file:lower()
-    for _, e in ipairs((listLibrary(nil))) do
+    local all, _, failed = listLibrary(nil)
+    if #failed > 0 then raise({ code = "scan-incomplete", message = "the fixture-type libraries could not all be read (" .. table.concat(failed, "; ") .. "), so a file of the same name cannot be ruled out; nothing was written", failed = failed }) end
+    for _, e in ipairs(all) do
       if e.file:lower() == want then out[#out + 1] = { source = e.source, file = e.file } end
     end
     return out

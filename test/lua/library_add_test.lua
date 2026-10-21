@@ -268,6 +268,25 @@ os.remove(USER .. "/Acme@Refs.xml")
 check("a FixtureType inside a processing instruction is not the header (review of PR #84)", r.ok and r.result.entries[1] and r.result.entries[1].name == "Real" and r.result.entries[1].manufacturer == "Acme", J(r))
 os.remove(USER .. "/Acme@Pi.xml")
 
+upload("Acme@Order.xml", '<GMA3><![CDATA[<!--]]><FixtureType Name="Spot" Manufacturer="Acme"/><!-- end --></GMA3>')
+r = request("patch.library", { file = "Acme@Order.xml" })
+check("a comment opener inside CDATA is text: the header after it is read (review of PR #84)", r.ok and r.result.entries[1] and r.result.entries[1].name == "Spot", J(r))
+os.remove(USER .. "/Acme@Order.xml")
+
+-- Review of PR #84: a library that cannot be listed is not taken for empty: nothing is written.
+local realDirList = DirList
+DirList = function(path, filter) if path == LIBPATHS[3] then error("disk error") end return realDirList(path, filter) end
+r = add({ file = "Acme@Blind.gdtf", offset = 0, data = b64("PK"), total = 2, crc32 = crc32("PK"), final = true })
+local stat = request("patch.libraryStat", { file = "Acme@Blind.gdtf" })
+DirList = realDirList
+check("an unreadable library refuses the upload", r.ok == false and r.code == "scan-incomplete" and tostring(r.error):find("grandma2") and slurp(USER .. "/Acme@Blind.gdtf") == nil and slurp(USER .. "/Acme@Blind.gdtf" .. PART) == nil, J(r))
+check("and libraryStat says so", stat.ok == false and stat.code == "scan-incomplete", J(stat))
+local realGetPath = GetPath
+GetPath = function(pt) if pt == 5 then error("no path") end return realGetPath(pt) end
+r = add({ file = "Acme@Blind.gdtf", offset = 0, data = b64("PK"), total = 2, crc32 = crc32("PK"), final = true })
+GetPath = realGetPath
+check("a library whose folder cannot be read refuses it too", r.ok == false and r.code == "scan-incomplete" and tostring(r.error):find("worldserver"), J(r))
+
 -- Review of PR #84: a part file no upload knows (left by a bridge restart) is removed when an upload starts; a part
 -- file of a running upload and a kept ".gma3mcp-old" file are not.
 put(USER .. "/Acme@Orphan.gdtf.aaaaaaaaaaaaaaaa.gma3mcp-part", "orphan")
