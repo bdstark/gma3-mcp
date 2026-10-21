@@ -9,7 +9,7 @@
 
 /** Setup and show tasks, each with the tools that do it (the first one is usually the one to start with). */
 export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] }> = [
-  { task: "find and import fixture types", tools: ["gma3_patch_library", "gma3_patch_import", "gma3_patch_types", "gma3_patch_remove_type"] },
+  { task: "find and import fixture types", tools: ["gma3_patch_library", "gma3_patch_import", "gma3_patch_library_add", "gma3_patch_types", "gma3_patch_remove_type"] },
   { task: "patch fixtures (add, readdress, rename, remove)", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list"] },
   { task: "a fixture type's modes, cells, channels and size", tools: ["gma3_patch_type_structure"] },
   { task: "place fixtures in 3D (position, rotation, mirroring)", tools: ["gma3_place_fixtures", "gma3_fixture_positions"] },
@@ -72,7 +72,7 @@ export function serverInstructions(staleWarning?: string): string {
     map,
     BATCH_NOTE,
     OBSERVE_NOTE,
-    "Fallbacks, only for what no structured tool covers: gma3_command (one command line; gma3_help has the syntax) and gma3_lua (off by default on the console; short scripts only). gma3_status shows the bridge, its version and the build.",
+    "Fallbacks, only for what no structured tool covers: gma3_command (one command line; gma3_help has the syntax) and gma3_lua (off by default; short scripts only). gma3_status shows the bridge version and the build.",
   ].join("\n");
 }
 

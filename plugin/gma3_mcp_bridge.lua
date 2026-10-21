@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.37.0"
+local VERSION      = "0.38.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4383,6 +4383,164 @@ do
     for _, e in ipairs(page.items) do items[#items + 1] = entryOut(e, live, true) end
     return { total = page.total, offset = page.offset, count = page.count, entries = emptyArray(items), paths = paths, scanned = #all }
   end
+
+  -- SU-22: put a fixture-type file into the user library (bridge 0.38.0; SETUP.md SU-22). The bytes arrive base64
+  -- in chunks, appended to a part file next to the target ("<file>.gma3mcp-part": no library extension, so it is
+  -- never listed or imported); the last chunk checks size and CRC-32 and renames the part file into place.
+  -- In a function of its own: the main chunk is at Lua's local-variable limit.
+  ;(function()
+  local LIB_ADD_MAX_BYTES = 8 * 1024 * 1024
+  local LIB_ADD_MAX_CHUNK = 256 * 1024
+  local PART_SUFFIX = ".gma3mcp-part"
+
+  local B64 = {}
+  do
+    local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    for i = 1, 64 do B64[alphabet:byte(i)] = i - 1 end
+  end
+  -- Strict: whole groups of four, padding only at the end. nil on anything else.
+  local function base64Decode(s)
+    if #s % 4 ~= 0 then return nil end
+    local out, n = {}, #s
+    for i = 1, n, 4 do
+      local a, b, c, d = s:byte(i, i + 3)
+      local va, vb = B64[a], B64[b]
+      if va == nil or vb == nil then return nil end
+      local last = i + 3 == n
+      local vc = B64[c]
+      local vd = B64[d]
+      if c == 61 and d == 61 and last then
+        out[#out + 1] = string.char(((va << 2) | (vb >> 4)) & 0xff)
+      elseif d == 61 and last and vc ~= nil then
+        out[#out + 1] = string.char(((va << 2) | (vb >> 4)) & 0xff, ((vb << 4) | (vc >> 2)) & 0xff)
+      elseif vc ~= nil and vd ~= nil then
+        out[#out + 1] = string.char(((va << 2) | (vb >> 4)) & 0xff, ((vb << 4) | (vc >> 2)) & 0xff, ((vc << 6) | vd) & 0xff)
+      else
+        return nil
+      end
+    end
+    return table.concat(out)
+  end
+
+  local CRC_TABLE = {}
+  for i = 0, 255 do
+    local c = i
+    for _ = 1, 8 do c = (c & 1) == 1 and (0xEDB88320 ~ (c >> 1)) or (c >> 1) end
+    CRC_TABLE[i] = c
+  end
+  -- The file's size and CRC-32 (the zlib / zip polynomial), as an 8-digit lower-case hex string; read in pieces.
+  local function fileCrc(path)
+    local f = io.open(path, "rb")
+    if not f then return nil end
+    local crc, size = 0xffffffff, 0
+    while true do
+      local block = f:read(64 * 1024)
+      if not block then break end
+      size = size + #block
+      for i = 1, #block do crc = CRC_TABLE[(crc ~ block:byte(i)) & 0xff] ~ (crc >> 8) end
+    end
+    f:close()
+    return size, string.format("%08x", crc ~ 0xffffffff)
+  end
+
+  local function fileSize(path)
+    local f = io.open(path, "rb")
+    if not f then return nil end
+    local n = f:seek("end")
+    f:close()
+    return n
+  end
+
+  -- manufacturer@model[@revision].gdtf|.xml: what Import Library and parseFileName expect. No path separators,
+  -- quotes or control characters (the name goes into a path and into Import Library "<file>").
+  local function libraryFileName(file)
+    if type(file) ~= "string" or file == "" then raise("[bad-args] file is required: manufacturer@model[@revision].gdtf or .xml") end
+    if #file > 200 then raise("[bad-name] the file name is longer than 200 characters") end
+    if file:find("[/\\\"%c]") or file:sub(1, 1) == "." or file:find("..", 1, true) then raise("[bad-name] the file name must not contain / \\ \" .. or a control character, nor start with a dot") end
+    local stem, ext = file:match("^(.+)%.(%w+)$")
+    ext = ext and ext:lower()
+    if ext ~= "gdtf" and ext ~= "xml" then raise("[bad-name] the file name must end in .gdtf or .xml") end
+    local parts = {}
+    for part in (stem .. "@"):gmatch("(.-)@") do parts[#parts + 1] = part end
+    if #parts < 2 or #parts > 3 then raise("[bad-name] the file name must be manufacturer@model[@revision]." .. ext) end
+    for _, part in ipairs(parts) do
+      if part == "" or part ~= part:match("^%s*(.-)%s*$") then raise("[bad-name] manufacturer, model and revision must be non-empty, without leading or trailing spaces") end
+    end
+    return ext
+  end
+
+  local function userLibrary()
+    for _, src in ipairs(LIB_SOURCES) do
+      if src.id == "user" then
+        local base = sourcePath(src)
+        if not base then raise("[no-library] the user fixture library path (PathType UserFixtures) cannot be read") end
+        return base
+      end
+    end
+  end
+
+  -- args: { file }. Read-only: the user-library file's size and CRC-32, and every library that lists the name.
+  ops["patch.libraryStat"] = function(args)
+    libraryFileName(args.file)
+    local base = userLibrary()
+    local path = base .. "/" .. args.file
+    local size, crc = fileCrc(path)
+    local listed = {}
+    for _, e in ipairs((listLibrary(nil))) do if e.file == args.file then listed[#listed + 1] = e.source end end
+    return { file = args.file, path = path, exists = size ~= nil, size = size, crc32 = crc, listedIn = emptyArray(listed), maxBytes = LIB_ADD_MAX_BYTES }
+  end
+
+  -- args: { file, offset, data (base64), total, crc32, replace?, final?, abort? }. Chunk at offset 0 starts a part file
+  -- (refused when the file exists and replace is not true); every chunk must start where the part file ends. The final
+  -- chunk checks total and crc32 against the part file, then moves it into place. abort removes the part file.
+  ops["patch.libraryAdd"] = function(args)
+    local ext = libraryFileName(args.file)
+    local base = userLibrary()
+    local path = base .. "/" .. args.file
+    local part = path .. PART_SUFFIX
+    if args.abort == true then
+      local had = fileSize(part) ~= nil
+      if had then os.remove(part) end
+      return { aborted = true, removed = had, partLeft = fileSize(part) ~= nil }
+    end
+    local total = integerArg(args.total, "total", 1, LIB_ADD_MAX_BYTES)
+    local offset = integerArg(args.offset, "offset", 0, LIB_ADD_MAX_BYTES)
+    if type(args.crc32) ~= "string" or not args.crc32:match("^%x%x%x%x%x%x%x%x$") then raise("[bad-args] crc32 must be 8 hex digits") end
+    if type(args.data) ~= "string" then raise("[bad-args] data (base64) is required") end
+    if #args.data > LIB_ADD_MAX_CHUNK * 4 // 3 + 4 then raise("[bad-args] a chunk is at most " .. LIB_ADD_MAX_CHUNK .. " bytes") end
+    local bytes = base64Decode(args.data)
+    if bytes == nil then raise("[bad-args] data is not valid base64") end
+    local function fail(err) os.remove(part); raise(err) end
+    local exists = fileSize(path) ~= nil
+    if exists and args.replace ~= true then fail("[exists] " .. args.file .. " is already in the user library; pass replace to overwrite it") end
+    for _, e in ipairs((listLibrary(nil))) do
+      if e.file == args.file and e.source ~= "user" then fail({ code = "ambiguous-file", message = args.file .. " is already in the " .. e.source .. " library; Import Library could not tell the two apart", sources = { e.source } }) end
+    end
+    if offset == 0 then
+      local f, err = io.open(part, "wb")
+      if not f then raise("[write-failed] " .. tostring(err)) end
+      f:close()
+    elseif fileSize(part) ~= offset then
+      fail("[bad-offset] the part file has " .. tostring(fileSize(part)) .. " bytes, not " .. offset .. "; start again at offset 0")
+    end
+    if offset + #bytes > total then fail("[too-long] the chunks exceed total (" .. total .. " bytes)") end
+    local f, err = io.open(part, "ab")
+    if not f then fail("[write-failed] " .. tostring(err)) end
+    local ok, werr = f:write(bytes)
+    f:close()
+    if not ok then fail("[write-failed] " .. tostring(werr)) end
+    local written = offset + #bytes
+    if args.final ~= true then return { file = args.file, received = written, total = total } end
+    local size, crc = fileCrc(part)
+    if size ~= total then fail("[size-mismatch] the part file has " .. tostring(size) .. " bytes, not " .. total) end
+    if crc ~= args.crc32:lower() then fail("[crc-mismatch] the part file's CRC-32 is " .. tostring(crc) .. ", not " .. args.crc32:lower()) end
+    if exists then os.remove(path) end
+    local moved, merr = os.rename(part, path)
+    if not moved then fail("[write-failed] could not move the part file into place: " .. tostring(merr)) end
+    local finalSize, finalCrc = fileCrc(path)
+    return { file = args.file, path = path, format = ext, size = finalSize, crc32 = finalCrc, replaced = exists }
+  end
+  end)()
 
   local function typeRow(t)
     local modes = {}

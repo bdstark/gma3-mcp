@@ -45,6 +45,7 @@ import {
 } from "../results.js";
 import { Validator, ValidationError, describe, finiteNumber, objectName } from "../validate.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
+import { registerPatchLibraryAddTool } from "./patchlibrary.js";
 
 // ---------------------------------------------------------------------------
 // Shapes the bridge returns
@@ -1084,7 +1085,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
         "Every word of query must occur in the manufacturer, model or file name (case-insensitive), e.g. \"chauvet festoon\" or \"mega hex\". Each entry has the source, the file name to pass to gma3_patch_import, manufacturer and model, " +
         "the mode names when the file is readable (grandMA3 and user .xml; grandMA2 .pxml files are encrypted, so their modes are known only after the import: gma3_patch_types then lists them), " +
         "verified (false for user-library and WorldServer files, whose import is not verified on the console yet) and inShow: show types already matching it by manufacturer and name (importing again would add a duplicate). " +
-        "Scenery (set@ files) is left out unless include_sets. Paginated (limit default 50, max 500). Needs bridge 0.26.0.",
+        "Scenery (set@ files) is left out unless include_sets. Paginated (limit default 50, max 500). gma3_patch_library_add puts a .gdtf or .xml file into the user library. Needs bridge 0.26.0.",
       inputSchema: {
         query: z.string().optional().describe("Words to match, e.g. \"oppsk wall washer\". Omit to list everything."),
         sources: z.array(z.enum(LIBRARY_SOURCES)).optional().describe("Libraries to search (default all)."),
@@ -1142,4 +1143,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
     },
     async (args) => operation(() => patchRemoveType(ctx, args as RemoveTypeArgs)),
   );
+
+  // SU-22: a file into the user library, for gma3_patch_import (src/tools/patchlibrary.ts).
+  registerPatchLibraryAddTool(server, ctx);
 };
