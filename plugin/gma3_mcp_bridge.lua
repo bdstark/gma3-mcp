@@ -4490,15 +4490,32 @@ do
     end
   end
 
+  -- Library entries whose name equals this one ignoring case: on macOS and Windows names that differ only in case are
+  -- one file, and Import Library could not tell the entries apart (review of PR #84). Refused on every platform.
+  local function sameName(file)
+    local out, want = {}, file:lower()
+    for _, e in ipairs((listLibrary(nil))) do
+      if e.file:lower() == want then out[#out + 1] = { source = e.source, file = e.file } end
+    end
+    return out
+  end
+  -- The first entry another library has, or a user-library file differing only in case: what the upload collides with.
+  local function otherLibrary(file)
+    for _, m in ipairs(sameName(file)) do
+      if m.source ~= "user" or m.file ~= file then return m end
+    end
+  end
+
   -- args: { file }. Read-only: the user-library file's size and CRC-32, and every library that lists the name.
   ops["patch.libraryStat"] = function(args)
     libraryFileName(args.file)
     local base = userLibrary()
     local path = base .. "/" .. args.file
     local size, crc = fileCrc(path)
-    local listed = {}
-    for _, e in ipairs((listLibrary(nil))) do if e.file == args.file then listed[#listed + 1] = e.source end end
-    return { file = args.file, path = path, exists = size ~= nil, size = size, crc32 = crc, listedIn = emptyArray(listed), maxBytes = LIB_ADD_MAX_BYTES }
+    local listed, matches = {}, sameName(args.file)
+    for _, m in ipairs(matches) do if m.file == args.file then listed[#listed + 1] = m.source end end
+    -- listedIn: the libraries with exactly this name; matches: every entry equal ignoring case.
+    return { file = args.file, path = path, exists = size ~= nil, size = size, crc32 = crc, listedIn = emptyArray(listed), matches = emptyArray(matches), maxBytes = LIB_ADD_MAX_BYTES }
   end
 
   -- Uploads by id (the client's, 16 hex digits): each has its own part file "<file>.<id>.gma3mcp-part", so two clients
@@ -4513,12 +4530,6 @@ do
     end
   end
 
-  -- A library entry of another source with this name (Import Library could not tell the two apart).
-  local function otherLibrary(file)
-    for _, e in ipairs((listLibrary(nil))) do
-      if e.file == file and e.source ~= "user" then return e.source end
-    end
-  end
 
   -- args: { file, upload (id), offset, data (base64), total, crc32, replace?, final?, abort? }. Chunk at offset 0 starts
   -- the upload's part file (refused when the file exists and replace is not true, or another library has the name);
@@ -4551,7 +4562,9 @@ do
     -- The library scan (about 11 500 grandMA2 entries) runs at the start and before the move only, not per chunk.
     if offset == 0 or args.final == true then
       local other = otherLibrary(args.file)
-      if other then fail({ code = "ambiguous-file", message = args.file .. " is already in the " .. other .. " library; Import Library could not tell the two apart", sources = { other } }) end
+      if other then
+        fail({ code = "ambiguous-file", message = (other.file == args.file and (args.file .. " is already in the " .. other.source .. " library") or (args.file .. " differs only in case from " .. other.file .. " in the " .. other.source .. " library (one file on macOS and Windows)")) .. "; Import Library could not tell the two apart", sources = { other.source }, collidesWith = other.file })
+      end
     end
     if offset == 0 then
       dropIdleUploads(now)

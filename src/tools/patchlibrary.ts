@@ -89,7 +89,8 @@ export function parseXml(text: string): XmlElement[] {
     let bad = false;
     const r = v.replace(/&([^;&<]{0,10});?/g, (m, body: string) => {
       if (!m.endsWith(";")) return ((bad = true), m);
-      if (body in NAMED_ENTITIES) return NAMED_ENTITIES[body];
+      // Own properties only: "toString" or "__proto__" is not an XML entity (review of PR #84).
+      if (Object.hasOwn(NAMED_ENTITIES, body)) return NAMED_ENTITIES[body];
       const n = /^#\d+$/.test(body) ? Number(body.slice(1)) : /^#x[0-9A-Fa-f]+$/.test(body) ? parseInt(body.slice(2), 16) : NaN;
       if (!Number.isInteger(n) || n < 1 || n > 0x10ffff) return ((bad = true), m);
       return String.fromCodePoint(n);
@@ -132,7 +133,7 @@ export function parseXml(text: string): XmlElement[] {
       const m = START_TAG.exec(s) ?? fail("a malformed tag");
       const name = m[1];
       i = START_TAG.lastIndex;
-      const attrs: Record<string, string> = {};
+      const attrs: Record<string, string> = Object.create(null);
       for (;;) {
         TAG_CLOSE.lastIndex = i;
         const c = TAG_CLOSE.exec(s);
@@ -231,6 +232,8 @@ interface Stat {
   size?: number;
   crc32?: string;
   listedIn: string[];
+  /** Every library entry equal to the name ignoring case (bridge 0.38.0). */
+  matches?: Array<{ source: string; file: string }>;
   maxBytes?: number;
 }
 
@@ -313,6 +316,11 @@ export async function patchLibraryAdd(ctx: ToolContext, raw: AddArgs): Promise<O
     const elsewhere = before.listedIn.filter((s) => s !== "user");
     if (elsewhere.length) {
       return stop(asRead({ name: "check_library", status: "failed", op: "patch.libraryStat", error: `${file} is already in the ${elsewhere.join(", ")} library; Import Library names the file only and could not tell the two apart. Choose another file name (e.g. another revision)`, detail: before }));
+    }
+    // A name differing only in case is the same file on macOS and Windows: refused everywhere (review of PR #84).
+    const caseOnly = (before.matches ?? []).filter((m) => m.file !== file);
+    if (caseOnly.length) {
+      return stop(asRead({ name: "check_library", status: "failed", op: "patch.libraryStat", error: `${file} differs only in case from ${caseOnly.map((m) => `${m.file} (${m.source})`).join(", ")}: one file on macOS and Windows, and Import Library could not tell them apart. Use that exact name (with replace: true for a user-library file) or another name`, detail: before }));
     }
     if (before.exists && raw.replace !== true) {
       const same = before.size === bytes.length && before.crc32 === sum;

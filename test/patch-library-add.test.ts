@@ -85,7 +85,12 @@ class Library {
       const file = String(a.file);
       const b = this.user.get(file);
       const listedIn = [...(b ? ["user"] : []), ...(this.other[file] ? [this.other[file]] : [])];
-      return { file, path: `/lib/${file}`, exists: Boolean(b), ...(b ? { size: b.length, crc32: hex(b) } : {}), listedIn, maxBytes: 8 * 1024 * 1024 };
+      const lower = file.toLowerCase();
+      const matches = [
+        ...[...this.user.keys()].filter((k) => k.toLowerCase() === lower).map((k) => ({ source: "user", file: k })),
+        ...Object.entries(this.other).filter(([k]) => k.toLowerCase() === lower).map(([k, source]) => ({ source, file: k })),
+      ];
+      return { file, path: `/lib/${file}`, exists: Boolean(b), ...(b ? { size: b.length, crc32: hex(b) } : {}), listedIn, matches, maxBytes: 8 * 1024 * 1024 };
     });
     h.fake.on("patch.library", (a) => {
       const file = String(a.file);
@@ -172,6 +177,10 @@ test("checkContent parses the XML: comments, quotes, entities and well-formednes
     ['<GMA3><FixtureType Name=Spot/></GMA3>', /malformed attribute/],
     ['<GMA3><FixtureType Name="a & b"/></GMA3>', /bare &/],
     ['<GMA3><FixtureType Name="&ent;"/></GMA3>', /undefined entity/],
+    ['<GMA3><FixtureType Name="&toString;"/></GMA3>', /undefined entity/],
+    ['<GMA3><FixtureType Name="&__proto__;"/></GMA3>', /undefined entity/],
+    ['<GMA3><FixtureType Name="&constructor;"/></GMA3>', /undefined entity/],
+    ['<GMA3><FixtureType __proto__="x" __proto__="y" Name="S"/></GMA3>', /twice/],
     ['<!DOCTYPE GMA3 [<!ENTITY x SYSTEM "file:///etc/passwd">]><GMA3><FixtureType Name="&x;"/></GMA3>', /DOCTYPE/],
     ['<GMA3><FixtureType Name="Spot"/></GMA3><GMA3/>', /second root/],
     ['<GMA3><Other><FixtureType Name="Spot"/></Other></GMA3>', /no FixtureType element under <GMA3>/],
@@ -250,6 +259,10 @@ test("gma3_patch_library_add: refused before anything is written", async () => {
     assert.match(r.result.summary, /larger than 8388608 bytes/);
     r = await h.callJson("gma3_patch_library_add", { file_name: "acme@spot.xml", content_base64: Buffer.from('<?xml version="1.0"?><GMA3><FixtureType Name="Spot" Manufacturer="Acme"></FixtureType></GMA3>').toString("base64") });
     assert.match(r.result.steps.at(-1).error, /already in the grandma3 library/);
+    r = await h.callJson("gma3_patch_library_add", { file_name: "Acme@Spot.xml", content_base64: Buffer.from('<?xml version="1.0"?><GMA3><FixtureType Name="Spot" Manufacturer="Acme"></FixtureType></GMA3>').toString("base64") });
+    assert.match(r.result.steps.at(-1).error, /differs only in case from acme@spot\.xml \(grandma3\)/);
+    r = await h.callJson("gma3_patch_library_add", { file_name: "Acme@Inherited.xml", content_base64: Buffer.from('<GMA3><FixtureType Name="&toString;" Manufacturer="Acme"/></GMA3>').toString("base64") });
+    assert.match(r.result.steps[0].error, /undefined entity/);
     assert.equal(h.fake.requests.filter((x) => x.op === "patch.libraryAdd").length, 0);
     assert.equal(lib.user.size, 0);
   } finally {
