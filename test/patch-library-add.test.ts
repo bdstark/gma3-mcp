@@ -96,27 +96,29 @@ class Library {
     });
     h.fake.on("patch.libraryAdd", (a) => {
       const file = String(a.file);
+      assert.match(String(a.upload), /^[0-9a-f]{16}$/);
+      const key = `${file}.${a.upload}`;
       if (a.abort === true) {
-        const had = this.parts.delete(file);
+        const had = this.parts.delete(key);
         return { aborted: true, removed: had, partLeft: false };
       }
       if (this.user.has(file) && a.replace !== true) throw new BridgeReplyError("[exists] already there", "exists");
       const off = Number(a.offset);
       const piece = Buffer.from(String(a.data), "base64");
-      const part = off === 0 ? Buffer.alloc(0) : this.parts.get(file);
+      const part = off === 0 ? Buffer.alloc(0) : this.parts.get(key);
       if (!part || part.length !== off) {
-        this.parts.delete(file);
+        this.parts.delete(key);
         throw new BridgeReplyError("[bad-offset] wrong offset", "bad-offset");
       }
       const next = Buffer.concat([part, piece]);
-      this.parts.set(file, next);
+      this.parts.set(key, next);
       if (a.final !== true) return { file, received: next.length, total: a.total };
       if (next.length !== a.total || hex(next) !== a.crc32) {
-        this.parts.delete(file);
+        this.parts.delete(key);
         throw new BridgeReplyError("[crc-mismatch] mismatch", "crc-mismatch");
       }
       const replaced = this.user.has(file);
-      this.parts.delete(file);
+      this.parts.delete(key);
       this.user.set(file, this.corrupt ? Buffer.concat([next, Buffer.from("x")]) : next);
       return { file, path: `/lib/${file}`, format: "gdtf", size: next.length, crc32: hex(next), replaced };
     });
@@ -197,6 +199,7 @@ test("gma3_patch_library_add: a GDTF in three chunks, moved into place and read 
     assert.ok(adds.length >= 3);
     assert.deepEqual(adds.map((r) => r.args.offset), adds.map((_, i) => i * LIBRARY_ADD_CHUNK));
     assert.deepEqual(adds.map((r) => r.args.final), adds.map((_, i) => i === adds.length - 1));
+    assert.equal(new Set(adds.map((r) => r.args.upload)).size, 1, "one upload id for every chunk");
     assert.ok(adds.every((r) => String(r.args.data).length <= (LIBRARY_ADD_CHUNK / 3) * 4));
     assert.equal(result.fixtureType.name, "180W Beam");
     assert.deepEqual(result.fixtureType.modes, ["15 Channel"]);

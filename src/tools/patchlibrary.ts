@@ -8,9 +8,10 @@
  *                            (size, CRC-32, listed under source "user")
  *
  * Bridge ops patch.libraryStat / patch.libraryAdd (0.38.0). The bytes travel over the bridge, so the client need not
- * be on the console's machine. A file is written next to its target as "<file>.gma3mcp-part" and renamed into place
+ * be on the console's machine. A file is written next to its target as "<file>.<upload id>.gma3mcp-part" and renamed into place
  * only after its size and CRC-32 match, so the library never holds a half-written file.
  */
+import { randomBytes } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { crc32, inflateRawSync } from "node:zlib";
@@ -320,11 +321,13 @@ export async function patchLibraryAdd(ctx: ToolContext, raw: AddArgs): Promise<O
     steps.push(asRead({ name: "check_library", status: "succeeded", op: "patch.libraryStat", detail: before }));
 
     const chunks = Math.ceil(bytes.length / LIBRARY_ADD_CHUNK);
+    // The bridge keeps each upload's bytes apart by this id, so another client sending the same name cannot mix in.
+    const upload = randomBytes(8).toString("hex");
     let added: { path?: string; size?: number; crc32?: string; replaced?: boolean } | undefined;
     for (let i = 0; i < chunks; i++) {
       const piece = bytes.subarray(i * LIBRARY_ADD_CHUNK, (i + 1) * LIBRARY_ADD_CHUNK);
       try {
-        const res = (await ctx.bridge.request("patch.libraryAdd", { file, offset: i * LIBRARY_ADD_CHUNK, data: piece.toString("base64"), total: bytes.length, crc32: sum, replace: raw.replace === true, final: i === chunks - 1 }, t)) as typeof added;
+        const res = (await ctx.bridge.request("patch.libraryAdd", { file, upload, offset: i * LIBRARY_ADD_CHUNK, data: piece.toString("base64"), total: bytes.length, crc32: sum, replace: raw.replace === true, final: i === chunks - 1 }, t)) as typeof added;
         if (i === chunks - 1) added = res;
       } catch (err) {
         const step = stepFromError("write", err, { op: "patch.libraryAdd", detail: { chunk: i + 1, chunks } });
@@ -332,7 +335,7 @@ export async function patchLibraryAdd(ctx: ToolContext, raw: AddArgs): Promise<O
         // The bridge removes its part file on a refusal; after a lost reply it is removed here, best effort.
         let partLeft: boolean | undefined;
         try {
-          partLeft = ((await ctx.bridge.request("patch.libraryAdd", { file, abort: true }, t)) as { partLeft?: boolean }).partLeft;
+          partLeft = ((await ctx.bridge.request("patch.libraryAdd", { file, upload, abort: true }, t)) as { partLeft?: boolean }).partLeft;
         } catch {
           partLeft = undefined;
         }

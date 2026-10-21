@@ -4396,8 +4396,8 @@ do
   end
 
   -- SU-22: put a fixture-type file into the user library (bridge 0.38.0; SETUP.md SU-22). The bytes arrive base64
-  -- in chunks, appended to a part file next to the target ("<file>.gma3mcp-part": no library extension, so it is
-  -- never listed or imported); the last chunk checks size and CRC-32 and renames the part file into place.
+  -- in chunks, appended to a part file next to the target ("<file>.<upload id>.gma3mcp-part": no library extension, so
+  -- it is never listed or imported); the last chunk checks size and CRC-32 and renames the part file into place.
   -- In a function of its own: the main chunk is at Lua's local-variable limit.
   ;(function()
   local LIB_ADD_MAX_BYTES = 8 * 1024 * 1024
@@ -4501,17 +4501,41 @@ do
     return { file = args.file, path = path, exists = size ~= nil, size = size, crc32 = crc, listedIn = emptyArray(listed), maxBytes = LIB_ADD_MAX_BYTES }
   end
 
-  -- args: { file, offset, data (base64), total, crc32, replace?, final?, abort? }. Chunk at offset 0 starts a part file
-  -- (refused when the file exists and replace is not true); every chunk must start where the part file ends. The final
-  -- chunk checks total and crc32 against the part file, then moves it into place. abort removes the part file.
+  -- Uploads by id (the client's, 16 hex digits): each has its own part file "<file>.<id>.gma3mcp-part", so two clients
+  -- sending the same name never touch each other's bytes (review of PR #84); the first to finish wins and the other is
+  -- refused as [exists] unless it replaces. An upload idle for UPLOAD_IDLE_S loses its part file when another starts.
+  local UPLOAD_IDLE_S = 600
+  local uploads = {}
+
+  local function dropIdleUploads(now)
+    for id, u in pairs(uploads) do
+      if now - u.at > UPLOAD_IDLE_S then os.remove(u.part); uploads[id] = nil end
+    end
+  end
+
+  -- A library entry of another source with this name (Import Library could not tell the two apart).
+  local function otherLibrary(file)
+    for _, e in ipairs((listLibrary(nil))) do
+      if e.file == file and e.source ~= "user" then return e.source end
+    end
+  end
+
+  -- args: { file, upload (id), offset, data (base64), total, crc32, replace?, final?, abort? }. Chunk at offset 0 starts
+  -- the upload's part file (refused when the file exists and replace is not true, or another library has the name);
+  -- every chunk must start where the part file ends. The final chunk checks total and crc32 against the part file and
+  -- the libraries again, then moves it into place. abort removes the upload's part file.
   ops["patch.libraryAdd"] = function(args)
     local ext = libraryFileName(args.file)
+    if type(args.upload) ~= "string" or not args.upload:match("^%x+$") or #args.upload ~= 16 then raise("[bad-args] upload must be an id of 16 hex digits") end
+    local id = args.upload:lower()
     local base = userLibrary()
     local path = base .. "/" .. args.file
-    local part = path .. PART_SUFFIX
+    local part = path .. "." .. id .. PART_SUFFIX
+    local now = os.time()
     if args.abort == true then
       local had = fileSize(part) ~= nil
       if had then os.remove(part) end
+      uploads[id] = nil
       return { aborted = true, removed = had, partLeft = fileSize(part) ~= nil }
     end
     local total = integerArg(args.total, "total", 1, LIB_ADD_MAX_BYTES)
@@ -4521,19 +4545,23 @@ do
     if #args.data > LIB_ADD_MAX_CHUNK * 4 // 3 + 4 then raise("[bad-args] a chunk is at most " .. LIB_ADD_MAX_CHUNK .. " bytes") end
     local bytes = base64Decode(args.data)
     if bytes == nil then raise("[bad-args] data is not valid base64") end
-    local function fail(err) os.remove(part); raise(err) end
+    local function fail(err) os.remove(part); uploads[id] = nil; raise(err) end
     local exists = fileSize(path) ~= nil
     if exists and args.replace ~= true then fail("[exists] " .. args.file .. " is already in the user library; pass replace to overwrite it") end
-    for _, e in ipairs((listLibrary(nil))) do
-      if e.file == args.file and e.source ~= "user" then fail({ code = "ambiguous-file", message = args.file .. " is already in the " .. e.source .. " library; Import Library could not tell the two apart", sources = { e.source } }) end
+    -- The library scan (about 11 500 grandMA2 entries) runs at the start and before the move only, not per chunk.
+    if offset == 0 or args.final == true then
+      local other = otherLibrary(args.file)
+      if other then fail({ code = "ambiguous-file", message = args.file .. " is already in the " .. other .. " library; Import Library could not tell the two apart", sources = { other } }) end
     end
     if offset == 0 then
+      dropIdleUploads(now)
       local f, err = io.open(part, "wb")
       if not f then raise("[write-failed] " .. tostring(err)) end
       f:close()
-    elseif fileSize(part) ~= offset then
-      fail("[bad-offset] the part file has " .. tostring(fileSize(part)) .. " bytes, not " .. offset .. "; start again at offset 0")
+    elseif uploads[id] == nil or uploads[id].file ~= args.file or fileSize(part) ~= offset then
+      fail("[bad-offset] upload " .. id .. " has " .. tostring(fileSize(part)) .. " bytes of " .. args.file .. ", not " .. offset .. "; start again at offset 0")
     end
+    uploads[id] = { file = args.file, part = part, at = now }
     if offset + #bytes > total then fail("[too-long] the chunks exceed total (" .. total .. " bytes)") end
     local f, err = io.open(part, "ab")
     if not f then fail("[write-failed] " .. tostring(err)) end
@@ -4549,7 +4577,7 @@ do
     -- the old file is moved aside first and moved back when the new one cannot take its place: a failed replace keeps it.
     local moved, merr = os.rename(part, path)
     if not moved and exists then
-      local old = path .. ".gma3mcp-old"
+      local old = path .. "." .. id .. ".gma3mcp-old"
       os.remove(old)
       local aside, aerr = os.rename(path, old)
       if not aside then fail("[write-failed] could not move the existing file aside: " .. tostring(aerr) .. "; it is unchanged") end
@@ -4562,6 +4590,11 @@ do
       os.remove(old)
     end
     if not moved then fail("[write-failed] could not move the part file into place: " .. tostring(merr)) end
+    uploads[id] = nil
+    -- A replaced .xml may keep its size and time: drop its cached header so patch.library reads the new one.
+    for key in pairs(headerCache) do
+      if key:sub(1, #path + 1) == path .. "|" then headerCache[key] = nil end
+    end
     local finalSize, finalCrc = fileCrc(path)
     return { file = args.file, path = path, format = ext, size = finalSize, crc32 = finalCrc, replaced = exists }
   end
