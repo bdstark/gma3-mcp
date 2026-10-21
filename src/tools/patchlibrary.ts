@@ -121,7 +121,8 @@ export function parseXml(text: string): XmlElement[] {
     if (s.startsWith("<!--", i)) {
       const e = s.indexOf("-->", i + 4);
       if (e < 0) fail("an unclosed comment");
-      if (s.slice(i + 4, e).includes("--")) fail("-- inside a comment");
+      const body = s.slice(i + 4, e);
+      if (body.includes("--") || body.endsWith("-")) fail("-- inside a comment, or a comment ending in -");
       i = e + 3;
     } else if (s.startsWith("<![CDATA[", i)) {
       if (stack.length === 0) fail("CDATA outside the root element");
@@ -192,7 +193,13 @@ function fixtureHeader(xml: string, root: "GDTF" | "GMA3"): FixtureHeader {
 export function readZip(buf: Buffer): { names: string[]; read: (name: string) => Buffer } {
   const min = Math.max(0, buf.length - 0xffff - 22);
   let eocd = -1;
-  for (let i = buf.length - 22; i >= min; i--) if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  // The record whose comment length ends it at the end of the file: a comment may itself contain the signature.
+  for (let i = buf.length - 22; i >= min; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50 && i + 22 + buf.readUInt16LE(i + 20) === buf.length) {
+      eocd = i;
+      break;
+    }
+  }
   if (eocd < 0) throw new Error("it is not a zip file (no end-of-central-directory record)");
   const count = buf.readUInt16LE(eocd + 10);
   const cdOffset = buf.readUInt32LE(eocd + 16);
@@ -292,7 +299,8 @@ export async function patchLibraryAdd(ctx: ToolContext, raw: AddArgs): Promise<O
   let bytes: Buffer | undefined;
   if (hasContent && errors.length === 0) {
     if (typeof raw.content_base64 !== "string") errors.push("content_base64 must be text");
-    else if (raw.content_base64.length > Math.ceil(LIBRARY_ADD_MAX_BYTES / 3) * 4 + 1024) errors.push(`the file is larger than ${LIBRARY_ADD_MAX_BYTES} bytes`);
+    // Counted without whitespace: decodeBase64 allows line-wrapped base64 (review of PR #84).
+    else if (raw.content_base64.replace(/\s+/g, "").length > Math.ceil(LIBRARY_ADD_MAX_BYTES / 3) * 4) errors.push(`the file is larger than ${LIBRARY_ADD_MAX_BYTES} bytes`);
     else {
       try {
         bytes = decodeBase64(raw.content_base64);

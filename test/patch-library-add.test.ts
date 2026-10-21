@@ -16,7 +16,7 @@ import { LIBRARY_ADD_CHUNK, checkContent, decodeBase64, libraryFileName, parseXm
  */
 
 /** A minimal zip writer (stored or deflated entries), so the tests build their own GDTF files. */
-function zip(entries: Array<[string, string | Buffer, boolean?]>): Buffer {
+function zip(entries: Array<[string, string | Buffer, boolean?]>, comment = Buffer.alloc(0)): Buffer {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
   let offset = 0;
@@ -53,7 +53,8 @@ function zip(entries: Array<[string, string | Buffer, boolean?]>): Buffer {
   eocd.writeUInt16LE(entries.length, 10);
   eocd.writeUInt32LE(cd.length, 12);
   eocd.writeUInt32LE(offset, 16);
-  return Buffer.concat([...locals, cd, eocd]);
+  eocd.writeUInt16LE(comment.length, 20);
+  return Buffer.concat([...locals, cd, eocd, comment]);
 }
 
 const DESCRIPTION = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -152,6 +153,9 @@ test("decodeBase64 is strict, checkContent reads a GDTF's description.xml", () =
   const h = checkContent("gdtf", GDTF);
   assert.deepEqual({ ...h }, { manufacturer: "SHEHDS", name: "180W Beam", shortName: "180W Beam", modes: ["15 Channel"], dataVersion: "1.2", files: 2 });
   assert.throws(() => checkContent("gdtf", Buffer.from("not a zip at all, just text")), /not a zip/);
+  // A zip comment holding the end-record signature and 22+ more bytes is not taken for the record (review of PR #84).
+  const decoy = Buffer.concat([Buffer.from("x PK\u0005\u0006"), Buffer.alloc(30, 0x41)]);
+  assert.equal(checkContent("gdtf", zip([["description.xml", DESCRIPTION]], decoy)).name, "180W Beam");
   assert.throws(() => checkContent("gdtf", zip([["other.xml", DESCRIPTION]])), /no description\.xml/);
   assert.throws(() => checkContent("gdtf", zip([["description.xml", "<GDTF DataVersion=\"1.2\"></GDTF>"]])), /no FixtureType/);
   const damaged = Buffer.from(GDTF);
@@ -182,6 +186,7 @@ test("checkContent parses the XML: comments, quotes, entities and well-formednes
     ['<GMA3><FixtureType Name="Spot&#1;"/></GMA3>', /character XML does not allow/],
     ['<GMA3><FixtureType Name="Spot&#xFFFE;"/></GMA3>', /character XML does not allow/],
     ['<GMA3><FixtureType Name="Spot"/>]]></GMA3>', /\]\]> outside a CDATA section/],
+    ['<GMA3><!--x---><FixtureType Name="Spot"/></GMA3>', /comment ending in -/],
     ['<GMA3><FixtureType Name="Spot"/><? x?></GMA3>', /without a target name/],
     ['<GMA3><FixtureType Name="Spot"/><?XML x?></GMA3>', /not at the start/],
     ['<GMA3><FixtureType Name="Spot\u0001"/></GMA3>', /U\+0001/],
@@ -282,6 +287,11 @@ test("gma3_patch_library_add: refused before anything is written", async () => {
     assert.match(r.result.steps[0].error, /empty/);
     r = await h.callJson("gma3_patch_library_add", { file_name: FILE, content_base64: "A".repeat(12 * 1024 * 1024) });
     assert.match(r.result.summary, /larger than 8388608 bytes/);
+    // An 8 MiB file in base64 wrapped at 76 columns is within the cap: whitespace is not counted (review of PR #84).
+    const wrapped = (Buffer.alloc(8 * 1024 * 1024, 0x50).toString("base64").match(/.{1,76}/g) ?? []).join("\r\n");
+    r = await h.callJson("gma3_patch_library_add", { file_name: FILE, content_base64: wrapped });
+    assert.doesNotMatch(r.result.summary, /larger than/);
+    assert.match(r.result.steps[0].error, /not a usable GDTF file/);
     r = await h.callJson("gma3_patch_library_add", { file_name: "acme@spot.xml", content_base64: Buffer.from('<?xml version="1.0"?><GMA3><FixtureType Name="Spot" Manufacturer="Acme"></FixtureType></GMA3>').toString("base64") });
     assert.match(r.result.steps.at(-1).error, /already in the grandma3 library/);
     r = await h.callJson("gma3_patch_library_add", { file_name: "Acme@Spot.xml", content_base64: Buffer.from('<?xml version="1.0"?><GMA3><FixtureType Name="Spot" Manufacturer="Acme"></FixtureType></GMA3>').toString("base64") });

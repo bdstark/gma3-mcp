@@ -4265,11 +4265,11 @@ do
   -- Headers are cached by path, size and time, so a repeated search reads no file again. (The helpers are inner
   -- functions: the main chunk is at Lua's local-variable limit.)
   local function readXmlHeader(e, withModes)
-    -- The markup of an XML text: comments and CDATA removed, and the text cut at one left open (the header read stops
-    -- at 16 KB), so an element inside them is never taken for a real one (review of PR #84).
+    -- The markup of an XML text: comments, CDATA and processing instructions removed, and the text cut at one left
+    -- open (the header read stops at 16 KB), so an element inside them is never taken for a real one (review of PR #84).
     local function markupOnly(text)
-      text = text:gsub("<!%-%-.-%-%->", ""):gsub("<!%[CDATA%[.-%]%]>", "")
-      local open = text:find("<!--", 1, true) or text:find("<![CDATA[", 1, true)
+      text = text:gsub("<!%-%-.-%-%->", ""):gsub("<!%[CDATA%[.-%]%]>", ""):gsub("<%?.-%?>", "")
+      local open = text:find("<!--", 1, true) or text:find("<![CDATA[", 1, true) or text:find("<?", 1, true)
       return open and text:sub(1, open - 1) or text
     end
     -- The attributes of the start tag whose name ends at pos: either quote, a '>' inside a value is fine.
@@ -4552,9 +4552,20 @@ do
   local UPLOAD_IDLE_S = 600
   local uploads = {}
 
-  local function dropIdleUploads(now)
+  -- Idle uploads lose their part file. A part file no upload knows is an orphan: the uploads table is lost with a
+  -- bridge restart, and a chunk after offset 0 is refused without its record, so nothing can continue it (review of
+  -- PR #84). ".gma3mcp-old" files are never removed: one left behind holds the file a failed replace kept.
+  local function dropIdleUploads(base, now)
+    local known = {}
     for id, u in pairs(uploads) do
-      if now - u.at > UPLOAD_IDLE_S then os.remove(u.part); uploads[id] = nil end
+      if now - u.at > UPLOAD_IDLE_S then os.remove(u.part); uploads[id] = nil else known[u.part] = true end
+    end
+    local ok, list = pcall(DirList, base, "*" .. PART_SUFFIX)
+    if ok and type(list) == "table" then
+      for _, e in ipairs(list) do
+        local path = type(e.name) == "string" and e.name:sub(-#PART_SUFFIX) == PART_SUFFIX and (base .. "/" .. e.name) or nil
+        if path and not known[path] then os.remove(path) end
+      end
     end
   end
 
@@ -4595,7 +4606,7 @@ do
       end
     end
     if offset == 0 then
-      dropIdleUploads(now)
+      dropIdleUploads(base, now)
       local f, err = io.open(part, "wb")
       if not f then raise("[write-failed] " .. tostring(err)) end
       f:close()

@@ -259,6 +259,23 @@ local alias = r.ok and r.result.entries[1] or {}
 check("an .xml header is read from the real element, with either quote", alias.name == "Spot" and alias.manufacturer == "Acme" and alias.description == "a > b & \u{e9}"
   and alias.modes and #alias.modes == 2 and alias.modes[1] == "Std" and alias.modes[2] == "Ext & 16", J(r))
 os.remove(USER .. "/Acme@Alias.xml")
+upload("Acme@Pi.xml", '<?xml version="1.0"?><?note <FixtureType Name="Fake" Manufacturer="Pi"> ?><GMA3><FixtureType Name="Real" Manufacturer="Acme"></FixtureType></GMA3>')
+r = request("patch.library", { file = "Acme@Pi.xml" })
+check("a FixtureType inside a processing instruction is not the header (review of PR #84)", r.ok and r.result.entries[1] and r.result.entries[1].name == "Real" and r.result.entries[1].manufacturer == "Acme", J(r))
+os.remove(USER .. "/Acme@Pi.xml")
+
+-- Review of PR #84: a part file no upload knows (left by a bridge restart) is removed when an upload starts; a part
+-- file of a running upload and a kept ".gma3mcp-old" file are not.
+put(USER .. "/Acme@Orphan.gdtf.aaaaaaaaaaaaaaaa.gma3mcp-part", "orphan")
+put(USER .. "/Acme@Kept.gdtf.bbbbbbbbbbbbbbbb.gma3mcp-old", "kept original")
+add({ file = "Acme@Running.gdtf", upload = "cccccccccccccccc", offset = 0, data = b64("run"), total = 6, crc32 = crc32("runrun") })
+add({ file = "Acme@Start.gdtf", offset = 0, data = b64("st"), total = 4, crc32 = crc32("stst") })
+check("an orphaned part file is removed when an upload starts", slurp(USER .. "/Acme@Orphan.gdtf.aaaaaaaaaaaaaaaa.gma3mcp-part") == nil)
+check("a running upload's part file and a kept original are left", slurp(USER .. "/Acme@Running.gdtf.cccccccccccccccc.gma3mcp-part") == "run" and slurp(USER .. "/Acme@Start.gdtf" .. PART) == "st"
+  and slurp(USER .. "/Acme@Kept.gdtf.bbbbbbbbbbbbbbbb.gma3mcp-old") == "kept original")
+add({ file = "Acme@Running.gdtf", upload = "cccccccccccccccc", abort = true })
+add({ file = "Acme@Start.gdtf", abort = true })
+os.remove(USER .. "/Acme@Kept.gdtf.bbbbbbbbbbbbbbbb.gma3mcp-old")
 
 local p = io.popen('ls -1A "' .. USER .. '"'); local listing = p:read("a"); p:close()
 check("only the uploaded files are in the user library", listing == FILE .. "\n", listing)
