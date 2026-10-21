@@ -918,6 +918,40 @@ onPC 2.5.1).
   name refused, protect, unassign, delete, `Go+`/`Off Tag` read back per sequence, `Go+ Tag` with Forward Commands
   off (no tagged sequence starts) and then on again, and the kill scenarios, on reserved objects.
 
+## SU-22 — Add a fixture-type file to the user library
+
+**Request:** Import a GDTF (or a user `.xml`) that is not on the console yet, purely through MCP tools: an MCP client
+with no file access on the console's machine sends the file, then imports it.
+
+**Depends on:** SU-03.
+
+**Repository:** gma3-mcp.
+
+**Lua changes:** Yes: `patch.libraryStat` (a user-library file's size, CRC-32 and the libraries that list its name) and
+`patch.libraryAdd` (chunked base64 write to a part file, checked and renamed into place), in the SU-03 block.
+
+**Evidence:** a corrected GDTF 1.2 for the SHEHDS 180 W beam (bdstark/gma3-fixtures, built from wall photos with traced
+gobo images) had to be imported by another MCP session. `gma3_patch_library` lists user-library `.gdtf` files and
+`gma3_patch_import` imports them, but nothing could put a file there. User-library `.gdtf` imports were marked
+`verified: false`: the SU-03 probe had no GDTF file.
+
+### Acceptance criteria
+
+- `gma3_patch_library_add` takes `file_name` (`manufacturer@model[@revision].gdtf|.xml`) and the bytes as
+  `content_base64`, or a `path` on the MCP server's host, read by the server and sent the same way.
+- Refused before anything is written: a bad name; a file already in the user library unless `replace: true`; a file
+  over the size cap (8 MiB); a `.gdtf` that is not a zip with `description.xml` (checked on the server); an `.xml`
+  without a `FixtureType`; a name another library already has (the import would refuse it).
+- The bytes go over the bridge in chunks; the library never holds a half-written file.
+- Read-back: the file's size and CRC-32 on the console match, and `patch.library` lists it under source `user`.
+- Live: the SHEHDS GDTF is sent with the tool, imported with `gma3_patch_import`, checked with
+  `gma3_patch_type_structure`, and removed with `gma3_patch_remove_type`. When the import works, user-library `.gdtf`
+  is marked verified.
+
+**Status:** implemented in bridge 0.38.0 ([docs/tools/patch.md](docs/tools/patch.md#gma3_patch_library_add), probe
+record [su-22-library-add-macos-2.5.1.md](docs/probes/su-22-library-add-macos-2.5.1.md), live test
+`test/live/library-add.live.ts`). Live run: pending.
+
 ## Recommended delivery order
 
 SU-01 and SU-02 first (bridges 0.25.1 and 0.25.2). Then SU-03: without import, a new show cannot be set up without Lua or a
@@ -932,6 +966,7 @@ From the second field test:
 - SU-16, SU-18, SU-19 and SU-20 are independent.
 - SU-21 (tags) is independent. Both probes are recorded (the second answered the data-pool command form, kill and
   protect behaviour, Forward Commands off, same-named tags and appearance writes); implemented in bridge 0.36.0.
+- SU-22 (files into the user library) builds on SU-03; implemented in bridge 0.38.0.
 - SU-17's `resync` is independent. Its plugin tools wait for the interface that bdstark/gma3-beat-sync's BS-01 and BS-02
   define.
 
