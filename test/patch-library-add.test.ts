@@ -142,7 +142,7 @@ const stepNames = (r: any) => r.steps.map((s: any) => `${s.name}:${s.status}`);
 test("libraryFileName: manufacturer@model[@revision].gdtf|.xml only", () => {
   assert.deepEqual(libraryFileName(FILE), { file: FILE, format: "gdtf", manufacturer: "SHEHDS", model: "180W_Beam", revision: "2026-10-20" });
   assert.equal(libraryFileName("Acme@Spot.xml").format, "xml");
-  for (const bad of ["Acme@Spot.XML", "Acme@Spot.Gdtf", "../x@y.gdtf", "a/b@c.gdtf", "a\\b@c.gdtf", "nomanufacturer.gdtf", "a@b.txt", "a@b@c@d.gdtf", ".a@b.gdtf", 'a@"b".gdtf', "a@ b.gdtf", "a@@b.gdtf", "a@b\n.gdtf", ""]) {
+  for (const bad of ["Acme@Spot:revision.xml", "Acme@Spot<1>.gdtf", "Acme@Spot|2.gdtf", "Acme@Spot?.gdtf", "Acme@Spot*.gdtf", "Acme@Spot.XML", "Acme@Spot.Gdtf", "../x@y.gdtf", "a/b@c.gdtf", "a\\b@c.gdtf", "nomanufacturer.gdtf", "a@b.txt", "a@b@c@d.gdtf", ".a@b.gdtf", 'a@"b".gdtf', "a@ b.gdtf", "a@@b.gdtf", "a@b\n.gdtf", ""]) {
     assert.throws(() => libraryFileName(bad), undefined, bad);
   }
 });

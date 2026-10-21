@@ -29,7 +29,8 @@ const NEEDS_BRIDGE = "the console runs an older bridge plugin without patch.libr
 export function libraryFileName(raw: unknown): { file: string; format: "gdtf" | "xml"; manufacturer: string; model: string; revision?: string } {
   if (typeof raw !== "string" || raw === "") throw new Error("file_name is required: manufacturer@model[@revision].gdtf or .xml");
   if (raw.length > 200) throw new Error("file_name is longer than 200 characters");
-  if (/[/\\"\u0000-\u001f\u007f]/.test(raw) || raw.startsWith(".") || raw.includes("..")) throw new Error('file_name must not contain / \\ " .. or a control character, nor start with a dot');
+  // The characters Windows refuses in a file name too (":" would name an NTFS stream; review of PR #84).
+  if (/[<>:"/\\|?*\u0000-\u001f\u007f]/.test(raw) || raw.startsWith(".") || raw.includes("..")) throw new Error('file_name must not contain < > : " / \\ | ? * .. or a control character, nor start with a dot');
   const m = /^(.+)\.([A-Za-z0-9]+)$/.exec(raw);
   const format = m?.[2];
   // Lower case only: the console's libraries are listed by *.gdtf and *.xml, which miss ".XML" on a case-sensitive file

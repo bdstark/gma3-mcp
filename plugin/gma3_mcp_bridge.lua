@@ -4517,7 +4517,8 @@ do
   local function libraryFileName(file)
     if type(file) ~= "string" or file == "" then raise("[bad-args] file is required: manufacturer@model[@revision].gdtf or .xml") end
     if #file > 200 then raise("[bad-name] the file name is longer than 200 characters") end
-    if file:find("[/\\\"%c]") or file:sub(1, 1) == "." or file:find("..", 1, true) then raise("[bad-name] the file name must not contain / \\ \" .. or a control character, nor start with a dot") end
+    -- The characters Windows refuses in a file name too (":" would name an NTFS stream; review of PR #84).
+    if file:find("[<>:\"/\\|%?%*%c]") or file:sub(1, 1) == "." or file:find("..", 1, true) then raise("[bad-name] the file name must not contain < > : \" / \\ | ? * .. or a control character, nor start with a dot") end
     local stem, ext = file:match("^(.+)%.(%w+)$")
     -- Lower case only: listLibrary lists *.gdtf and *.xml, which miss ".XML" on a case-sensitive file system.
     if ext ~= "gdtf" and ext ~= "xml" then raise("[bad-name] the file name must end in .gdtf or .xml (lower case)") end

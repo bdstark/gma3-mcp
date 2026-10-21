@@ -181,7 +181,7 @@ not run on the console's machine. The show is not changed.
 
 | Argument | |
 | --- | --- |
-| `file_name` | `manufacturer@model[@revision].gdtf` or `.xml` (the extension in lower case: the libraries are listed by `*.gdtf` and `*.xml`); no `/ \ " ..`, control characters or leading dot. Defaults to `path`'s file name |
+| `file_name` | `manufacturer@model[@revision].gdtf` or `.xml` (the extension in lower case: the libraries are listed by `*.gdtf` and `*.xml`); no `< > : " / \ | ? * ..` (the characters Windows refuses; `:` would name an NTFS stream), control characters or leading dot. Defaults to `path`'s file name |
 | `content_base64` | The file's bytes, base64 (strict: whitespace between groups only) |
 | `path` | Instead of `content_base64`: a file on the MCP server's host, read by the server and sent the same way |
 | `replace` | Overwrite a user-library file of the same name (default `false`: refused) |
