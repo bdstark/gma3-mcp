@@ -181,6 +181,9 @@ test("checkContent parses the XML: comments, quotes, entities and well-formednes
     ['<GMA3><FixtureType Name="Spot&#xD800;"/></GMA3>', /character XML does not allow/],
     ['<GMA3><FixtureType Name="Spot&#1;"/></GMA3>', /character XML does not allow/],
     ['<GMA3><FixtureType Name="Spot&#xFFFE;"/></GMA3>', /character XML does not allow/],
+    ['<GMA3><FixtureType Name="Spot"/>]]></GMA3>', /\]\]> outside a CDATA section/],
+    ['<GMA3><FixtureType Name="Spot"/><? x?></GMA3>', /without a target name/],
+    ['<GMA3><FixtureType Name="Spot"/><?XML x?></GMA3>', /not at the start/],
     ['<GMA3><FixtureType Name="Spot\u0001"/></GMA3>', /U\+0001/],
     ['<GMA3><FixtureType Name="&__proto__;"/></GMA3>', /undefined entity/],
     ['<GMA3><FixtureType Name="&constructor;"/></GMA3>', /undefined entity/],
@@ -194,6 +197,19 @@ test("checkContent parses the XML: comments, quotes, entities and well-formednes
     assert.throws(() => checkContent("xml", xml(bad)), why, bad);
   }
   assert.throws(() => checkContent("gdtf", zip([["description.xml", '<GDTF><FixtureType Name="x"></GDTF>']])), /its description\.xml: it is not well-formed XML/);
+  // The XML declaration: malformed, another encoding, or not at the start is refused; a valid one and other PIs pass.
+  for (const [decl, why] of [
+    ["<?xml garbage?>", /malformed XML declaration/],
+    ["<?xml?>", /malformed XML declaration/],
+    ['<?xml version="2.0"?>', /malformed XML declaration/],
+    ['<?xml encoding="UTF-8" version="1.0"?>', /malformed XML declaration/],
+    ['<?XML version="1.0"?>', /malformed XML declaration/],
+    ['<?xml version="1.0" encoding="ISO-8859-1"?>', /encoding ISO-8859-1/],
+    [' <?xml version="1.0"?>', /not at the start/],
+  ] as const) {
+    assert.throws(() => checkContent("xml", Buffer.from(`${decl}<GMA3><FixtureType Name="Spot"/></GMA3>`)), why, decl);
+  }
+  assert.equal(checkContent("xml", Buffer.from(`<?xml version='1.0' encoding='utf-8' standalone="no" ?><?ma3 hint x?><GMA3><FixtureType Name="Spot"/></GMA3>`)).name, "Spot");
   // An unpaired surrogate cannot come out of strict UTF-8 decoding, but parseXml refuses it in a string too.
   assert.throws(() => parseXml('<GMA3><FixtureType Name="Spot\uD800"/></GMA3>'), /U\+D800/);
   // Allowed: tab, newline, CR, astral characters (a valid surrogate pair) and their references.

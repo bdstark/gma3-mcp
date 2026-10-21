@@ -67,6 +67,9 @@ const START_TAG = new RegExp(`<(${XML_NAME})`, "y");
 const END_TAG = new RegExp(`</(${XML_NAME})\\s*>`, "y");
 const ATTRIBUTE = new RegExp(`\\s+(${XML_NAME})\\s*=\\s*(?:"([^"<]*)"|'([^'<]*)')`, "y");
 const TAG_CLOSE = /\s*(\/?)>/y;
+// A processing instruction's target, then whitespace or its end. The XML declaration's own grammar (XML 1.0, 2.8).
+const PI_TARGET = new RegExp(`^<\\?(${XML_NAME})(?:\\s|\\?>)`);
+const XML_DECLARATION = /^<\?xml\s+version\s*=\s*(?:"1\.\d+"|'1\.\d+')(?:\s+encoding\s*=\s*(?:"[A-Za-z][\w.-]*"|'[A-Za-z][\w.-]*'))?(?:\s+standalone\s*=\s*(?:"(?:yes|no)"|'(?:yes|no)'))?\s*\?>$/;
 const NAMED_ENTITIES: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
 /** XML 1.0 Char: tab, newline, carriage return, U+0020-D7FF, U+E000-FFFD, U+10000-10FFFF. */
 const xmlChar = (n: number) => n === 0x9 || n === 0xa || n === 0xd || (n >= 0x20 && n <= 0xd7ff) || (n >= 0xe000 && n <= 0xfffd) || (n >= 0x10000 && n <= 0x10ffff);
@@ -112,6 +115,7 @@ export function parseXml(text: string): XmlElement[] {
     const chunk = lt < 0 ? s.slice(i) : s.slice(i, lt);
     if (stack.length === 0 && chunk.trim() !== "") fail("text outside the root element");
     decode(chunk);
+    if (chunk.includes("]]>")) fail("]]> outside a CDATA section");
     if (lt < 0) break;
     i = lt;
     if (s.startsWith("<!--", i)) {
@@ -129,7 +133,14 @@ export function parseXml(text: string): XmlElement[] {
     } else if (s.startsWith("<?", i)) {
       const e = s.indexOf("?>", i + 2);
       if (e < 0) fail("an unclosed processing instruction");
-      if (/^<\?xml[\s?]/.test(s.slice(i, i + 6)) && i !== 0) fail("an XML declaration that is not at the start");
+      const pi = s.slice(i, e + 2);
+      const target = PI_TARGET.exec(pi)?.[1] ?? fail("a processing instruction without a target name");
+      if (target.toLowerCase() === "xml") {
+        if (i !== 0) fail("an XML declaration that is not at the start");
+        if (target !== "xml" || !XML_DECLARATION.test(pi)) fail("a malformed XML declaration (version, then optional encoding and standalone)");
+        const enc = /encoding\s*=\s*["']([^"']*)["']/.exec(pi)?.[1];
+        if (enc !== undefined && !/^utf-?8$/i.test(enc)) fail(`the encoding ${enc} (the file is read as UTF-8)`);
+      }
       i = e + 2;
     } else if (s.startsWith("</", i)) {
       END_TAG.lastIndex = i;
