@@ -215,6 +215,8 @@ test("checkContent parses the XML: comments, quotes, entities and well-formednes
     assert.throws(() => checkContent("xml", Buffer.from(`${decl}<GMA3><FixtureType Name="Spot"/></GMA3>`)), why, decl);
   }
   assert.equal(checkContent("xml", Buffer.from(`<?xml version='1.0' encoding='utf-8' standalone="no" ?><?ma3 hint x?><GMA3><FixtureType Name="Spot"/></GMA3>`)).name, "Spot");
+  // References decode in one pass, as the bridge's header reader does: &#38;amp; is "&amp;".
+  assert.equal(checkContent("xml", xml('<GMA3><FixtureType Name="Spot &#38;amp; Co &amp;lt;x&#x3E;"/></GMA3>')).name, "Spot &amp; Co &lt;x>");
   // An unpaired surrogate cannot come out of strict UTF-8 decoding, but parseXml refuses it in a string too.
   assert.throws(() => parseXml('<GMA3><FixtureType Name="Spot\uD800"/></GMA3>'), /U\+D800/);
   // Allowed: tab, newline, CR, astral characters (a valid surrogate pair) and their references.

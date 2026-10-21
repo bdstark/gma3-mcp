@@ -4242,13 +4242,17 @@ do
     return nil
   end
 
+  -- Named and numeric references in one pass over the original text, so a reference's output is never decoded again
+  -- ("&#38;amp;" is "&amp;", not "&"; review of PR #84). An unknown one is kept as written.
   local function decodeXml(v)
-    local function codePoint(n)
+    local named = { quot = '"', apos = "'", lt = "<", gt = ">", amp = "&" }
+    return (v:gsub("&(#?[%w]+);", function(ref)
+      if named[ref] then return named[ref] end
+      local n = ref:match("^#[xX](%x+)$") and tonumber(ref:sub(3), 16) or (ref:match("^#(%d+)$") and tonumber(ref:sub(2)))
       local ok, c = pcall(utf8.char, n)
-      return ok and c or ""
-    end
-    v = v:gsub("&#[xX](%x+);", function(h) return codePoint(tonumber(h, 16)) end):gsub("&#(%d+);", function(d) return codePoint(tonumber(d)) end)
-    return (v:gsub("&quot;", '"'):gsub("&apos;", "'"):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&"))
+      if n and ok then return c end
+      return nil
+    end))
   end
 
   -- manufacturer@model[@revision].ext; the grandMA2 names are lower case.

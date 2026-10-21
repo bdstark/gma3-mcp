@@ -261,6 +261,10 @@ check("an .xml header is read from the real element, with either quote", alias.n
 os.remove(USER .. "/Acme@Alias.xml")
 upload("Acme@Pi.xml", '<?xml version="1.0"?><?note <FixtureType Name="Fake" Manufacturer="Pi"> ?><GMA3><FixtureType Name="Real" Manufacturer="Acme"></FixtureType></GMA3>')
 r = request("patch.library", { file = "Acme@Pi.xml" })
+upload("Acme@Refs.xml", '<GMA3><FixtureType Name="Spot &#38;amp; Co &amp;lt;x&#x3E;" Manufacturer="Acme"></FixtureType></GMA3>')
+local refs = request("patch.library", { file = "Acme@Refs.xml" })
+check("references decode in one pass: &#38;amp; is &amp; (review of PR #84)", refs.ok and refs.result.entries[1].name == "Spot &amp; Co &lt;x>", J(refs))
+os.remove(USER .. "/Acme@Refs.xml")
 check("a FixtureType inside a processing instruction is not the header (review of PR #84)", r.ok and r.result.entries[1] and r.result.entries[1].name == "Real" and r.result.entries[1].manufacturer == "Acme", J(r))
 os.remove(USER .. "/Acme@Pi.xml")
 
