@@ -154,7 +154,8 @@ was found.
   inspection returns a token, and an action on a token whose dialog closed or was replaced is refused.
 - **Detect foreign changes before committing, best-effort only.** Compare a fingerprint of the whole copy with the
   live patch before leaving the patch. That means every collection, every object and every property, minus what the
-  console derives: an untouched copy differs only in `STRUCTURELOCKED` / `IGNORENETWORK` and DmxCurves numbering, and
+  console derives: an untouched copy differs only in `STRUCTURELOCKED` / `IGNORENETWORK` and DmxCurves numbering (and, after a GDTF
+  import, which of DmxCurve 1's two points it lists; SU-22), and
   an added fixture moves only `REALUSED` / `MAXID` / `GRANTED`. It takes about 4 s per side on a small show, so it is
   computed per collection, and that makes it **not a consistent snapshot**: an edit landing after its collection was
   read is missed. The probe therefore requires exclusive console use (`--exclusive`).

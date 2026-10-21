@@ -31,6 +31,7 @@ class LibraryWorld {
     "oppsk@36pcs 4in1 led wall washer.pxml": [["Oppsk", "36PCS 4in1 LED Wall Washer"]],
     "adj@mega hex par.pxml": [["ADJ", "Mega Hex Par"]],
     "solo@user only@rev2.gdtf": [["Solo", "User Only"]],
+    "solo@user xml.xml": [["Solo", "User Xml"]],
     "broken@file.pxml": "error",
     "two@types.pxml": [["Two", "One"], ["Two", "Two"]],
   };
@@ -44,7 +45,8 @@ class LibraryWorld {
     { source: "grandma2", file: "two@types.pxml", format: "pxml", manufacturer: "two", model: "types", modesKnown: false, verified: true, set: false },
     { source: "grandma3", file: "acme@spot.xml", format: "xml", manufacturer: "Acme", model: "spot", name: "Spot", modes: ["Standard"], modesKnown: true, verified: true, set: false },
     { source: "user", file: "acme@spot.xml", format: "xml", manufacturer: "Acme", model: "spot", name: "Spot", modes: ["Standard"], modesKnown: true, verified: false, set: false },
-    { source: "user", file: "solo@user only@rev2.gdtf", format: "gdtf", manufacturer: "solo", model: "user only", modesKnown: false, verified: false, set: false },
+    { source: "user", file: "solo@user only@rev2.gdtf", format: "gdtf", manufacturer: "solo", model: "user only", modesKnown: false, verified: true, set: false },
+    { source: "user", file: "solo@user xml.xml", format: "xml", manufacturer: "Solo", model: "user xml", name: "User Xml", modes: ["Mode 0"], modesKnown: true, verified: false, set: false },
   ];
 
   inShow(e: { manufacturer?: string; model?: string; name?: string }) {
@@ -262,13 +264,17 @@ test("gma3_patch_import: two new types are not claimed and the copy is left open
   }
 });
 
-test("gma3_patch_import: a user-library file imports with a warning", async () => {
+test("gma3_patch_import: a user-library .xml imports with a warning, a user-library .gdtf without (SU-22)", async () => {
   const { h } = await setup();
   try {
-    const { result } = await h.callJson("gma3_patch_import", { file: "solo@user only@rev2.gdtf", exclusive: true });
+    const { result } = await h.callJson("gma3_patch_import", { file: "solo@user xml.xml", exclusive: true });
     assert.equal(result.outcome, "succeeded", JSON.stringify(result, null, 2));
     assert.equal(result.library.verified, false);
     assert.match(result.warning, /not verified on the console/);
+    const gdtf = await h.callJson("gma3_patch_import", { file: "solo@user only@rev2.gdtf", exclusive: true });
+    assert.equal(gdtf.result.outcome, "succeeded", JSON.stringify(gdtf.result, null, 2));
+    assert.equal(gdtf.result.library.verified, true);
+    assert.equal(gdtf.result.warning, undefined);
   } finally {
     await h.close();
   }

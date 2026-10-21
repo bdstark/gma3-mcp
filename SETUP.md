@@ -950,7 +950,13 @@ gobo images) had to be imported by another MCP session. `gma3_patch_library` lis
 
 **Status:** implemented in bridge 0.38.0 ([docs/tools/patch.md](docs/tools/patch.md#gma3_patch_library_add), probe
 record [su-22-library-add-macos-2.5.1.md](docs/probes/su-22-library-add-macos-2.5.1.md), live test
-`test/live/library-add.live.ts`). Live run: pending.
+`test/live/library-add.live.ts` 1/1 on macOS onPC 2.5.1).
+- The SHEHDS GDTF went over the bridge in two chunks, matched size and CRC-32 on the console, and imported from the
+  user library: one 15-channel mode, a 12-slot colour wheel with all colours, a 15-slot gobo wheel with its images,
+  reset defaulting to 0. User-library `.gdtf` is now marked verified.
+- The isolation check leaves out DmxCurve points: `DmxCurve 1` lists one of its two points, and a GDTF import flips
+  which one (the next copy flips it back).
+- Slot colours with a slightly negative component (CIE colours outside sRGB) are read; SU-19's reader refused them.
 
 ## Recommended delivery order
 

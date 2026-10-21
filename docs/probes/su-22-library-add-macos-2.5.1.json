@@ -1,0 +1,746 @@
+{
+  "date": "2026-10-20",
+  "platform": "macOS 26 (Darwin 25.5), grandMA3 onPC 2.5.1.0, bridge 0.38.0",
+  "show": "test-fixture-disposable (never saved)",
+  "test": "test/live/library-add.live.ts",
+  "result": "1/1 passed",
+  "showChecks": [
+    {
+      "before": "library add",
+      "show": "test-fixture-disposable",
+      "bridge": "0.38.0"
+    },
+    {
+      "before": "import",
+      "show": "test-fixture-disposable",
+      "bridge": "0.38.0"
+    },
+    {
+      "before": "remove type",
+      "show": "test-fixture-disposable",
+      "bridge": "0.38.0"
+    }
+  ],
+  "libraryAdd": {
+    "outcome": "succeeded",
+    "verification": {
+      "status": "matched",
+      "checked": "the console's file has the size and CRC-32 sent, and patch.library lists it under source user",
+      "expected": {
+        "size": 93698,
+        "crc32": "ef9eae94",
+        "source": "user"
+      },
+      "actual": {
+        "size": 93698,
+        "crc32": "ef9eae94",
+        "source": "user"
+      }
+    },
+    "file": "SHEHDS@180W_Beam@2026-10-20.gdtf",
+    "path": "/Users/bstark/MALightingTechnology/gma3_library/fixturetypes/SHEHDS@180W_Beam@2026-10-20.gdtf",
+    "size": 93698,
+    "crc32": "ef9eae94",
+    "replaced": false,
+    "fixtureType": {
+      "manufacturer": "SHEHDS",
+      "name": "180W Beam",
+      "shortName": "180W Beam",
+      "modes": [
+        "15 Channel"
+      ],
+      "dataVersion": "1.2",
+      "files": 16
+    },
+    "steps": [
+      "check_content:succeeded",
+      "check_library:succeeded",
+      "write:succeeded",
+      "read_back:succeeded"
+    ],
+    "libraryEntry": {
+      "source": "user",
+      "file": "SHEHDS@180W_Beam@2026-10-20.gdtf",
+      "format": "gdtf",
+      "manufacturer": "SHEHDS",
+      "model": "180W_Beam",
+      "verified": true
+    }
+  },
+  "secondSend": {
+    "name": "check_library",
+    "status": "failed",
+    "op": "patch.libraryStat",
+    "error": "SHEHDS@180W_Beam@2026-10-20.gdtf is already in the user library (93698 bytes, CRC-32 ef9eae94, the same bytes); pass replace: true to overwrite it",
+    "detail": {
+      "size": 93698,
+      "path": "/Users/bstark/MALightingTechnology/gma3_library/fixturetypes/SHEHDS@180W_Beam@2026-10-20.gdtf",
+      "listedIn": [
+        "user"
+      ],
+      "exists": true,
+      "file": "SHEHDS@180W_Beam@2026-10-20.gdtf",
+      "maxBytes": 8388608,
+      "crc32": "ef9eae94"
+    },
+    "kind": "read"
+  },
+  "import": {
+    "outcome": "succeeded",
+    "verification": {
+      "status": "matched",
+      "checked": "the imported type is in the live patch, by GUID, with the same modes",
+      "expected": {
+        "no": 5,
+        "name": "180W Beam",
+        "guid": "1A B1 B0 DA 96 BE 54 8A A1 AF 9E BA 8A 5F 60 9C",
+        "modes": [
+          "15 Channel"
+        ]
+      },
+      "actual": {
+        "no": 5,
+        "name": "180W Beam",
+        "guid": "1A B1 B0 DA 96 BE 54 8A A1 AF 9E BA 8A 5F 60 9C",
+        "modes": [
+          "15 Channel"
+        ]
+      }
+    },
+    "type": {
+      "no": 5,
+      "source": "User",
+      "name": "180W Beam",
+      "shortName": "180W Beam",
+      "modes": [
+        {
+          "no": 1,
+          "name": "15 Channel",
+          "breakChannels": [
+            15
+          ],
+          "footprint": 15,
+          "breaks": 1,
+          "cells": 0
+        }
+      ],
+      "guid": "1A B1 B0 DA 96 BE 54 8A A1 AF 9E BA 8A 5F 60 9C",
+      "manufacturer": "SHEHDS"
+    },
+    "library": {
+      "source": "user",
+      "file": "SHEHDS@180W_Beam@2026-10-20.gdtf",
+      "verified": true
+    },
+    "attributesAdded": 0,
+    "warning": null,
+    "committed": true,
+    "steps": [
+      "check_state:succeeded",
+      "check_library:succeeded",
+      "enter:succeeded",
+      "wait_copy:succeeded",
+      "import:succeeded",
+      "wait_import:succeeded",
+      "isolation_check:succeeded",
+      "commit:succeeded",
+      "wait_commit:succeeded",
+      "read_back:succeeded"
+    ]
+  },
+  "typeStructure": {
+    "mode": {
+      "name": "15 Channel",
+      "footprint": 15,
+      "addressesUsed": 15,
+      "breaks": 1
+    },
+    "channels": [
+      {
+        "offset": 1,
+        "fine": 2,
+        "attribute": "Pan",
+        "default": "<80007F>",
+        "geometry": "Yoke"
+      },
+      {
+        "offset": 3,
+        "fine": 4,
+        "attribute": "Tilt",
+        "default": "<80007F>",
+        "geometry": "Head"
+      },
+      {
+        "offset": 5,
+        "fine": null,
+        "attribute": "PositionMSpeed",
+        "default": "<000000>",
+        "geometry": "Base"
+      },
+      {
+        "offset": 6,
+        "fine": null,
+        "attribute": "Dimmer",
+        "default": "<000000>",
+        "geometry": "Beam"
+      },
+      {
+        "offset": 7,
+        "fine": null,
+        "attribute": "Shutter1",
+        "default": "<000000>",
+        "geometry": "Beam"
+      },
+      {
+        "offset": 8,
+        "fine": null,
+        "attribute": "Color1",
+        "default": "<000000>",
+        "geometry": "Beam"
+      },
+      {
+        "offset": 9,
+        "fine": null,
+        "attribute": "Gobo1",
+        "default": "<000000>",
+        "geometry": "Beam"
+      },
+      {
+        "offset": 10,
+        "fine": null,
+        "attribute": "Prism1",
+        "default": "<000000>",
+        "geometry": "Beam"
+      },
+      {
+        "offset": 11,
+        "fine": null,
+        "attribute": "Focus1",
+        "default": "<808080>",
+        "geometry": "Beam"
+      },
+      {
+        "offset": 12,
+        "fine": null,
+        "attribute": "Frost1",
+        "default": "<000000>",
+        "geometry": "Beam"
+      },
+      {
+        "offset": 13,
+        "fine": null,
+        "attribute": "Control1",
+        "default": "<000000>",
+        "geometry": "Base"
+      },
+      {
+        "offset": 14,
+        "fine": null,
+        "attribute": "Control2",
+        "default": "<000000>",
+        "geometry": "Base"
+      },
+      {
+        "offset": 15,
+        "fine": null,
+        "attribute": "FixtureGlobalReset",
+        "default": "<000000>",
+        "geometry": "Base"
+      }
+    ],
+    "wheels": [
+      {
+        "name": "Color Wheel",
+        "kind": "color",
+        "slotColors": "set",
+        "slots": [
+          {
+            "name": "Open",
+            "color": {
+              "r": 1.0000166893,
+              "g": 0.9999763966,
+              "b": 1.0001844168,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                0,
+                10
+              ]
+            ]
+          },
+          {
+            "name": "Green",
+            "color": {
+              "r": 3.2037e-06,
+              "g": 1.000066638,
+              "b": 0.050885886,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                11,
+                21
+              ]
+            ]
+          },
+          {
+            "name": "Indigo",
+            "color": {
+              "r": 0.073302269,
+              "g": -1.13584e-05,
+              "b": 1.0001984835,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                22,
+                32
+              ]
+            ]
+          },
+          {
+            "name": "Neutral White",
+            "color": {
+              "r": 0.9999926686,
+              "g": 0.8899775743,
+              "b": 0.6921887398,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                33,
+                43
+              ]
+            ]
+          },
+          {
+            "name": "Cyan",
+            "color": {
+              "r": 6.59823e-05,
+              "g": 0.603861928,
+              "b": 1.0002087355,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                44,
+                54
+              ]
+            ]
+          },
+          {
+            "name": "Magenta",
+            "color": {
+              "r": 0.787435174,
+              "g": -7.06911e-05,
+              "b": 1.0001846552,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                55,
+                65
+              ]
+            ]
+          },
+          {
+            "name": "Blue",
+            "color": {
+              "r": 6.76811e-05,
+              "g": 0.132871598,
+              "b": 1.0002024174,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                66,
+                76
+              ]
+            ]
+          },
+          {
+            "name": "Lime",
+            "color": {
+              "r": 0.2140317261,
+              "g": 1.0000486374,
+              "b": -6.0499e-06,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                77,
+                87
+              ]
+            ]
+          },
+          {
+            "name": "Yellow",
+            "color": {
+              "r": 0.999950707,
+              "g": 0.7873802185,
+              "b": -2.38344e-05,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                88,
+                98
+              ]
+            ]
+          },
+          {
+            "name": "Amber",
+            "color": {
+              "r": 0.9999457598,
+              "g": 0.3184847832,
+              "b": -2.42144e-05,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                99,
+                109
+              ]
+            ]
+          },
+          {
+            "name": "Red",
+            "color": {
+              "r": 0.9999432564,
+              "g": -8.2503e-05,
+              "b": -2.4192e-05,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                110,
+                120
+              ]
+            ]
+          },
+          {
+            "name": "Warm White",
+            "color": {
+              "r": 0.9999671578,
+              "g": 0.6920322776,
+              "b": 0.3185868859,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                121,
+                127
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Gobo Wheel",
+        "kind": "gobo",
+        "slotColors": "set",
+        "slots": [
+          {
+            "name": "Open",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_01_Open.png",
+            "dmx": [
+              [
+                0,
+                15
+              ]
+            ]
+          },
+          {
+            "name": "Reducer L",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_02_ReducerL.png",
+            "dmx": [
+              [
+                16,
+                23
+              ]
+            ]
+          },
+          {
+            "name": "Reducer M",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_03_ReducerM.png",
+            "dmx": [
+              [
+                24,
+                31
+              ]
+            ]
+          },
+          {
+            "name": "Reducer S",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_04_ReducerS.png",
+            "dmx": [
+              [
+                32,
+                39
+              ]
+            ]
+          },
+          {
+            "name": "Bar",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_05_Bar.png",
+            "dmx": [
+              [
+                40,
+                47
+              ]
+            ]
+          },
+          {
+            "name": "Asterisk",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_06_Asterisk.png",
+            "dmx": [
+              [
+                48,
+                55
+              ]
+            ]
+          },
+          {
+            "name": "Bones",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_07_Bones.png",
+            "dmx": [
+              [
+                56,
+                63
+              ]
+            ]
+          },
+          {
+            "name": "Wi-Fi",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_08_Wi-Fi.png",
+            "dmx": [
+              [
+                64,
+                71
+              ]
+            ]
+          },
+          {
+            "name": "Swirl 5",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_09_Swirl5.png",
+            "dmx": [
+              [
+                72,
+                79
+              ]
+            ]
+          },
+          {
+            "name": "Curved Triangle",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_10_CurvedTriangle.png",
+            "dmx": [
+              [
+                80,
+                87
+              ]
+            ]
+          },
+          {
+            "name": "Trefoil",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_11_Trefoil.png",
+            "dmx": [
+              [
+                88,
+                95
+              ]
+            ]
+          },
+          {
+            "name": "Square Outline",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_12_SquareOutline.png",
+            "dmx": [
+              [
+                96,
+                103
+              ]
+            ]
+          },
+          {
+            "name": "Dot Cluster",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_13_DotCluster.png",
+            "dmx": [
+              [
+                104,
+                111
+              ]
+            ]
+          },
+          {
+            "name": "Petal Ring 6",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_14_PetalRing6.png",
+            "dmx": [
+              [
+                112,
+                119
+              ]
+            ]
+          },
+          {
+            "name": "Daisy",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": "USERGOBO/SHEHDS180W_G1_15_Daisy.png",
+            "dmx": [
+              [
+                120,
+                127
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Prism",
+        "kind": "other",
+        "slotColors": "set",
+        "slots": [
+          {
+            "name": "18 Facet",
+            "color": {
+              "r": 0.9998411536,
+              "g": 1.0000230074,
+              "b": 1.0002399683,
+              "a": 1
+            },
+            "media": null,
+            "dmx": [
+              [
+                8,
+                127
+              ]
+            ]
+          }
+        ]
+      }
+    ],
+    "limitations": []
+  },
+  "removeType": {
+    "outcome": "succeeded",
+    "verification": {
+      "status": "matched",
+      "checked": "the type is gone from the live patch (by GUID)",
+      "expected": null,
+      "actual": null
+    },
+    "committed": true,
+    "steps": [
+      "check_state:succeeded",
+      "check_type:succeeded",
+      "enter:succeeded",
+      "wait_copy:succeeded",
+      "remove_type:succeeded",
+      "isolation_check:succeeded",
+      "commit:succeeded",
+      "wait_commit:succeeded",
+      "read_back:succeeded"
+    ]
+  },
+  "fileRemoved": "/Users/bstark/MALightingTechnology/gma3_library/fixturetypes/SHEHDS@180W_Beam@2026-10-20.gdtf"
+}

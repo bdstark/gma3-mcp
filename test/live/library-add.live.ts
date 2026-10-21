@@ -23,14 +23,15 @@ import { registerPatchTools } from "../../src/tools/patch.ts";
 import { registerTypeStructureTools } from "../../src/tools/typestructure.ts";
 import type { ToolContext } from "../../src/tools/context.ts";
 import { captureTools } from "../helpers/tool-harness.ts";
-import { liveTest, liveEnabled, bridge } from "./live.ts";
+import { liveTest, liveEnabled, bridge, showPattern } from "./live.ts";
 
 const exclusive = process.env.GMA3_LIVE_EXCLUSIVE === "1";
 const GDTF = process.env.GMA3_LIVE_GDTF;
 const FILE = GDTF ? basename(GDTF) : "";
 const ctx: ToolContext = { bridge, mutations: new MutationLock(), requestTimeoutMs: 15000, luaToolAllowed: false };
 const tools = new Map([...captureTools(registerPatchTools, ctx), ...captureTools(registerTypeStructureTools, ctx)]);
-const record: Record<string, unknown> = {};
+const showChecks: unknown[] = [];
+const record: Record<string, unknown> = { showChecks };
 
 async function call(name: string, args: Record<string, unknown>) {
   const res = await tools.get(name)!.call(args);
@@ -51,12 +52,22 @@ const ok = (r: { result: any; isError: boolean; text: string }, what: string) =>
   return r.result;
 };
 
-const cleanup = { file: undefined as string | undefined, guid: undefined as string | undefined };
+const cleanup = { file: undefined as string | undefined, guid: undefined as string | undefined, show: undefined as string | undefined };
+
+/** Before every write: the show loaded at the start is still loaded (the operator may switch shows mid-run). */
+async function sameShow(what: string): Promise<void> {
+  const ping = (await bridge.request("ping", {}, 4000)) as { showfile?: string; bridgeVersion?: string };
+  if (!cleanup.show) cleanup.show = ping.showfile;
+  assert.equal(ping.showfile, cleanup.show, `${what}: the loaded show changed to "${ping.showfile}"; stopped`);
+  assert.ok(showPattern.test(ping.showfile ?? ""), `${what}: "${ping.showfile}" is not a disposable show`);
+  showChecks.push({ before: what, show: ping.showfile, bridge: ping.bridgeVersion });
+}
 
 after(async () => {
   if (!liveEnabled || !exclusive || !GDTF) return;
   try {
     if (cleanup.guid) {
+      await sameShow("remove type");
       const t = await call("gma3_patch_types", {});
       const no = t.result.types.find((x: any) => x.guid === cleanup.guid)?.no;
       if (no !== undefined) record.removeType = (await call("gma3_patch_remove_type", { type: no, exclusive: true })).result;
@@ -80,12 +91,17 @@ liveTest("SU-22: a GDTF sent into the user library, imported and removed", async
   assert.equal(stat0.exists, false, `${FILE} is already in the user library; remove it first`);
   assert.deepEqual(stat0.listedIn, []);
 
+  await sameShow("library add");
   const add = ok(await call("gma3_patch_library_add", { file_name: FILE, content_base64: bytes.toString("base64") }), "library add");
   cleanup.file = add.path;
   record.add = add;
   assert.equal(add.size, bytes.length);
   assert.equal(add.libraryEntry.source, "user");
   assert.equal(add.libraryEntry.inShow.length, 0, "the show already has a type matching the file");
+  // inShow matches the file name's model, which need not be the GDTF's type name: check the type itself too.
+  const types = await call("gma3_patch_types", {});
+  const dup = types.result.types.find((x: any) => x.name === add.fixtureType.name && x.manufacturer === add.fixtureType.manufacturer);
+  assert.equal(dup, undefined, `the show already has type ${dup?.no} "${dup?.name}"; remove it first`);
 
   const again = await call("gma3_patch_library_add", { file_name: FILE, content_base64: bytes.toString("base64") });
   assert.equal(again.isError, true);
@@ -96,6 +112,7 @@ liveTest("SU-22: a GDTF sent into the user library, imported and removed", async
   record.library = lib.result;
   assert.ok(lib.result.entries.some((e: any) => e.file === FILE && e.source === "user"));
 
+  await sameShow("import");
   const imp = ok(await call("gma3_patch_import", { file: FILE, source: "user", exclusive: true }), "import");
   cleanup.guid = imp.type.guid;
   record.import = imp;
@@ -106,4 +123,5 @@ liveTest("SU-22: a GDTF sent into the user library, imported and removed", async
   const structure = await call("gma3_patch_type_structure", { type: imp.type.no, mode: imp.type.modes[0].no });
   assert.equal(structure.isError, false, structure.text);
   record.structure = structure.result;
+  for (const w of structure.result.wheels ?? []) assert.notEqual(w.slotColors, "unreadable", `wheel ${w.name}: a slot colour could not be read`);
 });

@@ -23,7 +23,7 @@ for its ~10 seconds.
 **Isolation check: best-effort detection.** Before committing, the tool fingerprints the copy and the live patch:
 every object and property of every patch collection, leaving out the FIDs the call touches and the data the console
 derives itself (listed in the KB-25 and KB-26 records; bridge 0.25.1 adds what a fresh fixture-type import leaves
-different). It compares the two, one collection per request. Anything else that
+different; bridge 0.38.0 leaves out the DMX curves' points, which a GDTF import reorders). It compares the two, one collection per request. Anything else that
 differs means someone changed the show during the session: nothing is committed and the copy is left open.
 
 Fixture types are compared by identity, not by number (bridge 0.26.0): deleting a type renumbers the ones after it,
@@ -169,7 +169,7 @@ Each entry has `source`, `file` (the name to import), `format`, `manufacturer` a
 | Field | |
 | --- | --- |
 | `name`, `modes` | From the XML header of a grandMA3 or user `.xml` (`modesKnown: true`). A grandMA2 `.pxml` is encrypted: its modes are known only after the import |
-| `verified` | `false` for user-library and WorldServer files: their import is not verified on the console yet |
+| `verified` | `false` for user-library `.xml` and WorldServer files: their import is not verified on the console yet. User-library `.gdtf` is verified (bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md)) |
 | `inShow` | Show types with the same manufacturer and name: importing again would add a duplicate |
 | `set` | Scenery |
 

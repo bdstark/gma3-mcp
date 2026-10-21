@@ -4048,7 +4048,9 @@ end
 -- display role). Fixtures whose FID is in `exclude` (the ones a session touches) are left out with their
 -- sub-fixtures. Left out because the console derives or toggles them itself (each established live): the
 -- DMX address map, UI and RT channels, the fixture-type overview and the Patch menu's filter state; the
--- universes' per-address children; numbering inside DmxCurves (renumbered whenever a copy is made); each DMX
+-- universes' per-address children; numbering inside DmxCurves (renumbered whenever a copy is made) and the curves'
+-- points (DmxCurve 1 lists one of its two points, Min or Max, and which one flips with a GDTF import and with the
+-- next copy: SU-22, live 2026-10-20; the curves themselves are hashed); each DMX
 -- mode's SubfixtureOverview (a derived list whose geometry references the copy renumbers); and the
 -- properties below. ATTRIBUTEINDEXOLD is unset (4294967295) in the live patch for attributes a fixture-type
 -- import added and numbered in the copy (onPC 2.5.1, live 2026-10-14: the only differences after importing
@@ -4145,7 +4147,8 @@ local function patchFingerprint(p, only, exclude, opts)
       local class = safeCall(c, "GetClass")
       local fid = class == "Fixture" and numericFid(c) or nil
       local skipType = typeList and excludeGuids[guidOf(c)]
-      if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType then
+      local skipPoint = renumbered and class == "DmxCurvePoint"
+      if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType and not skipPoint then
         if not add(c, depth, renumbered, typeList) then return end
         walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false, append)
       end
@@ -4208,12 +4211,14 @@ end
 --   patch.removeType  deletes an unused type from the copy; the types after it are renumbered
 -------------------------------------------------------------------------------
 do
-  -- source -> path type and extensions. grandMA3 and grandMA2 imports are verified live; user-library and
-  -- WorldServer files (.xml, .gdtf) go through the same command but are unverified (no such file was available).
+  -- source -> path type and extensions. grandMA3 and grandMA2 imports are verified live (SU-03), and user-library
+  -- .gdtf files (SU-22, live 2026-10-20: a GDTF 1.2 with gobo images and slot colours). User-library .xml and
+  -- WorldServer files go through the same command but are unverified (no such file was available). verified is a
+  -- boolean, or a table by extension.
   local LIB_SOURCES = {
     { id = "grandma3", path = "GrandMA3Library", exts = { "xml" }, verified = true },
     { id = "grandma2", path = "GrandMA2Library", exts = { "pxml" }, verified = true },
-    { id = "user", path = "UserFixtures", exts = { "xml", "gdtf" }, verified = false },
+    { id = "user", path = "UserFixtures", exts = { "xml", "gdtf" }, verified = { gdtf = true, xml = false } },
     { id = "worldserver", path = "WorldServerLibrary", exts = { "xml", "gdtf" }, verified = false },
   }
   local LIB_MAX_LIMIT = 500
@@ -4290,7 +4295,7 @@ do
                 if type(name) == "string" and name:lower():sub(-#ext - 1) == "." .. ext then
                   local manufacturer, model, revision, fext = parseFileName(name)
                   entries[#entries + 1] = { source = src.id, file = name, path = base .. "/" .. name, size = e.size, time = e.time, format = fext,
-                    manufacturer = manufacturer, model = model, revision = revision, verified = src.verified }
+                    manufacturer = manufacturer, model = model, revision = revision, verified = src.verified == true or (type(src.verified) == "table" and src.verified[ext] == true) }
                 end
               end
             end
@@ -4633,12 +4638,13 @@ do
   end
 
   -- SU-19 (0.34.0): the type's wheels. A slot's Name displays as "Slot 2 'colour 1'" (live), so the name is the object's
-  -- own; Color is "r,g,b,a" in 0..1; MediaFileName / Appearance name a gobo image. A grandMA2-library type reads every
-  -- slot white (no colours in the type).
+  -- own; Color is "r,g,b,a" in about 0..1; MediaFileName / Appearance name a gobo image. A grandMA2-library type reads
+  -- every slot white (no colours in the type). A GDTF slot outside the sRGB gamut keeps a slightly negative component
+  -- ("0.9999432564,-0.0000825030,-0.0000241920,1.0000000000" for red; SU-22, live 2026-10-20).
   local function colorOf(o)
     local v = displayProp(o, "Color")
     if not v then return nil end
-    local r, g, b, a = v:match("^%s*([%d%.]+)%s*,%s*([%d%.]+)%s*,%s*([%d%.]+)%s*,?%s*([%d%.]*)")
+    local r, g, b, a = v:match("^%s*(%-?[%d%.]+)%s*,%s*(%-?[%d%.]+)%s*,%s*(%-?[%d%.]+)%s*,?%s*([%d%.]*)")
     if not r then return nil end
     return { r = tonumber(r), g = tonumber(g), b = tonumber(b), a = tonumber(a) or 1 }
   end
