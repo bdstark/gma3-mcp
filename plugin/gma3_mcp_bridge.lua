@@ -4501,8 +4501,8 @@ do
     if #file > 200 then raise("[bad-name] the file name is longer than 200 characters") end
     if file:find("[/\\\"%c]") or file:sub(1, 1) == "." or file:find("..", 1, true) then raise("[bad-name] the file name must not contain / \\ \" .. or a control character, nor start with a dot") end
     local stem, ext = file:match("^(.+)%.(%w+)$")
-    ext = ext and ext:lower()
-    if ext ~= "gdtf" and ext ~= "xml" then raise("[bad-name] the file name must end in .gdtf or .xml") end
+    -- Lower case only: listLibrary lists *.gdtf and *.xml, which miss ".XML" on a case-sensitive file system.
+    if ext ~= "gdtf" and ext ~= "xml" then raise("[bad-name] the file name must end in .gdtf or .xml (lower case)") end
     local parts = {}
     for part in (stem .. "@"):gmatch("(.-)@") do parts[#parts + 1] = part end
     if #parts < 2 or #parts > 3 then raise("[bad-name] the file name must be manufacturer@model[@revision]." .. ext) end

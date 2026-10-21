@@ -202,7 +202,7 @@ os.remove(USER .. "/acme@case.gdtf")
 r = add({ file = "Acme@Big.gdtf", offset = 0, data = b64("PK"), total = 8 * 1024 * 1024 + 1, crc32 = "00000000" })
 check("a total over the size cap is refused", r.ok == false and r.code == "bad-args", J(r))
 
-for _, bad in ipairs({ "../evil@x.gdtf", "a/b@c.gdtf", "nomanufacturer.gdtf", "a@b.txt", "a@b@c@d.gdtf", ".a@b.gdtf", 'a@"b".gdtf', "a@ b.gdtf", "a@@b.gdtf", "a@b\n.gdtf" }) do
+for _, bad in ipairs({ "Acme@Upper.XML", "Acme@Upper.Gdtf", "../evil@x.gdtf", "a/b@c.gdtf", "nomanufacturer.gdtf", "a@b.txt", "a@b@c@d.gdtf", ".a@b.gdtf", 'a@"b".gdtf', "a@ b.gdtf", "a@@b.gdtf", "a@b\n.gdtf" }) do
   r = add({ file = bad, offset = 0, data = b64("x"), total = 1, crc32 = crc32("x"), final = true })
   check("bad name refused: " .. bad:gsub("\n", "\\n"), r.ok == false and (r.code == "bad-name" or r.code == "bad-args"), J(r))
 end

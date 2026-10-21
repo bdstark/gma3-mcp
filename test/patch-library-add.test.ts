@@ -141,8 +141,8 @@ const stepNames = (r: any) => r.steps.map((s: any) => `${s.name}:${s.status}`);
 
 test("libraryFileName: manufacturer@model[@revision].gdtf|.xml only", () => {
   assert.deepEqual(libraryFileName(FILE), { file: FILE, format: "gdtf", manufacturer: "SHEHDS", model: "180W_Beam", revision: "2026-10-20" });
-  assert.equal(libraryFileName("Acme@Spot.XML").format, "xml");
-  for (const bad of ["../x@y.gdtf", "a/b@c.gdtf", "a\\b@c.gdtf", "nomanufacturer.gdtf", "a@b.txt", "a@b@c@d.gdtf", ".a@b.gdtf", 'a@"b".gdtf', "a@ b.gdtf", "a@@b.gdtf", "a@b\n.gdtf", ""]) {
+  assert.equal(libraryFileName("Acme@Spot.xml").format, "xml");
+  for (const bad of ["Acme@Spot.XML", "Acme@Spot.Gdtf", "../x@y.gdtf", "a/b@c.gdtf", "a\\b@c.gdtf", "nomanufacturer.gdtf", "a@b.txt", "a@b@c@d.gdtf", ".a@b.gdtf", 'a@"b".gdtf', "a@ b.gdtf", "a@@b.gdtf", "a@b\n.gdtf", ""]) {
     assert.throws(() => libraryFileName(bad), undefined, bad);
   }
 });
@@ -187,6 +187,10 @@ test("checkContent parses the XML: comments, quotes, entities and well-formednes
     ['<GMA3><FixtureType Name="Spot&#xFFFE;"/></GMA3>', /character XML does not allow/],
     ['<GMA3><FixtureType Name="Spot"/>]]></GMA3>', /\]\]> outside a CDATA section/],
     ['<GMA3><!--x---><FixtureType Name="Spot"/></GMA3>', /comment ending in -/],
+    ['\u00A0<GMA3><FixtureType Name="Spot"/></GMA3>', /text outside the root element/],
+    ['<GMA3><FixtureType\u00A0Name="Spot"/></GMA3>', /malformed attribute/],
+    ['<GMA3><FixtureType Name="Spot"\u00A0/></GMA3>', /malformed attribute/],
+    ['<GMA3><FixtureType Name="Spot"/></GMA3\u00A0>', /malformed end tag/],
     ['<GMA3><FixtureType Name="Spot"/><? x?></GMA3>', /without a target name/],
     ['<GMA3><FixtureType Name="Spot"/><?XML x?></GMA3>', /not at the start/],
     ['<GMA3><FixtureType Name="Spot\u0001"/></GMA3>', /U\+0001/],

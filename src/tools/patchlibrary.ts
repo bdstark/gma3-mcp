@@ -31,8 +31,10 @@ export function libraryFileName(raw: unknown): { file: string; format: "gdtf" | 
   if (raw.length > 200) throw new Error("file_name is longer than 200 characters");
   if (/[/\\"\u0000-\u001f\u007f]/.test(raw) || raw.startsWith(".") || raw.includes("..")) throw new Error('file_name must not contain / \\ " .. or a control character, nor start with a dot');
   const m = /^(.+)\.([A-Za-z0-9]+)$/.exec(raw);
-  const format = m?.[2].toLowerCase();
-  if (!m || (format !== "gdtf" && format !== "xml")) throw new Error("file_name must end in .gdtf or .xml");
+  const format = m?.[2];
+  // Lower case only: the console's libraries are listed by *.gdtf and *.xml, which miss ".XML" on a case-sensitive file
+  // system (review of PR #84).
+  if (!m || (format !== "gdtf" && format !== "xml")) throw new Error("file_name must end in .gdtf or .xml (lower case)");
   const parts = m[1].split("@");
   if (parts.length < 2 || parts.length > 3) throw new Error(`file_name must be manufacturer@model[@revision].${format}`);
   if (parts.some((p) => p === "" || p !== p.trim())) throw new Error("manufacturer, model and revision in file_name must be non-empty, without leading or trailing spaces");
@@ -64,12 +66,16 @@ export interface XmlElement {
 
 const XML_NAME = "[A-Za-z_:][\\w:.-]*";
 const START_TAG = new RegExp(`<(${XML_NAME})`, "y");
-const END_TAG = new RegExp(`</(${XML_NAME})\\s*>`, "y");
-const ATTRIBUTE = new RegExp(`\\s+(${XML_NAME})\\s*=\\s*(?:"([^"<]*)"|'([^'<]*)')`, "y");
-const TAG_CLOSE = /\s*(\/?)>/y;
+// XML's whitespace is space, tab, CR and LF only; JavaScript's \s would also take a no-break space (review of PR #84).
+const XML_S = "[ \\t\\r\\n]";
+const END_TAG = new RegExp(`</(${XML_NAME})${XML_S}*>`, "y");
+const ATTRIBUTE = new RegExp(`${XML_S}+(${XML_NAME})${XML_S}*=${XML_S}*(?:"([^"<]*)"|'([^'<]*)')`, "y");
+const TAG_CLOSE = new RegExp(`${XML_S}*(/?)>`, "y");
 // A processing instruction's target, then whitespace or its end. The XML declaration's own grammar (XML 1.0, 2.8).
-const PI_TARGET = new RegExp(`^<\\?(${XML_NAME})(?:\\s|\\?>)`);
-const XML_DECLARATION = /^<\?xml\s+version\s*=\s*(?:"1\.\d+"|'1\.\d+')(?:\s+encoding\s*=\s*(?:"[A-Za-z][\w.-]*"|'[A-Za-z][\w.-]*'))?(?:\s+standalone\s*=\s*(?:"(?:yes|no)"|'(?:yes|no)'))?\s*\?>$/;
+const PI_TARGET = new RegExp(`^<\\?(${XML_NAME})(?:${XML_S}|\\?>)`);
+const XML_DECLARATION = new RegExp(
+  `^<\\?xml${XML_S}+version${XML_S}*=${XML_S}*(?:"1\\.\\d+"|'1\\.\\d+')(?:${XML_S}+encoding${XML_S}*=${XML_S}*(?:"[A-Za-z][\\w.-]*"|'[A-Za-z][\\w.-]*'))?(?:${XML_S}+standalone${XML_S}*=${XML_S}*(?:"(?:yes|no)"|'(?:yes|no)'))?${XML_S}*\\?>$`,
+);
 const NAMED_ENTITIES: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
 /** XML 1.0 Char: tab, newline, carriage return, U+0020-D7FF, U+E000-FFFD, U+10000-10FFFF. */
 const xmlChar = (n: number) => n === 0x9 || n === 0xa || n === 0xd || (n >= 0x20 && n <= 0xd7ff) || (n >= 0xe000 && n <= 0xfffd) || (n >= 0x10000 && n <= 0x10ffff);
@@ -113,7 +119,7 @@ export function parseXml(text: string): XmlElement[] {
   while (i < s.length) {
     const lt = s.indexOf("<", i);
     const chunk = lt < 0 ? s.slice(i) : s.slice(i, lt);
-    if (stack.length === 0 && chunk.trim() !== "") fail("text outside the root element");
+    if (stack.length === 0 && /[^ \t\r\n]/.test(chunk)) fail("text outside the root element");
     decode(chunk);
     if (chunk.includes("]]>")) fail("]]> outside a CDATA section");
     if (lt < 0) break;
@@ -139,7 +145,7 @@ export function parseXml(text: string): XmlElement[] {
       if (target.toLowerCase() === "xml") {
         if (i !== 0) fail("an XML declaration that is not at the start");
         if (target !== "xml" || !XML_DECLARATION.test(pi)) fail("a malformed XML declaration (version, then optional encoding and standalone)");
-        const enc = /encoding\s*=\s*["']([^"']*)["']/.exec(pi)?.[1];
+        const enc = /encoding[ \t\r\n]*=[ \t\r\n]*["']([^"']*)["']/.exec(pi)?.[1];
         if (enc !== undefined && !/^utf-?8$/i.test(enc)) fail(`the encoding ${enc} (the file is read as UTF-8)`);
       }
       i = e + 2;
@@ -442,7 +448,7 @@ export const registerPatchLibraryAddTool: RegisterTools = (server, ctx) => {
       title: "Add a fixture-type file to the user library",
       description:
         "Put a fixture-type file (GDTF .gdtf, or a grandMA3 fixture-type .xml) into the console's user fixture library, so gma3_patch_import can import it. The bytes go over the bridge: the client need not be on the console's machine. " +
-        "Give the file as content_base64 (its bytes, base64) with file_name, or as path (a file on the MCP server's host; file_name defaults to its name). file_name must be manufacturer@model[@revision].gdtf or .xml. " +
+        "Give the file as content_base64 (its bytes, base64) with file_name, or as path (a file on the MCP server's host; file_name defaults to its name). file_name must be manufacturer@model[@revision].gdtf or .xml, the extension in lower case. " +
         `Pre-checks (nothing written on failure): the name; at most ${LIBRARY_ADD_MAX_BYTES / 1024 / 1024} MiB; a .gdtf is a zip whose description.xml has a FixtureType (its name, manufacturer and DMX modes are reported); an .xml has a FixtureType element; the name is not in the user library yet unless replace: true, and in no other library (Import Library could not tell them apart). ` +
         "The file is written next to its target and moved into place only when its size and CRC-32 match. Read-back: the file's size and CRC-32 on the console, and gma3_patch_library lists it under source user. The show is not changed. Needs bridge 0.38.0.",
       inputSchema: {
