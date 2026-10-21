@@ -48,8 +48,9 @@ Type 3 "180W Beam Moving Head" (converted from the grandMA2 library):
 
 The channel-set DMX values are 24-bit hex, as displayed. For an 8-bit channel `0B0B0B` is 11, so "colour 1" is
 11–21. Every slot reads white, so the type carries no slot colours. The tool says so and has the agent ask. What each
-slot of this beam's gobo and colour wheels actually projects is in
-[docs/fixtures/shehds-180w-beam.md](../fixtures/shehds-180w-beam.md).
+slot of this beam's gobo and colour wheels actually projects is in the
+[gma3-fixtures](https://github.com/bdstark/gma3-fixtures/tree/main/shehds-180w-beam) repository, with a GDTF built
+from it.
 
 Bridge 0.34.0 first nested the wheel channel functions inside each mode. Their channel sets came back as
 `<table: max depth>`, cut by the serialiser's depth bound, so they now travel beside the modes, tagged with the mode.
