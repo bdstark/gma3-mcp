@@ -23,7 +23,7 @@ for its ~10 seconds.
 **Isolation check: best-effort detection.** Before committing, the tool fingerprints the copy and the live patch:
 every object and property of every patch collection, leaving out the FIDs the call touches and the data the console
 derives itself (listed in the KB-25 and KB-26 records; bridge 0.25.1 adds what a fresh fixture-type import leaves
-different; bridge 0.38.0 leaves out the DMX curves' points, which a GDTF import reorders). It compares the two, one collection per request. Anything else that
+different; bridge 0.38.0 leaves out the default curve's Min and Max points with their default values, one of which a GDTF import swaps for the other). It compares the two, one collection per request. Anything else that
 differs means someone changed the show during the session: nothing is committed and the copy is left open.
 
 Fixture types are compared by identity, not by number (bridge 0.26.0): deleting a type renumbers the ones after it,
@@ -191,9 +191,9 @@ Steps, stopping at the first one that does not succeed (nothing is written befor
 | Step | Bridge op | What it does |
 | --- | --- | --- |
 | `read_file` | | With `path` only: the file exists and is at most 8 MiB |
-| `check_content` | | At most 8 MiB, not empty. A `.gdtf` must be a zip (stored or deflate entries, no zip64, no encryption) whose `description.xml` passes the zip CRC and has a `GDTF` root and a `FixtureType` with a `Name`; an `.xml` must be XML with a `FixtureType` element. Reports the type's name, manufacturer, short name, DMX mode names and the GDTF `DataVersion` |
+| `check_content` | | At most 8 MiB, not empty. A `.gdtf` must be a zip (stored or deflate entries, no zip64, no encryption) whose `description.xml` passes the zip CRC and is well-formed XML with a `GDTF` root and a `FixtureType` child with a `Name`; an `.xml` must be well-formed XML with a `GMA3` root and a `FixtureType` child with a `Name`. The XML is parsed, not matched: comments and CDATA are skipped, either quote is accepted, and a DOCTYPE is refused (no entity is resolved). Reports the type's name, manufacturer, short name, DMX mode names and the GDTF `DataVersion` |
 | `check_library` | `patch.libraryStat` | The name is in no other library (`Import Library` names the file only and could not tell them apart), and not in the user library unless `replace` (the refusal names its size and CRC-32, and whether they are the bytes sent) |
-| `write` | `patch.libraryAdd` | 48 KiB chunks (64 KiB of base64 per bridge line). The bridge appends each at its offset to `<file>.gma3mcp-part` beside the target (no library extension, so it is never listed or imported). The last chunk checks the part file's size and CRC-32 against the whole file, then renames it into place. A refusal removes the part file; on a lost reply the tool sends `abort` (`clean_up` step) |
+| `write` | `patch.libraryAdd` | 48 KiB chunks (64 KiB of base64 per bridge line). The bridge appends each at its offset to `<file>.gma3mcp-part` beside the target (no library extension, so it is never listed or imported). The last chunk checks the part file's size and CRC-32 against the whole file, then renames it into place. With `replace`, a platform whose rename does not overwrite (Windows) has the old file moved aside first and back again if the new one cannot take its place, so a failed replace keeps the old file. A refusal removes the part file; on a lost reply the tool sends `abort` (`clean_up` step) |
 | `read_back` | `patch.libraryStat`, `patch.library` | The file on the console has the size and CRC-32 sent, and `patch.library` lists it under source `user` |
 
 The result has `file`, `path` (on the console), `size`, `crc32`, `replaced`, `fixtureType` (from the file),

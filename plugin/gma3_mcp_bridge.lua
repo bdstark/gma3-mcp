@@ -4048,9 +4048,10 @@ end
 -- display role). Fixtures whose FID is in `exclude` (the ones a session touches) are left out with their
 -- sub-fixtures. Left out because the console derives or toggles them itself (each established live): the
 -- DMX address map, UI and RT channels, the fixture-type overview and the Patch menu's filter state; the
--- universes' per-address children; numbering inside DmxCurves (renumbered whenever a copy is made) and the curves'
--- points (DmxCurve 1 lists one of its two points, Min or Max, and which one flips with a GDTF import and with the
--- next copy: SU-22, live 2026-10-20; the curves themselves are hashed); each DMX
+-- universes' per-address children; numbering inside DmxCurves (renumbered whenever a copy is made) and the default
+-- curve's end points (the first curve lists one of its two points, Min 000000 -> 000000 or Max FFFFFF -> FFFFFF, and
+-- which one flips with a GDTF import and with the next copy: SU-22, live 2026-10-20; only those two points with exactly
+-- those values are left out, so every other point, an edited end point and the curves themselves are hashed); each DMX
 -- mode's SubfixtureOverview (a derived list whose geometry references the copy renumbers); and the
 -- properties below. ATTRIBUTEINDEXOLD is unset (4294967295) in the live patch for attributes a fixture-type
 -- import added and numbered in the copy (onPC 2.5.1, live 2026-10-14: the only differences after importing
@@ -4136,7 +4137,12 @@ local function patchFingerprint(p, only, exclude, opts)
     r.hash = fnv(r.hash, table.concat(parts, "\31") .. "\n")
     return true
   end
-  local function walk(h, depth, renumbered, guide, typeList, append)
+  -- The default curve's Min or Max point with its default values (see above).
+  local function defaultEndPoint(c)
+    local name, inV, outV = tostring(safeProp(c, "name")), displayProp(c, "In"), displayProp(c, "Out")
+    return (name == "Min" and inV == "000000" and outV == "000000") or (name == "Max" and inV == "FFFFFF" and outV == "FFFFFF")
+  end
+  local function walk(h, depth, renumbered, guide, typeList, append, defaultCurve)
     local kids = h:Children()
     local gkids = guide and guide:Children() or nil
     -- Truncate to the guide only where an import appends; elsewhere every child is hashed (so an extra one differs).
@@ -4147,10 +4153,10 @@ local function patchFingerprint(p, only, exclude, opts)
       local class = safeCall(c, "GetClass")
       local fid = class == "Fixture" and numericFid(c) or nil
       local skipType = typeList and excludeGuids[guidOf(c)]
-      local skipPoint = renumbered and class == "DmxCurvePoint"
+      local skipPoint = defaultCurve and class == "DmxCurvePoint" and defaultEndPoint(c)
       if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType and not skipPoint then
         if not add(c, depth, renumbered, typeList) then return end
-        walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false, append)
+        walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false, append, renumbered and depth == 1 and i == 1)
       end
     end
   end
@@ -4539,8 +4545,22 @@ do
     local size, crc = fileCrc(part)
     if size ~= total then fail("[size-mismatch] the part file has " .. tostring(size) .. " bytes, not " .. total) end
     if crc ~= args.crc32:lower() then fail("[crc-mismatch] the part file's CRC-32 is " .. tostring(crc) .. ", not " .. args.crc32:lower()) end
-    if exists then os.remove(path) end
+    -- os.rename replaces an existing file in one step where the platform allows it (POSIX). Where it refuses (Windows),
+    -- the old file is moved aside first and moved back when the new one cannot take its place: a failed replace keeps it.
     local moved, merr = os.rename(part, path)
+    if not moved and exists then
+      local old = path .. ".gma3mcp-old"
+      os.remove(old)
+      local aside, aerr = os.rename(path, old)
+      if not aside then fail("[write-failed] could not move the existing file aside: " .. tostring(aerr) .. "; it is unchanged") end
+      moved, merr = os.rename(part, path)
+      if not moved then
+        local back, berr = os.rename(old, path)
+        if not back then fail("[write-failed] could not move the part file into place (" .. tostring(merr) .. ") nor the existing file back (" .. tostring(berr) .. "); it is at " .. old) end
+        fail("[write-failed] could not move the part file into place: " .. tostring(merr) .. "; the existing file is unchanged")
+      end
+      os.remove(old)
+    end
     if not moved then fail("[write-failed] could not move the part file into place: " .. tostring(merr)) end
     local finalSize, finalCrc = fileCrc(path)
     return { file = args.file, path = path, format = ext, size = finalSize, crc32 = finalCrc, replaced = exists }

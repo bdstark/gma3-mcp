@@ -151,8 +151,26 @@ check("patch.library lists the new file under source user", r.ok and r.result.to
 
 r = upload(FILE, "other bytes")
 check("an existing file is refused without replace and left alone", r.ok == false and r.code == "exists" and slurp(USER .. "/" .. FILE) == blob, J(r))
+-- A platform whose rename does not replace an existing file (Windows): the old file goes aside and comes back on failure.
+local realRename = os.rename
+local function noReplaceRename(failMoveIn)
+  return function(from, to)
+    if slurp(to) ~= nil then return nil, "file exists" end
+    if failMoveIn and from:sub(-#".gma3mcp-part") == ".gma3mcp-part" then return nil, "injected failure" end
+    return realRename(from, to)
+  end
+end
+os.rename = noReplaceRename(true)
 r = upload(FILE, "other bytes", { replace = true })
-check("replace overwrites it", r.ok and r.result.replaced == true and slurp(USER .. "/" .. FILE) == "other bytes", J(r))
+os.rename = realRename
+check("a replace whose move fails keeps the existing file", r.ok == false and r.code == "write-failed" and tostring(r.error):find("unchanged") and slurp(USER .. "/" .. FILE) == blob
+  and slurp(USER .. "/" .. FILE .. ".gma3mcp-old") == nil and slurp(USER .. "/" .. FILE .. ".gma3mcp-part") == nil, J(r))
+os.rename = noReplaceRename(false)
+r = upload(FILE, "other bytes", { replace = true })
+os.rename = realRename
+check("replace works where rename does not overwrite, leaving no backup", r.ok and r.result.replaced == true and slurp(USER .. "/" .. FILE) == "other bytes" and slurp(USER .. "/" .. FILE .. ".gma3mcp-old") == nil, J(r))
+r = upload(FILE, "third bytes", { replace = true })
+check("replace overwrites it", r.ok and r.result.replaced == true and slurp(USER .. "/" .. FILE) == "third bytes", J(r))
 
 r = request("patch.libraryAdd", { file = "Acme@Wrong Sum.xml", offset = 0, data = b64("<GMA3/>"), total = 7, crc32 = "00000000", final = true })
 check("a CRC mismatch is refused, nothing left behind", r.ok == false and r.code == "crc-mismatch" and slurp(USER .. "/Acme@Wrong Sum.xml") == nil and slurp(USER .. "/Acme@Wrong Sum.xml.gma3mcp-part") == nil, J(r))

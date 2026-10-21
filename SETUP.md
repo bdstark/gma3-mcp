@@ -954,8 +954,9 @@ record [su-22-library-add-macos-2.5.1.md](docs/probes/su-22-library-add-macos-2.
 - The SHEHDS GDTF went over the bridge in two chunks, matched size and CRC-32 on the console, and imported from the
   user library: one 15-channel mode, a 12-slot colour wheel with all colours, a 15-slot gobo wheel with its images,
   reset defaulting to 0. User-library `.gdtf` is now marked verified.
-- The isolation check leaves out DmxCurve points: `DmxCurve 1` lists one of its two points, and a GDTF import flips
-  which one (the next copy flips it back).
+- The isolation check leaves out the default curve's Min and Max points with their default values: `DmxCurve 1`
+  lists one of its two points, and a GDTF import flips which one (the next copy flips it back). Other curves' points,
+  an edited end point and the curves themselves are still compared.
 - Slot colours with a slightly negative component (CIE colours outside sRGB) are read; SU-19's reader refused them.
 
 ## Recommended delivery order

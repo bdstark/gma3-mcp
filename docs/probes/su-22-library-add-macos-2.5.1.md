@@ -67,9 +67,10 @@ approval the open copy was committed with `patch.commit`. Then three untouched c
 | 3 | Max #2 | Max #5 | equal |
 
 So which point the curve lists flips with a GDTF import and back with the next copy, and the point's number changes
-with every copy (as KB-25 found). The grandMA2 imports of SU-03 did not flip it. The fingerprint now leaves the
-curves' points (`DmxCurvePoint`) out; the curves themselves are still hashed, so a change to a curve is still seen
-(`test/lua/patch_ops_test.lua`). With that bridge, `gma3_patch_remove_type` of the committed type and the next import
+with every copy (as KB-25 found). The grandMA2 imports of SU-03 did not flip it. The fingerprint now leaves out only
+the first curve's Min (000000 -> 000000) and Max (FFFFFF -> FFFFFF) points with exactly those values; other curves'
+points, an edited end point and the curves themselves are still hashed (`test/lua/patch_ops_test.lua`; narrowed after
+the review of PR #84, which pointed out that leaving every point out would miss an edit to a custom curve). With that bridge, `gma3_patch_remove_type` of the committed type and the next import
 passed the isolation check.
 
 **Six colour-wheel slots read as no colour.** `gma3_patch_type_structure` reported `slotColors: unreadable`, with

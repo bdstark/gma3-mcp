@@ -54,17 +54,116 @@ export interface FixtureHeader {
   files?: number;
 }
 
-const decodeXml = (v: string) => v.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+export interface XmlElement {
+  name: string;
+  attrs: Record<string, string>;
+  /** 0 for the root element. */
+  depth: number;
+}
+
+const XML_NAME = "[A-Za-z_:][\\w:.-]*";
+const START_TAG = new RegExp(`<(${XML_NAME})`, "y");
+const END_TAG = new RegExp(`</(${XML_NAME})\\s*>`, "y");
+const ATTRIBUTE = new RegExp(`\\s+(${XML_NAME})\\s*=\\s*(?:"([^"<]*)"|'([^'<]*)')`, "y");
+const TAG_CLOSE = /\s*(\/?)>/y;
+const NAMED_ENTITIES: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
+
+/**
+ * The elements of an XML document in document order, after a strict well-formedness check: one root element, tags
+ * nested and closed, attributes quoted (either quote) and not repeated, comments, CDATA and processing instructions
+ * skipped, only the predefined and numeric character entities. A DOCTYPE is refused, so no entity is ever resolved.
+ * Throws a readable reason. (Review of PR #84: a regex took a commented-out FixtureType for a real one.)
+ */
+export function parseXml(text: string): XmlElement[] {
+  const s = text.startsWith("﻿") ? text.slice(1) : text;
+  const out: XmlElement[] = [];
+  const stack: string[] = [];
+  let roots = 0;
+  let i = 0;
+  const fail = (why: string): never => {
+    throw new Error(`it is not well-formed XML: ${why} at character ${i}`);
+  };
+  // Every & must start one of the allowed entities.
+  const decode = (v: string): string => {
+    let bad = false;
+    const r = v.replace(/&([^;&<]{0,10});?/g, (m, body: string) => {
+      if (!m.endsWith(";")) return ((bad = true), m);
+      if (body in NAMED_ENTITIES) return NAMED_ENTITIES[body];
+      const n = /^#\d+$/.test(body) ? Number(body.slice(1)) : /^#x[0-9A-Fa-f]+$/.test(body) ? parseInt(body.slice(2), 16) : NaN;
+      if (!Number.isInteger(n) || n < 1 || n > 0x10ffff) return ((bad = true), m);
+      return String.fromCodePoint(n);
+    });
+    if (bad) fail("an undefined entity or a bare &");
+    return r;
+  };
+  while (i < s.length) {
+    const lt = s.indexOf("<", i);
+    const chunk = lt < 0 ? s.slice(i) : s.slice(i, lt);
+    if (stack.length === 0 && chunk.trim() !== "") fail("text outside the root element");
+    decode(chunk);
+    if (lt < 0) break;
+    i = lt;
+    if (s.startsWith("<!--", i)) {
+      const e = s.indexOf("-->", i + 4);
+      if (e < 0) fail("an unclosed comment");
+      if (s.slice(i + 4, e).includes("--")) fail("-- inside a comment");
+      i = e + 3;
+    } else if (s.startsWith("<![CDATA[", i)) {
+      if (stack.length === 0) fail("CDATA outside the root element");
+      const e = s.indexOf("]]>", i + 9);
+      if (e < 0) fail("an unclosed CDATA section");
+      i = e + 3;
+    } else if (s.startsWith("<!", i)) {
+      fail("a DOCTYPE or other declaration (refused: no entities are resolved)");
+    } else if (s.startsWith("<?", i)) {
+      const e = s.indexOf("?>", i + 2);
+      if (e < 0) fail("an unclosed processing instruction");
+      if (/^<\?xml[\s?]/.test(s.slice(i, i + 6)) && i !== 0) fail("an XML declaration that is not at the start");
+      i = e + 2;
+    } else if (s.startsWith("</", i)) {
+      END_TAG.lastIndex = i;
+      const m = END_TAG.exec(s) ?? fail("a malformed end tag");
+      const open = stack.pop();
+      if (open !== m[1]) fail(open ? `</${m[1]}> closing <${open}>` : `</${m[1]}> with no open element`);
+      i = END_TAG.lastIndex;
+    } else {
+      START_TAG.lastIndex = i;
+      const m = START_TAG.exec(s) ?? fail("a malformed tag");
+      const name = m[1];
+      i = START_TAG.lastIndex;
+      const attrs: Record<string, string> = {};
+      for (;;) {
+        TAG_CLOSE.lastIndex = i;
+        const c = TAG_CLOSE.exec(s);
+        if (c) {
+          i = TAG_CLOSE.lastIndex;
+          if (stack.length === 0 && ++roots > 1) fail("a second root element");
+          out.push({ name, attrs, depth: stack.length });
+          if (!c[1]) stack.push(name);
+          break;
+        }
+        ATTRIBUTE.lastIndex = i;
+        const a = ATTRIBUTE.exec(s) ?? fail(`a malformed attribute in <${name}>`);
+        if (Object.hasOwn(attrs, a[1])) fail(`the attribute ${a[1]} twice in <${name}>`);
+        attrs[a[1]] = decode(a[2] ?? a[3]);
+        i = ATTRIBUTE.lastIndex;
+      }
+    }
+  }
+  if (stack.length) fail(`<${stack[stack.length - 1]}> is not closed`);
+  if (roots === 0) fail("no root element");
+  return out;
+}
 
 function fixtureHeader(xml: string, root: "GDTF" | "GMA3"): FixtureHeader {
-  const ft = /<FixtureType\s([^>]*)>/.exec(xml);
-  if (!ft) throw new Error(`it has no FixtureType element`);
-  const attrs: Record<string, string> = {};
-  for (const a of ft[1].matchAll(/([\w:]+)="([^"]*)"/g)) attrs[a[1]] = decodeXml(a[2]);
-  if (!attrs.Name) throw new Error("its FixtureType element has no Name");
-  const modes = [...xml.matchAll(/<DMXMode\s[^>]*?Name="([^"]*)"/g)].map((x) => decodeXml(x[1]));
-  const rootMatch = new RegExp(`<${root}\\s[^>]*DataVersion="([^"]*)"`).exec(xml);
-  return { manufacturer: attrs.Manufacturer, name: attrs.Name, shortName: attrs.ShortName, modes, ...(rootMatch ? { dataVersion: rootMatch[1] } : {}) };
+  const els = parseXml(xml);
+  if (els[0].name !== root) throw new Error(`its root element is <${els[0].name}>, not <${root}>`);
+  const ft = els.find((e) => e.name === "FixtureType" && e.depth === 1);
+  if (!ft) throw new Error(`it has no FixtureType element under <${root}>`);
+  if (!ft.attrs.Name) throw new Error("its FixtureType element has no Name");
+  const modes = els.filter((e) => e.name === "DMXMode" && e.depth > 1 && e.attrs.Name !== undefined).map((e) => e.attrs.Name);
+  const dataVersion = els[0].attrs.DataVersion;
+  return { manufacturer: ft.attrs.Manufacturer, name: ft.attrs.Name, shortName: ft.attrs.ShortName, modes, ...(dataVersion !== undefined ? { dataVersion } : {}) };
 }
 
 /** The entries of a zip file (central directory), and one entry's bytes. Zip64 and encrypted entries are refused. */
@@ -115,12 +214,13 @@ export function checkContent(format: "gdtf" | "xml", bytes: Buffer): FixtureHead
     const zip = readZip(bytes);
     if (!zip.names.includes("description.xml")) throw new Error("the GDTF has no description.xml at the top of the zip");
     const xml = zip.read("description.xml").toString("utf8");
-    if (!/<GDTF[\s>]/.test(xml)) throw new Error("its description.xml has no GDTF root element");
-    return { ...fixtureHeader(xml, "GDTF"), files: zip.names.length };
+    try {
+      return { ...fixtureHeader(xml, "GDTF"), files: zip.names.length };
+    } catch (err) {
+      throw new Error(`its description.xml: ${(err as Error).message}`);
+    }
   }
-  const xml = bytes.toString("utf8");
-  if (!/^﻿?\s*<(\?xml|GMA3)/.test(xml)) throw new Error("it is not an XML file");
-  return fixtureHeader(xml, "GMA3");
+  return fixtureHeader(bytes.toString("utf8"), "GMA3");
 }
 
 interface Stat {

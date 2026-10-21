@@ -151,7 +151,35 @@ test("decodeBase64 is strict, checkContent reads a GDTF's description.xml", () =
   damaged[50] ^= 0xff; // inside the deflated description.xml
   assert.throws(() => checkContent("gdtf", damaged), /cannot be inflated|CRC/);
   assert.equal(checkContent("xml", Buffer.from('<?xml version="1.0"?><GMA3 DataVersion="1.5"><FixtureType Name="Spot" Manufacturer="Acme"><DMXMode Name="Std"/></FixtureType></GMA3>')).name, "Spot");
-  assert.throws(() => checkContent("xml", Buffer.from("PK\u0003\u0004")), /not an XML file/);
+  assert.throws(() => checkContent("xml", Buffer.from("PK\u0003\u0004")), /not well-formed XML/);
+});
+
+test("checkContent parses the XML: comments, quotes, entities and well-formedness (review of PR #84)", () => {
+  const xml = (body: string) => Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>\n${body}`);
+  // A FixtureType inside a comment (or CDATA) is not an element.
+  assert.throws(() => checkContent("xml", xml('<GMA3><!-- <FixtureType Name="Spot"> --></GMA3>')), /no FixtureType element under <GMA3>/);
+  assert.throws(() => checkContent("xml", xml('<GMA3><x><![CDATA[<FixtureType Name="Spot">]]></x></GMA3>')), /no FixtureType element/);
+  // Single-quoted attributes and entities are read.
+  const h = checkContent("xml", xml(`<GMA3 DataVersion='1.5'><FixtureType Name='Spot &amp; Co' Manufacturer="A&#39;s"><DMXModes><DMXMode Name='Std &lt;8&gt;'/></DMXModes></FixtureType></GMA3>`));
+  assert.deepEqual({ ...h }, { manufacturer: "A's", name: "Spot & Co", shortName: undefined, modes: ["Std <8>"], dataVersion: "1.5" });
+  // Not well-formed, or not the expected document.
+  for (const [bad, why] of [
+    ['<GMA3><FixtureType Name="Spot"></GMA3>', /<\/GMA3> closing <FixtureType>/],
+    ['<GMA3><FixtureType Name="Spot">', /is not closed/],
+    ['<GMA3><FixtureType Name="Spot" Name="Two"/></GMA3>', /twice/],
+    ['<GMA3><FixtureType Name=Spot/></GMA3>', /malformed attribute/],
+    ['<GMA3><FixtureType Name="a & b"/></GMA3>', /bare &/],
+    ['<GMA3><FixtureType Name="&ent;"/></GMA3>', /undefined entity/],
+    ['<!DOCTYPE GMA3 [<!ENTITY x SYSTEM "file:///etc/passwd">]><GMA3><FixtureType Name="&x;"/></GMA3>', /DOCTYPE/],
+    ['<GMA3><FixtureType Name="Spot"/></GMA3><GMA3/>', /second root/],
+    ['<GMA3><Other><FixtureType Name="Spot"/></Other></GMA3>', /no FixtureType element under <GMA3>/],
+    ['<GDTF><FixtureType Name="Spot"/></GDTF>', /root element is <GDTF>, not <GMA3>/],
+    ['<GMA3><FixtureType Manufacturer="A"/></GMA3>', /has no Name/],
+  ] as const) {
+    assert.throws(() => checkContent("xml", xml(bad)), why, bad);
+  }
+  assert.throws(() => checkContent("gdtf", zip([["description.xml", '<GDTF><FixtureType Name="x"></GDTF>']])), /its description\.xml: it is not well-formed XML/);
+  assert.throws(() => checkContent("gdtf", zip([["description.xml", '<GDTF><!-- <FixtureType Name="x"/> --></GDTF>']])), /its description\.xml: it has no FixtureType/);
 });
 
 test("gma3_patch_library_add: a GDTF in three chunks, moved into place and read back", async () => {

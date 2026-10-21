@@ -144,7 +144,8 @@ local function buildLive()
   local stage = obj("Stage", "Stage 1", 1, {}, { obj("Fixtures", "Fixtures", 1, {}, { group, dim }) })
   stage.Fixtures = stage.kids[1]
   local stages = obj("Stages", "Stages", 7, {}, { stage })
-  local p = obj("Patch", "LivePatch", 9, {}, { obj("DmxCurves", "DmxCurves", 1, {}, { obj("DmxCurve", "DmxCurve 1", 1, { { "CURVEMODE", "MinMax" } }, { obj("DmxCurvePoint", "Max", 3, { { "IN", "FFFFFF" }, { "OUT", "FFFFFF" } }) }) }), attrDefs, types, stages, obj("IDTypes", "IDTypes", 11, {}, { obj("IDs", "Fixture", 1, { { "MAXID", 501 } }) }),
+  local p = obj("Patch", "LivePatch", 9, {}, { obj("DmxCurves", "DmxCurves", 1, {}, { obj("DmxCurve", "DmxCurve 1", 1, { { "CURVEMODE", "MinMax" } }, { obj("DmxCurvePoint", "Max", 3, { { "IN", "FFFFFF" }, { "OUT", "FFFFFF" } }) }),
+      obj("DmxCurve", "Custom", 2, { { "CURVEMODE", "Linear" } }, { obj("DmxCurvePoint", "Min", 1, { { "IN", "000000" }, { "OUT", "000000" } }), obj("DmxCurvePoint", "Knee", 2, { { "IN", "808080" }, { "OUT", "404040" } }) }) }), attrDefs, types, stages, obj("IDTypes", "IDTypes", 11, {}, { obj("IDs", "Fixture", 1, { { "MAXID", 501 } }) }),
     obj("DmxUniverses", "DmxUniverses", 12, {}, { obj("DmxUniverse", "DmxUniverse 1", 1, { { "USED", 25 } }, { obj("DMX", "DMX 1", 1) }) }), obj("DmxAddresses", "DmxAddresses", 13, {}, {}) })
   p.FixtureTypes = types; p.Stages = stages; p.addr = "14.9"
   return p
@@ -579,7 +580,17 @@ check("DmxCurve 1 listing Min instead of Max is not a difference", fpAll("copy",
 copyCurve:Set("CURVEMODE", "Linear")
 check("a change to the curve itself still is", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
 copyCurve:Set("CURVEMODE", "MinMax")
+copyCurve.kids[1]:Set("OUT", "101010")
+check("an edited end point of the default curve still is", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
 copyCurve.kids[1] = livePoint
+local knee = console.copy.DmxCurves.kids[2].kids[2]
+knee:Set("OUT", "505050")
+check("an edited point of another curve still is (review of PR #84)", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+knee:Set("OUT", "404040")
+console.copy.DmxCurves.kids[2].kids[1]:Set("IN", "010101")
+check("an edited Min point of another curve still is", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+console.copy.DmxCurves.kids[2].kids[1]:Set("IN", "000000")
+check("(back to equal)", fpAll("copy", { prefixOfLive = true }) == fpAll("live"))
 request("patch.commit", X); frame()
 r = request("patch.types")
 check("after the commit the imported type is live", r.ok and r.result.count == 6 and r.result.types[6].name == "Dimmer" and r.result.types[6].guid == imported.guid, J(r))
