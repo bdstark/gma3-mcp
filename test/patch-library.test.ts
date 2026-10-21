@@ -34,6 +34,8 @@ class LibraryWorld {
     "solo@user xml.xml": [["Solo", "User Xml"]],
     "broken@file.pxml": "error",
     "two@types.pxml": [["Two", "One"], ["Two", "Two"]],
+    "Chauvet_DJ@Sentinel_Spot_Q60_ILS@2026-10-21.gdtf": [["Chauvet DJ", "Sentinel Spot Q60 ILS"]],
+    "other@thing.pxml": [["Else", "Different"]],
   };
   lastCommand = "";
   attributes = 100;
@@ -46,6 +48,8 @@ class LibraryWorld {
     { source: "grandma3", file: "acme@spot.xml", format: "xml", manufacturer: "Acme", model: "spot", name: "Spot", modes: ["Standard"], modesKnown: true, verified: true, set: false },
     { source: "user", file: "acme@spot.xml", format: "xml", manufacturer: "Acme", model: "spot", name: "Spot", modes: ["Standard"], modesKnown: true, verified: false, set: false },
     { source: "user", file: "solo@user only@rev2.gdtf", format: "gdtf", manufacturer: "solo", model: "user only", modesKnown: false, verified: true, set: false },
+    { source: "user", file: "Chauvet_DJ@Sentinel_Spot_Q60_ILS@2026-10-21.gdtf", format: "gdtf", manufacturer: "Chauvet_DJ", model: "Sentinel_Spot_Q60_ILS", revision: "2026-10-21", modesKnown: false, verified: true, set: false },
+    { source: "grandma2", file: "other@thing.pxml", format: "pxml", manufacturer: "other", model: "thing", modesKnown: false, verified: true, set: false },
     { source: "user", file: "solo@user xml.xml", format: "xml", manufacturer: "Solo", model: "user xml", name: "User Xml", modes: ["Mode 0"], modesKnown: true, verified: false, set: false },
   ];
 
@@ -258,6 +262,33 @@ test("gma3_patch_import: two new types are not claimed and the copy is left open
     assert.equal(result.outcome, "failed");
     assert.match(result.summary, /2 types appeared instead of one/);
     assert.equal(result.copyLeftOpen, true);
+    assert.equal(w.live.length, 3, "nothing was committed");
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_import: a file name's underscores match the spaces in the type it creates (live 2026-10-21)", async () => {
+  const { h, w } = await setup();
+  try {
+    const { result } = await h.callJson("gma3_patch_import", { file: "Chauvet_DJ@Sentinel_Spot_Q60_ILS@2026-10-21.gdtf", exclusive: true });
+    assert.equal(result.outcome, "succeeded", JSON.stringify(result, null, 2));
+    assert.equal(w.live.filter((t) => t.name === "Sentinel Spot Q60 ILS").length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_import: a type matching neither name nor manufacturer is not claimed, and the operator is told how to leave the patch", async () => {
+  const { h, w } = await setup();
+  try {
+    const { result } = await h.callJson("gma3_patch_import", { file: "other@thing.pxml", exclusive: true });
+    assert.equal(result.outcome, "failed");
+    assert.match(result.summary, /matches neither the name nor the manufacturer/);
+    assert.equal(result.copyLeftOpen, true);
+    assert.match(result.summary, /no Patch window is open/);
+    assert.match(result.summary, /type ChangeDestination Root at the console/);
+    assert.doesNotMatch(result.summary, /Menu > Patch, then/);
     assert.equal(w.live.length, 3, "nothing was committed");
   } finally {
     await h.close();

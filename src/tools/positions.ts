@@ -21,7 +21,7 @@ import type { Gma3Bridge } from "../bridge.js";
 import { asRead, buildResult, notRequested, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { Validator, ValidationError, describe, finiteNumber } from "../validate.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
-import { listFids } from "./patch.js";
+import { COPY_OPEN_HELP, listFids } from "./patch.js";
 
 // ---------------------------------------------------------------------------
 // Units, rotations, layouts (pure)
@@ -389,7 +389,7 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
     try {
       const st = (await bridge.request("patch.state", {}, t)) as { copyOpen?: boolean };
       if (st.copyOpen) {
-        steps.push(asRead({ name: "check_patch", status: "failed", op: "patch.state", error: "the patch copy is open (the Patch menu, or a patch session): committing it would overwrite these positions. Close it at the console first (Menu > Patch, Save and Exit or Discard and Exit)" }));
+        steps.push(asRead({ name: "check_patch", status: "failed", op: "patch.state", error: `the patch copy is open: committing it would overwrite these positions. ${COPY_OPEN_HELP}` }));
         return done(`${op} was not performed; nothing was sent: ${steps[0].error}.`, notRequested());
       }
       steps.push(asRead({ name: "check_patch", status: "succeeded", op: "patch.state", detail: "the patch copy is closed" }));
