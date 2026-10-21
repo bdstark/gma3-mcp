@@ -131,7 +131,7 @@ end
 local function beam()
   local body = obj("Geometry", "Body", { PosX = 0, PosY = 0, PosZ = 0 }, {})
   local W = "1.0000000000,1.0000000000,1.0000000000,1.0000000000"
-  local c1 = obj("Wheel", "C1", {}, { obj("Slot", "open", { Color = W }), obj("Slot", "colour 1", { Color = W }), obj("Slot", "colour 2", { Color = W }) })
+  local c1 = obj("Wheel", "C1", {}, { obj("Slot", "open", { Color = W }), obj("Slot", "colour 1", { Color = W }), obj("Slot", "colour 2", { Color = W }), obj("Slot", "red", { Color = "0.9999432564,-0.0000825030,-0.0000241920,1.0000000000" }) })
   local e = obj("Wheel", "E", {}, { obj("Slot", "open", { Color = W }), obj("Slot", "prism", { Color = W, MediaFileName = "GOBO/SHEHDS/x.png", Appearance = "Gobos.GoboImage 5" }) })
   local cf = obj("ChannelFunction", "Color1 1", { Attribute = "Color1", DMXFrom = "000000", DMXTo = "7F7F7F" },
     { obj("ChannelSet", "open", { DMXFrom = "000000", DMXTo = "0A0A0A", WheelSlotIndex = 1 }), obj("ChannelSet", "colour 1", { DMXFrom = "0B0B0B", DMXTo = "151515", WheelSlotIndex = 2 }) }, { Wheel = c1 })
@@ -239,7 +239,7 @@ check("a channel whose break cannot be read keeps no guessed break or address, a
 
 r = request("patch.typeStructure", { type = "Beam", mode = 1, geometry = false })
 local wh = r.ok and r.result.wheels or {}
-check("su19: wheels with slots: plain names, colours parsed, media and appearance", #wh == 2 and wh[1].name == "C1" and #wh[1].slots == 3 and wh[1].slots[2].name == "colour 1" and wh[1].slots[2].color.r == 1 and wh[1].slots[2].color.a == 1 and wh[2].slots[2].media == "GOBO/SHEHDS/x.png" and wh[2].slots[2].appearance == "Gobos.GoboImage 5" and wh[1].slots[1].media == nil, J(wh))
+check("su19: wheels with slots: plain names, colours parsed, media and appearance", #wh == 2 and wh[1].name == "C1" and #wh[1].slots == 4 and wh[1].slots[2].name == "colour 1" and wh[1].slots[2].color.r == 1 and wh[1].slots[2].color.a == 1 and wh[2].slots[2].media == "GOBO/SHEHDS/x.png" and wh[2].slots[2].appearance == "Gobos.GoboImage 5" and wh[1].slots[1].media == nil, J(wh))
 local wfn = r.ok and r.result.wheelFunctions or {}
 check("su19: wheel channel functions beside the modes, tagged with the mode, with bits from Fine and each channel set's slot and DMX range", #wfn == 3 and wfn[1].mode == "Mode 0" and wfn[1].wheel == "C1" and wfn[1].attribute == "Color1" and wfn[1].bits == 8 and wfn[1].channelSets[2].slot == 2 and wfn[1].channelSets[2].dmxFrom == "0B0B0B" and wfn[2].channelSets[1].slot == nil and wfn[3].bits == 16 and wfn[3].wheel == "E", J(wfn))
 check("su19: no wheel functions are nested in the mode (the serialiser's depth bound)", r.ok and r.result.modes[1]._wheelFunctions == nil and r.result.modes[1].wheelFunctions == nil, J(r.result and r.result.modes))
@@ -264,6 +264,8 @@ r = request("patch.typeStructure", { type = "Washer", mode = 1, geometry = false
 check("su19 review: a readable cell carries no incomplete flag", r.ok and r.result.modes[1].cellList[1].breakOffsetsIncomplete == nil, J(r.ok and r.result.modes[1].cellList[1]))
 
 r = request("patch.typeStructure", { type = "Washer", mode = 1, geometry = false })
+local red = wh[1] and wh[1].slots[4] and wh[1].slots[4].color
+check("su22: a slot colour with a slightly negative component (a GDTF colour outside sRGB) is read", red ~= nil and red.r > 0.99 and red.g < 0 and red.b < 0 and red.a == 1, J(wh[1] and wh[1].slots[4]))
 check("su19: a type without wheels answers empty lists", r.ok and #r.result.wheels == 0 and #r.result.wheelFunctions == 0 and J(r.result):find('"wheels":%[%]') ~= nil, J(r.result and r.result.wheels))
 
 r = request("patch.types")

@@ -1,10 +1,11 @@
-# Patch tools (KB-26, SU-03)
+# Patch tools (KB-26, SU-03, SU-22)
 
 `gma3_patch_types`, `gma3_patch_list`, `gma3_patch_add`, `gma3_patch_set`, `gma3_patch_remove`: bridge 0.19.0 (the
 `patch.*` ops); an older plugin is reported as such. `gma3_patch_library`, `gma3_patch_import` and
 `gma3_patch_remove_type` (fixture types, [SETUP.md](../../SETUP.md) SU-03): bridge 0.26.0. The design and its evidence
 are in [DIALOG.md](../../DIALOG.md) ("KB-25", "KB-26"), the [KB-25 record](../probes/kb-25-dialogs-macos-2.5.1.md) and
-the [SU-03 record](../probes/su-03-import-macos-2.5.1.md).
+the [SU-03 record](../probes/su-03-import-macos-2.5.1.md). `gma3_patch_library_add` (a file into the user library,
+SU-22): bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md).
 
 ## Common behaviour
 
@@ -22,7 +23,7 @@ for its ~10 seconds.
 **Isolation check: best-effort detection.** Before committing, the tool fingerprints the copy and the live patch:
 every object and property of every patch collection, leaving out the FIDs the call touches and the data the console
 derives itself (listed in the KB-25 and KB-26 records; bridge 0.25.1 adds what a fresh fixture-type import leaves
-different). It compares the two, one collection per request. Anything else that
+different; bridge 0.38.0 leaves out the default curve's Min and Max points with their default values, one of which a GDTF import swaps for the other). It compares the two, one collection per request. Anything else that
 differs means someone changed the show during the session: nothing is committed and the copy is left open.
 
 Fixture types are compared by identity, not by number (bridge 0.26.0): deleting a type renumbers the ones after it,
@@ -168,9 +169,37 @@ Each entry has `source`, `file` (the name to import), `format`, `manufacturer` a
 | Field | |
 | --- | --- |
 | `name`, `modes` | From the XML header of a grandMA3 or user `.xml` (`modesKnown: true`). A grandMA2 `.pxml` is encrypted: its modes are known only after the import |
-| `verified` | `false` for user-library and WorldServer files: their import is not verified on the console yet |
+| `verified` | `false` for user-library `.xml` and WorldServer files: their import is not verified on the console yet. User-library `.gdtf` is verified (bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md)) |
 | `inShow` | Show types with the same manufacturer and name: importing again would add a duplicate |
 | `set` | Scenery |
+
+## gma3_patch_library_add
+
+Puts a fixture-type file into the console's user fixture library (`GetPath(Enums.PathType.UserFixtures)`), so
+`gma3_patch_import` can import it with no file access outside MCP. The bytes travel over the bridge, so the client need
+not run on the console's machine. The show is not changed.
+
+| Argument | |
+| --- | --- |
+| `file_name` | `manufacturer@model[@revision].gdtf` or `.xml` (the extension in lower case: the libraries are listed by `*.gdtf` and `*.xml`); no `< > : " / \ | ? * ..` (the characters Windows refuses; `:` would name an NTFS stream), control characters or leading dot. Defaults to `path`'s file name |
+| `content_base64` | The file's bytes, base64 (strict: whitespace between groups only) |
+| `path` | Instead of `content_base64`: a file on the MCP server's host, read by the server and sent the same way |
+| `replace` | Overwrite a user-library file of the same name (default `false`: refused) |
+
+Steps, stopping at the first one that does not succeed (nothing is written before `write`):
+
+| Step | Bridge op | What it does |
+| --- | --- | --- |
+| `read_file` | | With `path` only: the file exists and is at most 8 MiB |
+| `check_content` | | At most 8 MiB, not empty. A `.gdtf` must be a zip (stored or deflate entries, no zip64, no encryption) whose `description.xml` passes the zip CRC and is well-formed XML with a `GDTF` root and a `FixtureType` child with a `Name`; an `.xml` must be well-formed XML with a `GMA3` root and a `FixtureType` child with a `Name`. The XML is parsed, not matched: comments and CDATA are skipped, either quote is accepted, characters XML does not allow (literal or as references), `]]>` outside CDATA, a malformed XML declaration or one naming another encoding than UTF-8, and invalid UTF-8 are refused, and a DOCTYPE is refused (no entity is resolved). Reports the type's name, manufacturer, short name, DMX mode names and the GDTF `DataVersion` |
+| `check_library` | `patch.libraryStat` | The name is in no other library (`Import Library` names the file only and could not tell them apart), and no library has it in other case only (one file on macOS and Windows; refused on every platform); a library whose folder or listing cannot be read refuses the upload (`scan-incomplete`) instead of counting as empty, and not in the user library unless `replace` (the refusal names its size and CRC-32, and whether they are the bytes sent) |
+| `write` | `patch.libraryAdd` | 48 KiB chunks (64 KiB of base64 per bridge line). The bridge appends each at its offset to `<file>.<upload id>.gma3mcp-part` beside the target (no library extension, so it is never listed or imported). The id is random per call, so two clients sending the same name never mix their bytes or abort each other's upload; the first to finish wins and the other is refused as existing unless it replaces. The libraries are scanned for the name at the first and the last chunk only. When an upload starts, part files idle for 10 minutes, and part files no upload knows (left by a bridge restart), are removed. The last chunk checks the part file's size and CRC-32 against the whole file, then renames it into place. With `replace`, a platform whose rename does not overwrite (Windows) has the old file moved aside first and back again if the new one cannot take its place, so a failed replace keeps the old file. A replaced `.xml` drops its cached header, so `gma3_patch_library` reads the new one. A refusal removes the part file; on a lost reply the tool sends `abort` (`clean_up` step) |
+| `read_back` | `patch.libraryStat`, `patch.library` | The file on the console has the size and CRC-32 sent, and `patch.library` lists it under source `user` |
+
+The result has `file`, `path` (on the console), `size`, `crc32`, `replaced`, `fixtureType` (from the file),
+`libraryEntry` (as `gma3_patch_library` lists it) and `next`: the `gma3_patch_import` call that imports it. It warns
+when neither the type's name nor its manufacturer matches the file name (`gma3_patch_import` claims the new type only
+when one does) and when the show already has a matching type.
 
 ## gma3_patch_import
 

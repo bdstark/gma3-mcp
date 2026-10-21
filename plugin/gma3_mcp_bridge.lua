@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.37.0"
+local VERSION      = "0.38.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4048,7 +4048,10 @@ end
 -- display role). Fixtures whose FID is in `exclude` (the ones a session touches) are left out with their
 -- sub-fixtures. Left out because the console derives or toggles them itself (each established live): the
 -- DMX address map, UI and RT channels, the fixture-type overview and the Patch menu's filter state; the
--- universes' per-address children; numbering inside DmxCurves (renumbered whenever a copy is made); each DMX
+-- universes' per-address children; numbering inside DmxCurves (renumbered whenever a copy is made) and the default
+-- curve's end points (the first curve lists one of its two points, Min 000000 -> 000000 or Max FFFFFF -> FFFFFF, and
+-- which one flips with a GDTF import and with the next copy: SU-22, live 2026-10-20; only those two points with exactly
+-- those values are left out, so every other point, an edited end point and the curves themselves are hashed); each DMX
 -- mode's SubfixtureOverview (a derived list whose geometry references the copy renumbers); and the
 -- properties below. ATTRIBUTEINDEXOLD is unset (4294967295) in the live patch for attributes a fixture-type
 -- import added and numbered in the copy (onPC 2.5.1, live 2026-10-14: the only differences after importing
@@ -4134,7 +4137,12 @@ local function patchFingerprint(p, only, exclude, opts)
     r.hash = fnv(r.hash, table.concat(parts, "\31") .. "\n")
     return true
   end
-  local function walk(h, depth, renumbered, guide, typeList, append)
+  -- The default curve's Min or Max point with its default values (see above).
+  local function defaultEndPoint(c)
+    local name, inV, outV = tostring(safeProp(c, "name")), displayProp(c, "In"), displayProp(c, "Out")
+    return (name == "Min" and inV == "000000" and outV == "000000") or (name == "Max" and inV == "FFFFFF" and outV == "FFFFFF")
+  end
+  local function walk(h, depth, renumbered, guide, typeList, append, defaultCurve)
     local kids = h:Children()
     local gkids = guide and guide:Children() or nil
     -- Truncate to the guide only where an import appends; elsewhere every child is hashed (so an extra one differs).
@@ -4145,9 +4153,10 @@ local function patchFingerprint(p, only, exclude, opts)
       local class = safeCall(c, "GetClass")
       local fid = class == "Fixture" and numericFid(c) or nil
       local skipType = typeList and excludeGuids[guidOf(c)]
-      if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType then
+      local skipPoint = defaultCurve and class == "DmxCurvePoint" and defaultEndPoint(c)
+      if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType and not skipPoint then
         if not add(c, depth, renumbered, typeList) then return end
-        walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false, append)
+        walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false, append, renumbered and depth == 1 and i == 1)
       end
     end
   end
@@ -4208,12 +4217,14 @@ end
 --   patch.removeType  deletes an unused type from the copy; the types after it are renumbered
 -------------------------------------------------------------------------------
 do
-  -- source -> path type and extensions. grandMA3 and grandMA2 imports are verified live; user-library and
-  -- WorldServer files (.xml, .gdtf) go through the same command but are unverified (no such file was available).
+  -- source -> path type and extensions. grandMA3 and grandMA2 imports are verified live (SU-03), and user-library
+  -- .gdtf files (SU-22, live 2026-10-20: a GDTF 1.2 with gobo images and slot colours). User-library .xml and
+  -- WorldServer files go through the same command but are unverified (no such file was available). verified is a
+  -- boolean, or a table by extension.
   local LIB_SOURCES = {
     { id = "grandma3", path = "GrandMA3Library", exts = { "xml" }, verified = true },
     { id = "grandma2", path = "GrandMA2Library", exts = { "pxml" }, verified = true },
-    { id = "user", path = "UserFixtures", exts = { "xml", "gdtf" }, verified = false },
+    { id = "user", path = "UserFixtures", exts = { "xml", "gdtf" }, verified = { gdtf = true, xml = false } },
     { id = "worldserver", path = "WorldServerLibrary", exts = { "xml", "gdtf" }, verified = false },
   }
   local LIB_MAX_LIMIT = 500
@@ -4223,16 +4234,27 @@ do
   local XML_HEADER_READ = 16 * 1024
   local headerCache = {}
 
+  -- The library's folder; nil and a reason when GetPath fails. No path type at all means the console has no such
+  -- library (nil, no reason).
   local function sourcePath(src)
     local pt = Enums.PathType and Enums.PathType[src.path]
     if pt == nil then return nil end
     local ok, p = pcall(GetPath, pt)
     if ok and type(p) == "string" and p ~= "" then return p end
-    return nil
+    return nil, "GetPath(" .. src.path .. ") " .. (ok and "returned no path" or ("failed: " .. tostring(p)))
   end
 
+  -- Named and numeric references in one pass over the original text, so a reference's output is never decoded again
+  -- ("&#38;amp;" is "&amp;", not "&"; review of PR #84). An unknown one is kept as written.
   local function decodeXml(v)
-    return (v:gsub("&quot;", '"'):gsub("&apos;", "'"):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&"))
+    local named = { quot = '"', apos = "'", lt = "<", gt = ">", amp = "&" }
+    return (v:gsub("&(#?[%w]+);", function(ref)
+      if named[ref] then return named[ref] end
+      local n = ref:match("^#[xX](%x+)$") and tonumber(ref:sub(3), 16) or (ref:match("^#(%d+)$") and tonumber(ref:sub(2)))
+      local ok, c = pcall(utf8.char, n)
+      if n and ok then return c end
+      return nil
+    end))
   end
 
   -- manufacturer@model[@revision].ext; the grandMA2 names are lower case.
@@ -4246,25 +4268,61 @@ do
   end
 
   -- The FixtureType element's attributes of a grandMA3-format XML file and, with withModes, its DMX mode names.
-  -- Headers are cached by path, size and time, so a repeated search reads no file again.
+  -- Headers are cached by path, size and time, so a repeated search reads no file again. (The helpers are inner
+  -- functions: the main chunk is at Lua's local-variable limit.)
   local function readXmlHeader(e, withModes)
+    -- The markup of an XML text: comments, CDATA and processing instructions removed, and the text cut at one left
+    -- open (the header read stops at 16 KB), so an element inside them is never taken for a real one (review of PR #84).
+    local function markupOnly(text)
+      -- In document order, so the delimiters inside a skipped section stay inert (a "<!--" inside CDATA is text).
+      local sections = { { "<!--", "-->" }, { "<![CDATA[", "]]>" }, { "<?", "?>" } }
+      local out, pos = {}, 1
+      while true do
+        local at, sec
+        for _, d in ipairs(sections) do
+          local found = text:find(d[1], pos, true)
+          if found and (not at or found < at) then at, sec = found, d end
+        end
+        if not at then out[#out + 1] = text:sub(pos); break end
+        out[#out + 1] = text:sub(pos, at - 1)
+        local close = text:find(sec[2], at + #sec[1], true)
+        if not close then break end
+        pos = close + #sec[2]
+      end
+      return table.concat(out)
+    end
+    -- The attributes of the start tag whose name ends at pos: either quote, a '>' inside a value is fine.
+    local function tagAttrs(text, pos)
+      local attrs = {}
+      while true do
+        local _, ePos, k, q = text:find("^%s*([%w_:%.%-]+)%s*=%s*([\"'])", pos)
+        if not ePos then break end
+        local close = text:find(q, ePos + 1, true)
+        if not close then break end
+        attrs[k] = decodeXml(text:sub(ePos + 1, close - 1))
+        pos = close + 1
+      end
+      return attrs
+    end
     local key = e.path .. "|" .. tostring(e.size) .. "|" .. tostring(e.time)
     local cached = headerCache[key]
     if cached and (cached.modes or not withModes) then return cached.header, cached.why end
     local f = io.open(e.path, "rb")
     if not f then headerCache[key] = { why = "cannot be opened" }; return nil, "cannot be opened" end
-    local text = f:read(withModes and XML_READ_MAX or XML_HEADER_READ) or ""
+    local text = markupOnly(f:read(withModes and XML_READ_MAX or XML_HEADER_READ) or "")
     f:close()
-    local attrs = text:match("<FixtureType%s+([^>]*)>")
-    if not attrs then headerCache[key] = { why = "no FixtureType element", modes = withModes or nil }; return nil, "no FixtureType element" end
-    local h = {}
-    for k, v in attrs:gmatch('([%w_]+)="([^"]*)"') do h[k] = decodeXml(v) end
+    local _, ftEnd = text:find("<FixtureType[%s/>]")
+    if not ftEnd then headerCache[key] = { why = "no FixtureType element", modes = withModes or nil }; return nil, "no FixtureType element" end
+    local h = tagAttrs(text, ftEnd)
     local header = { name = h.Name, manufacturer = h.Manufacturer, shortName = h.ShortName, description = h.Description }
     if withModes then
-      local modes = {}
-      for mattrs in text:gmatch("<DMXMode%s+([^>]*)>") do
-        local n = mattrs:match('Name="([^"]*)"')
-        if n then modes[#modes + 1] = decodeXml(n) end
+      local modes, pos = {}, 1
+      while true do
+        local _, mEnd = text:find("<DMXMode[%s/>]", pos)
+        if not mEnd then break end
+        local n = tagAttrs(text, mEnd).Name
+        if n then modes[#modes + 1] = n end
+        pos = mEnd + 1
       end
       header.modes = modes
     end
@@ -4274,23 +4332,26 @@ do
 
   local function lower(v) return v and tostring(v):lower() or nil end
 
-  -- Every library file of the requested sources, without reading their contents.
+  -- Every library file of the requested sources, without reading their contents, and the scans that failed (a
+  -- library whose folder or listing could not be read; review of PR #84: a write must not take it for empty).
   local function listLibrary(wanted)
-    local entries, paths = {}, {}
+    local entries, paths, failed = {}, {}, {}
     for _, src in ipairs(LIB_SOURCES) do
       if wanted == nil or wanted[src.id] then
-        local base = sourcePath(src)
+        local base, why = sourcePath(src)
         paths[src.id] = base or false
+        if why then failed[#failed + 1] = src.id .. ": " .. why end
         if base then
           for _, ext in ipairs(src.exts) do
             local ok, list = pcall(DirList, base, "*." .. ext)
+            if not (ok and type(list) == "table") then failed[#failed + 1] = src.id .. " *." .. ext .. ": DirList " .. (ok and ("returned a " .. type(list)) or ("failed: " .. tostring(list))) end
             if ok and type(list) == "table" then
               for _, e in ipairs(list) do
                 local name = e.name
                 if type(name) == "string" and name:lower():sub(-#ext - 1) == "." .. ext then
                   local manufacturer, model, revision, fext = parseFileName(name)
                   entries[#entries + 1] = { source = src.id, file = name, path = base .. "/" .. name, size = e.size, time = e.time, format = fext,
-                    manufacturer = manufacturer, model = model, revision = revision, verified = src.verified }
+                    manufacturer = manufacturer, model = model, revision = revision, verified = src.verified == true or (type(src.verified) == "table" and src.verified[ext] == true) }
                 end
               end
             end
@@ -4299,7 +4360,7 @@ do
       end
     end
     table.sort(entries, function(a, b) if a.source ~= b.source then return a.source < b.source end return a.file:lower() < b.file:lower() end)
-    return entries, paths
+    return entries, paths, failed
   end
 
   -- Show types matching a library entry by manufacturer and name, ignoring case (a .pxml file name carries
@@ -4383,6 +4444,238 @@ do
     for _, e in ipairs(page.items) do items[#items + 1] = entryOut(e, live, true) end
     return { total = page.total, offset = page.offset, count = page.count, entries = emptyArray(items), paths = paths, scanned = #all }
   end
+
+  -- SU-22: put a fixture-type file into the user library (bridge 0.38.0; SETUP.md SU-22). The bytes arrive base64
+  -- in chunks, appended to a part file next to the target ("<file>.<upload id>.gma3mcp-part": no library extension, so
+  -- it is never listed or imported); the last chunk checks size and CRC-32 and renames the part file into place.
+  -- In a function of its own: the main chunk is at Lua's local-variable limit.
+  ;(function()
+  local LIB_ADD_MAX_BYTES = 8 * 1024 * 1024
+  local LIB_ADD_MAX_CHUNK = 256 * 1024
+  local PART_SUFFIX = ".gma3mcp-part"
+
+  local B64 = {}
+  do
+    local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    for i = 1, 64 do B64[alphabet:byte(i)] = i - 1 end
+  end
+  -- Strict: whole groups of four, padding only at the end. nil on anything else.
+  local function base64Decode(s)
+    if #s % 4 ~= 0 then return nil end
+    local out, n = {}, #s
+    for i = 1, n, 4 do
+      local a, b, c, d = s:byte(i, i + 3)
+      local va, vb = B64[a], B64[b]
+      if va == nil or vb == nil then return nil end
+      local last = i + 3 == n
+      local vc = B64[c]
+      local vd = B64[d]
+      if c == 61 and d == 61 and last then
+        out[#out + 1] = string.char(((va << 2) | (vb >> 4)) & 0xff)
+      elseif d == 61 and last and vc ~= nil then
+        out[#out + 1] = string.char(((va << 2) | (vb >> 4)) & 0xff, ((vb << 4) | (vc >> 2)) & 0xff)
+      elseif vc ~= nil and vd ~= nil then
+        out[#out + 1] = string.char(((va << 2) | (vb >> 4)) & 0xff, ((vb << 4) | (vc >> 2)) & 0xff, ((vc << 6) | vd) & 0xff)
+      else
+        return nil
+      end
+    end
+    return table.concat(out)
+  end
+
+  local CRC_TABLE = {}
+  for i = 0, 255 do
+    local c = i
+    for _ = 1, 8 do c = (c & 1) == 1 and (0xEDB88320 ~ (c >> 1)) or (c >> 1) end
+    CRC_TABLE[i] = c
+  end
+  -- The file's size and CRC-32 (the zlib / zip polynomial), as an 8-digit lower-case hex string; read in pieces.
+  local function fileCrc(path)
+    local f = io.open(path, "rb")
+    if not f then return nil end
+    local crc, size = 0xffffffff, 0
+    while true do
+      local block = f:read(64 * 1024)
+      if not block then break end
+      size = size + #block
+      for i = 1, #block do crc = CRC_TABLE[(crc ~ block:byte(i)) & 0xff] ~ (crc >> 8) end
+    end
+    f:close()
+    return size, string.format("%08x", crc ~ 0xffffffff)
+  end
+
+  local function fileSize(path)
+    local f = io.open(path, "rb")
+    if not f then return nil end
+    local n = f:seek("end")
+    f:close()
+    return n
+  end
+
+  -- manufacturer@model[@revision].gdtf|.xml: what Import Library and parseFileName expect. No path separators,
+  -- quotes or control characters (the name goes into a path and into Import Library "<file>").
+  local function libraryFileName(file)
+    if type(file) ~= "string" or file == "" then raise("[bad-args] file is required: manufacturer@model[@revision].gdtf or .xml") end
+    if #file > 200 then raise("[bad-name] the file name is longer than 200 characters") end
+    -- The characters Windows refuses in a file name too (":" would name an NTFS stream; review of PR #84).
+    if file:find("[<>:\"/\\|%?%*%c]") or file:sub(1, 1) == "." or file:find("..", 1, true) then raise("[bad-name] the file name must not contain < > : \" / \\ | ? * .. or a control character, nor start with a dot") end
+    local stem, ext = file:match("^(.+)%.(%w+)$")
+    -- Lower case only: listLibrary lists *.gdtf and *.xml, which miss ".XML" on a case-sensitive file system.
+    if ext ~= "gdtf" and ext ~= "xml" then raise("[bad-name] the file name must end in .gdtf or .xml (lower case)") end
+    local parts = {}
+    for part in (stem .. "@"):gmatch("(.-)@") do parts[#parts + 1] = part end
+    if #parts < 2 or #parts > 3 then raise("[bad-name] the file name must be manufacturer@model[@revision]." .. ext) end
+    for _, part in ipairs(parts) do
+      if part == "" or part ~= part:match("^%s*(.-)%s*$") then raise("[bad-name] manufacturer, model and revision must be non-empty, without leading or trailing spaces") end
+    end
+    return ext
+  end
+
+  local function userLibrary()
+    for _, src in ipairs(LIB_SOURCES) do
+      if src.id == "user" then
+        local base = sourcePath(src)
+        if not base then raise("[no-library] the user fixture library path (PathType UserFixtures) cannot be read") end
+        return base
+      end
+    end
+  end
+
+  -- Library entries whose name equals this one ignoring case: on macOS and Windows names that differ only in case are
+  -- one file, and Import Library could not tell the entries apart (review of PR #84). Refused on every platform.
+  local function sameName(file)
+    local out, want = {}, file:lower()
+    local all, _, failed = listLibrary(nil)
+    if #failed > 0 then raise({ code = "scan-incomplete", message = "the fixture-type libraries could not all be read (" .. table.concat(failed, "; ") .. "), so a file of the same name cannot be ruled out; nothing was written", failed = failed }) end
+    for _, e in ipairs(all) do
+      if e.file:lower() == want then out[#out + 1] = { source = e.source, file = e.file } end
+    end
+    return out
+  end
+  -- The first entry another library has, or a user-library file differing only in case: what the upload collides with.
+  local function otherLibrary(file)
+    for _, m in ipairs(sameName(file)) do
+      if m.source ~= "user" or m.file ~= file then return m end
+    end
+  end
+
+  -- args: { file }. Read-only: the user-library file's size and CRC-32, and every library that lists the name.
+  ops["patch.libraryStat"] = function(args)
+    libraryFileName(args.file)
+    local base = userLibrary()
+    local path = base .. "/" .. args.file
+    local size, crc = fileCrc(path)
+    local listed, matches = {}, sameName(args.file)
+    for _, m in ipairs(matches) do if m.file == args.file then listed[#listed + 1] = m.source end end
+    -- listedIn: the libraries with exactly this name; matches: every entry equal ignoring case.
+    return { file = args.file, path = path, exists = size ~= nil, size = size, crc32 = crc, listedIn = emptyArray(listed), matches = emptyArray(matches), maxBytes = LIB_ADD_MAX_BYTES }
+  end
+
+  -- Uploads by id (the client's, 16 hex digits): each has its own part file "<file>.<id>.gma3mcp-part", so two clients
+  -- sending the same name never touch each other's bytes (review of PR #84); the first to finish wins and the other is
+  -- refused as [exists] unless it replaces. An upload idle for UPLOAD_IDLE_S loses its part file when another starts.
+  local UPLOAD_IDLE_S = 600
+  local uploads = {}
+
+  -- Idle uploads lose their part file. A part file no upload knows is an orphan: the uploads table is lost with a
+  -- bridge restart, and a chunk after offset 0 is refused without its record, so nothing can continue it (review of
+  -- PR #84). ".gma3mcp-old" files are never removed: one left behind holds the file a failed replace kept.
+  local function dropIdleUploads(base, now)
+    local known = {}
+    for id, u in pairs(uploads) do
+      if now - u.at > UPLOAD_IDLE_S then os.remove(u.part); uploads[id] = nil else known[u.part] = true end
+    end
+    local ok, list = pcall(DirList, base, "*" .. PART_SUFFIX)
+    if ok and type(list) == "table" then
+      for _, e in ipairs(list) do
+        local path = type(e.name) == "string" and e.name:sub(-#PART_SUFFIX) == PART_SUFFIX and (base .. "/" .. e.name) or nil
+        if path and not known[path] then os.remove(path) end
+      end
+    end
+  end
+
+
+  -- args: { file, upload (id), offset, data (base64), total, crc32, replace?, final?, abort? }. Chunk at offset 0 starts
+  -- the upload's part file (refused when the file exists and replace is not true, or another library has the name);
+  -- every chunk must start where the part file ends. The final chunk checks total and crc32 against the part file and
+  -- the libraries again, then moves it into place. abort removes the upload's part file.
+  ops["patch.libraryAdd"] = function(args)
+    local ext = libraryFileName(args.file)
+    if type(args.upload) ~= "string" or not args.upload:match("^%x+$") or #args.upload ~= 16 then raise("[bad-args] upload must be an id of 16 hex digits") end
+    local id = args.upload:lower()
+    local base = userLibrary()
+    local path = base .. "/" .. args.file
+    local part = path .. "." .. id .. PART_SUFFIX
+    local now = os.time()
+    if args.abort == true then
+      local had = fileSize(part) ~= nil
+      if had then os.remove(part) end
+      uploads[id] = nil
+      return { aborted = true, removed = had, partLeft = fileSize(part) ~= nil }
+    end
+    local total = integerArg(args.total, "total", 1, LIB_ADD_MAX_BYTES)
+    local offset = integerArg(args.offset, "offset", 0, LIB_ADD_MAX_BYTES)
+    if type(args.crc32) ~= "string" or not args.crc32:match("^%x%x%x%x%x%x%x%x$") then raise("[bad-args] crc32 must be 8 hex digits") end
+    if type(args.data) ~= "string" then raise("[bad-args] data (base64) is required") end
+    if #args.data > LIB_ADD_MAX_CHUNK * 4 // 3 + 4 then raise("[bad-args] a chunk is at most " .. LIB_ADD_MAX_CHUNK .. " bytes") end
+    local bytes = base64Decode(args.data)
+    if bytes == nil then raise("[bad-args] data is not valid base64") end
+    local function fail(err) os.remove(part); uploads[id] = nil; raise(err) end
+    local exists = fileSize(path) ~= nil
+    if exists and args.replace ~= true then fail("[exists] " .. args.file .. " is already in the user library; pass replace to overwrite it") end
+    -- The library scan (about 11 500 grandMA2 entries) runs at the start and before the move only, not per chunk.
+    if offset == 0 or args.final == true then
+      local other = otherLibrary(args.file)
+      if other then
+        fail({ code = "ambiguous-file", message = (other.file == args.file and (args.file .. " is already in the " .. other.source .. " library") or (args.file .. " differs only in case from " .. other.file .. " in the " .. other.source .. " library (one file on macOS and Windows)")) .. "; Import Library could not tell the two apart", sources = { other.source }, collidesWith = other.file })
+      end
+    end
+    if offset == 0 then
+      dropIdleUploads(base, now)
+      local f, err = io.open(part, "wb")
+      if not f then raise("[write-failed] " .. tostring(err)) end
+      f:close()
+    elseif uploads[id] == nil or uploads[id].file ~= args.file or fileSize(part) ~= offset then
+      fail("[bad-offset] upload " .. id .. " has " .. tostring(fileSize(part)) .. " bytes of " .. args.file .. ", not " .. offset .. "; start again at offset 0")
+    end
+    uploads[id] = { file = args.file, part = part, at = now }
+    if offset + #bytes > total then fail("[too-long] the chunks exceed total (" .. total .. " bytes)") end
+    local f, err = io.open(part, "ab")
+    if not f then fail("[write-failed] " .. tostring(err)) end
+    local ok, werr = f:write(bytes)
+    f:close()
+    if not ok then fail("[write-failed] " .. tostring(werr)) end
+    local written = offset + #bytes
+    if args.final ~= true then return { file = args.file, received = written, total = total } end
+    local size, crc = fileCrc(part)
+    if size ~= total then fail("[size-mismatch] the part file has " .. tostring(size) .. " bytes, not " .. total) end
+    if crc ~= args.crc32:lower() then fail("[crc-mismatch] the part file's CRC-32 is " .. tostring(crc) .. ", not " .. args.crc32:lower()) end
+    -- os.rename replaces an existing file in one step where the platform allows it (POSIX). Where it refuses (Windows),
+    -- the old file is moved aside first and moved back when the new one cannot take its place: a failed replace keeps it.
+    local moved, merr = os.rename(part, path)
+    if not moved and exists then
+      local old = path .. "." .. id .. ".gma3mcp-old"
+      os.remove(old)
+      local aside, aerr = os.rename(path, old)
+      if not aside then fail("[write-failed] could not move the existing file aside: " .. tostring(aerr) .. "; it is unchanged") end
+      moved, merr = os.rename(part, path)
+      if not moved then
+        local back, berr = os.rename(old, path)
+        if not back then fail("[write-failed] could not move the part file into place (" .. tostring(merr) .. ") nor the existing file back (" .. tostring(berr) .. "); it is at " .. old) end
+        fail("[write-failed] could not move the part file into place: " .. tostring(merr) .. "; the existing file is unchanged")
+      end
+      os.remove(old)
+    end
+    if not moved then fail("[write-failed] could not move the part file into place: " .. tostring(merr)) end
+    uploads[id] = nil
+    -- A replaced .xml may keep its size and time: drop its cached header so patch.library reads the new one.
+    for key in pairs(headerCache) do
+      if key:sub(1, #path + 1) == path .. "|" then headerCache[key] = nil end
+    end
+    local finalSize, finalCrc = fileCrc(path)
+    return { file = args.file, path = path, format = ext, size = finalSize, crc32 = finalCrc, replaced = exists }
+  end
+  end)()
 
   local function typeRow(t)
     local modes = {}
@@ -4475,12 +4768,13 @@ do
   end
 
   -- SU-19 (0.34.0): the type's wheels. A slot's Name displays as "Slot 2 'colour 1'" (live), so the name is the object's
-  -- own; Color is "r,g,b,a" in 0..1; MediaFileName / Appearance name a gobo image. A grandMA2-library type reads every
-  -- slot white (no colours in the type).
+  -- own; Color is "r,g,b,a" in about 0..1; MediaFileName / Appearance name a gobo image. A grandMA2-library type reads
+  -- every slot white (no colours in the type). A GDTF slot outside the sRGB gamut keeps a slightly negative component
+  -- ("0.9999432564,-0.0000825030,-0.0000241920,1.0000000000" for red; SU-22, live 2026-10-20).
   local function colorOf(o)
     local v = displayProp(o, "Color")
     if not v then return nil end
-    local r, g, b, a = v:match("^%s*([%d%.]+)%s*,%s*([%d%.]+)%s*,%s*([%d%.]+)%s*,?%s*([%d%.]*)")
+    local r, g, b, a = v:match("^%s*(%-?[%d%.]+)%s*,%s*(%-?[%d%.]+)%s*,%s*(%-?[%d%.]+)%s*,?%s*([%d%.]*)")
     if not r then return nil end
     return { r = tonumber(r), g = tonumber(g), b = tonumber(b), a = tonumber(a) or 1 }
   end

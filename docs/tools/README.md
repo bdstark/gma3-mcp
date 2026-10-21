@@ -17,6 +17,7 @@ the live test procedure on a disposable show.
 | Console feedback (KB-06, read-only) | `gma3_feedback` | [feedback.md](feedback.md) |
 | Patch (KB-26, bridge 0.19.0; changes need `exclusive: true`) | `gma3_patch_types`, `gma3_patch_list`, `gma3_patch_add`, `gma3_patch_set`, `gma3_patch_remove` | [patch.md](patch.md) |
 | Fixture-type library (SU-03, bridge 0.26.0; changes need `exclusive: true`) | `gma3_patch_library`, `gma3_patch_import`, `gma3_patch_remove_type` | [patch.md](patch.md) |
+| Fixture-type files into the user library (SU-22, bridge 0.38.0) | `gma3_patch_library_add` | [patch.md](patch.md#gma3_patch_library_add) |
 | Fixture-type structure (SU-07, bridge 0.28.0; read-only) | `gma3_patch_type_structure` (and cell counts in `gma3_patch_types`, `gma3_patch_list`) | [patch.md](patch.md) |
 | Fixture positions in 3D (SU-04; no undo, refused while the patch copy is open) | `gma3_fixture_positions`, `gma3_place_fixtures` | [positions.md](positions.md) |
 | Cell layouts (SU-08, bridge 0.29.0; no undo, need `exclusive: true`) | `gma3_layout_cells`, `gma3_assign_cell_layout` | [positions.md](positions.md#cell-layouts-su-08) |

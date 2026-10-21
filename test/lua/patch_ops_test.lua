@@ -144,7 +144,8 @@ local function buildLive()
   local stage = obj("Stage", "Stage 1", 1, {}, { obj("Fixtures", "Fixtures", 1, {}, { group, dim }) })
   stage.Fixtures = stage.kids[1]
   local stages = obj("Stages", "Stages", 7, {}, { stage })
-  local p = obj("Patch", "LivePatch", 9, {}, { obj("DmxCurves", "DmxCurves", 1, {}, {}), attrDefs, types, stages, obj("IDTypes", "IDTypes", 11, {}, { obj("IDs", "Fixture", 1, { { "MAXID", 501 } }) }),
+  local p = obj("Patch", "LivePatch", 9, {}, { obj("DmxCurves", "DmxCurves", 1, {}, { obj("DmxCurve", "DmxCurve 1", 1, { { "CURVEMODE", "MinMax" } }, { obj("DmxCurvePoint", "Max", 3, { { "IN", "FFFFFF" }, { "OUT", "FFFFFF" } }) }),
+      obj("DmxCurve", "Custom", 2, { { "CURVEMODE", "Linear" } }, { obj("DmxCurvePoint", "Min", 1, { { "IN", "000000" }, { "OUT", "000000" } }), obj("DmxCurvePoint", "Knee", 2, { { "IN", "808080" }, { "OUT", "404040" } }) }) }), attrDefs, types, stages, obj("IDTypes", "IDTypes", 11, {}, { obj("IDs", "Fixture", 1, { { "MAXID", 501 } }) }),
     obj("DmxUniverses", "DmxUniverses", 12, {}, { obj("DmxUniverse", "DmxUniverse 1", 1, { { "USED", 25 } }, { obj("DMX", "DMX 1", 1) }) }), obj("DmxAddresses", "DmxAddresses", 13, {}, {}) })
   p.FixtureTypes = types; p.Stages = stages; p.addr = "14.9"
   return p
@@ -307,7 +308,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.37.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.38.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -505,6 +506,8 @@ check("patch.library reads a grandMA3 file's header: name, manufacturer, descrip
   r.ok and r.result.total == 2 and spot.source == "grandma3" and spot.name == "Spot One" and spot.manufacturer == "Acme" and spot.description == "Acme & Co spot"
   and spot.modesKnown and spot.modes[1] == "Standard" and spot.modes[2] == "Extended (16 ch)" and #spot.inShow == 0, J(r))
 check("a user-library copy of the same file is listed and marked unverified", r.ok and r.result.entries[2].source == "user" and r.result.entries[2].verified == false, J(r))
+r = request("patch.library", { file = "solo@user only@rev2.gdtf" })
+check("a user-library .gdtf is marked verified (SU-22)", r.ok and r.result.entries[1].source == "user" and r.result.entries[1].verified == true, J(r))
 r = request("patch.library", {})
 local hasSet = false
 if r.ok then for _, e in ipairs(r.result.entries) do if e.file:find("^set@") then hasSet = true end end end
@@ -568,6 +571,26 @@ mhpModes.kids[#mhpModes.kids + 1] = mode(9, "Foreign mode", 4)
 check("a mode appended to an existing type in the copy is seen with prefixOfLive", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
 table.remove(mhpModes.kids)
 check("(back to only the import's appends: equal again)", fpAll("copy", { prefixOfLive = true }) == fpAll("live"))
+-- SU-22 (live 2026-10-20): DmxCurve 1 lists one of its two points, and a GDTF import flips it from Max to Min in the
+-- copy (the next copy flips it back). The points are left out; the curve itself is still hashed.
+local copyCurve = console.copy.DmxCurves.kids[1]
+local livePoint = copyCurve.kids[1]
+copyCurve.kids[1] = obj("DmxCurvePoint", "Min", 1, { { "IN", "000000" }, { "OUT", "000000" } })
+check("DmxCurve 1 listing Min instead of Max is not a difference", fpAll("copy", { prefixOfLive = true }) == fpAll("live"))
+copyCurve:Set("CURVEMODE", "Linear")
+check("a change to the curve itself still is", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+copyCurve:Set("CURVEMODE", "MinMax")
+copyCurve.kids[1]:Set("OUT", "101010")
+check("an edited end point of the default curve still is", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+copyCurve.kids[1] = livePoint
+local knee = console.copy.DmxCurves.kids[2].kids[2]
+knee:Set("OUT", "505050")
+check("an edited point of another curve still is (review of PR #84)", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+knee:Set("OUT", "404040")
+console.copy.DmxCurves.kids[2].kids[1]:Set("IN", "010101")
+check("an edited Min point of another curve still is", fpAll("copy", { prefixOfLive = true }) ~= fpAll("live"))
+console.copy.DmxCurves.kids[2].kids[1]:Set("IN", "000000")
+check("(back to equal)", fpAll("copy", { prefixOfLive = true }) == fpAll("live"))
 request("patch.commit", X); frame()
 r = request("patch.types")
 check("after the commit the imported type is live", r.ok and r.result.count == 6 and r.result.types[6].name == "Dimmer" and r.result.types[6].guid == imported.guid, J(r))
