@@ -250,6 +250,16 @@ r = request("patch.library", { query = "acme cached" })
 check("a replaced .xml of the same size reads its new header", r.ok and r.result.entries[1] and r.result.entries[1].name == "BBBB", J(r))
 os.remove(USER .. "/Acme@Cached.xml")
 
+-- Review of PR #84: the library header reader takes what the upload accepts: either quote, a comment or CDATA with an
+-- element in it, a '>' or an entity inside a value.
+upload("Acme@Alias.xml", "<?xml version='1.0'?>\n<GMA3><!-- <FixtureType Name=\"Old\" Manufacturer=\"Gone\"> --><![CDATA[<FixtureType Name=\"Cdata\">]]>"
+  .. "<FixtureType Name='Spot' Manufacturer='Acme' Description='a > b &#x26; &#233;'><DMXModes><!-- <DMXMode Name=\"Hidden\"/> --><DMXMode Name='Std'/><DMXMode Geometry=\"B\" Name=\"Ext &amp; 16\"></DMXMode></DMXModes></FixtureType></GMA3>")
+r = request("patch.library", { file = "Acme@Alias.xml" })
+local alias = r.ok and r.result.entries[1] or {}
+check("an .xml header is read from the real element, with either quote", alias.name == "Spot" and alias.manufacturer == "Acme" and alias.description == "a > b & \u{e9}"
+  and alias.modes and #alias.modes == 2 and alias.modes[1] == "Std" and alias.modes[2] == "Ext & 16", J(r))
+os.remove(USER .. "/Acme@Alias.xml")
+
 local p = io.popen('ls -1A "' .. USER .. '"'); local listing = p:read("a"); p:close()
 check("only the uploaded files are in the user library", listing == FILE .. "\n", listing)
 

@@ -4243,6 +4243,11 @@ do
   end
 
   local function decodeXml(v)
+    local function codePoint(n)
+      local ok, c = pcall(utf8.char, n)
+      return ok and c or ""
+    end
+    v = v:gsub("&#[xX](%x+);", function(h) return codePoint(tonumber(h, 16)) end):gsub("&#(%d+);", function(d) return codePoint(tonumber(d)) end)
     return (v:gsub("&quot;", '"'):gsub("&apos;", "'"):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&"))
   end
 
@@ -4257,25 +4262,48 @@ do
   end
 
   -- The FixtureType element's attributes of a grandMA3-format XML file and, with withModes, its DMX mode names.
-  -- Headers are cached by path, size and time, so a repeated search reads no file again.
+  -- Headers are cached by path, size and time, so a repeated search reads no file again. (The helpers are inner
+  -- functions: the main chunk is at Lua's local-variable limit.)
   local function readXmlHeader(e, withModes)
+    -- The markup of an XML text: comments and CDATA removed, and the text cut at one left open (the header read stops
+    -- at 16 KB), so an element inside them is never taken for a real one (review of PR #84).
+    local function markupOnly(text)
+      text = text:gsub("<!%-%-.-%-%->", ""):gsub("<!%[CDATA%[.-%]%]>", "")
+      local open = text:find("<!--", 1, true) or text:find("<![CDATA[", 1, true)
+      return open and text:sub(1, open - 1) or text
+    end
+    -- The attributes of the start tag whose name ends at pos: either quote, a '>' inside a value is fine.
+    local function tagAttrs(text, pos)
+      local attrs = {}
+      while true do
+        local _, ePos, k, q = text:find("^%s*([%w_:%.%-]+)%s*=%s*([\"'])", pos)
+        if not ePos then break end
+        local close = text:find(q, ePos + 1, true)
+        if not close then break end
+        attrs[k] = decodeXml(text:sub(ePos + 1, close - 1))
+        pos = close + 1
+      end
+      return attrs
+    end
     local key = e.path .. "|" .. tostring(e.size) .. "|" .. tostring(e.time)
     local cached = headerCache[key]
     if cached and (cached.modes or not withModes) then return cached.header, cached.why end
     local f = io.open(e.path, "rb")
     if not f then headerCache[key] = { why = "cannot be opened" }; return nil, "cannot be opened" end
-    local text = f:read(withModes and XML_READ_MAX or XML_HEADER_READ) or ""
+    local text = markupOnly(f:read(withModes and XML_READ_MAX or XML_HEADER_READ) or "")
     f:close()
-    local attrs = text:match("<FixtureType%s+([^>]*)>")
-    if not attrs then headerCache[key] = { why = "no FixtureType element", modes = withModes or nil }; return nil, "no FixtureType element" end
-    local h = {}
-    for k, v in attrs:gmatch('([%w_]+)="([^"]*)"') do h[k] = decodeXml(v) end
+    local _, ftEnd = text:find("<FixtureType[%s/>]")
+    if not ftEnd then headerCache[key] = { why = "no FixtureType element", modes = withModes or nil }; return nil, "no FixtureType element" end
+    local h = tagAttrs(text, ftEnd)
     local header = { name = h.Name, manufacturer = h.Manufacturer, shortName = h.ShortName, description = h.Description }
     if withModes then
-      local modes = {}
-      for mattrs in text:gmatch("<DMXMode%s+([^>]*)>") do
-        local n = mattrs:match('Name="([^"]*)"')
-        if n then modes[#modes + 1] = decodeXml(n) end
+      local modes, pos = {}, 1
+      while true do
+        local _, mEnd = text:find("<DMXMode[%s/>]", pos)
+        if not mEnd then break end
+        local n = tagAttrs(text, mEnd).Name
+        if n then modes[#modes + 1] = n end
+        pos = mEnd + 1
       end
       header.modes = modes
     end
