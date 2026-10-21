@@ -68,6 +68,10 @@ const END_TAG = new RegExp(`</(${XML_NAME})\\s*>`, "y");
 const ATTRIBUTE = new RegExp(`\\s+(${XML_NAME})\\s*=\\s*(?:"([^"<]*)"|'([^'<]*)')`, "y");
 const TAG_CLOSE = /\s*(\/?)>/y;
 const NAMED_ENTITIES: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
+/** XML 1.0 Char: tab, newline, carriage return, U+0020-D7FF, U+E000-FFFD, U+10000-10FFFF. */
+const xmlChar = (n: number) => n === 0x9 || n === 0xa || n === 0xd || (n >= 0x20 && n <= 0xd7ff) || (n >= 0xe000 && n <= 0xfffd) || (n >= 0x10000 && n <= 0x10ffff);
+// A literal character outside XML 1.0 Char: C0 controls but tab/LF/CR, U+FFFE/FFFF, an unpaired surrogate.
+const FORBIDDEN_CHAR = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 /**
  * The elements of an XML document in document order, after a strict well-formedness check: one root element, tags
@@ -84,6 +88,11 @@ export function parseXml(text: string): XmlElement[] {
   const fail = (why: string): never => {
     throw new Error(`it is not well-formed XML: ${why} at character ${i}`);
   };
+  const forbidden = FORBIDDEN_CHAR.exec(s);
+  if (forbidden) {
+    i = forbidden.index;
+    fail(`a character XML does not allow (U+${forbidden[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")})`);
+  }
   // Every & must start one of the allowed entities.
   const decode = (v: string): string => {
     let bad = false;
@@ -92,10 +101,10 @@ export function parseXml(text: string): XmlElement[] {
       // Own properties only: "toString" or "__proto__" is not an XML entity (review of PR #84).
       if (Object.hasOwn(NAMED_ENTITIES, body)) return NAMED_ENTITIES[body];
       const n = /^#\d+$/.test(body) ? Number(body.slice(1)) : /^#x[0-9A-Fa-f]+$/.test(body) ? parseInt(body.slice(2), 16) : NaN;
-      if (!Number.isInteger(n) || n < 1 || n > 0x10ffff) return ((bad = true), m);
+      if (!Number.isInteger(n) || !xmlChar(n)) return ((bad = true), m);
       return String.fromCodePoint(n);
     });
-    if (bad) fail("an undefined entity or a bare &");
+    if (bad) fail("an undefined entity, a reference to a character XML does not allow, or a bare &");
     return r;
   };
   while (i < s.length) {
@@ -210,19 +219,28 @@ export function readZip(buf: Buffer): { names: string[]; read: (name: string) =>
   };
 }
 
+/** The text of a UTF-8 file; invalid UTF-8 is refused instead of being replaced with U+FFFD. */
+function utf8(bytes: Buffer): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("it is not valid UTF-8");
+  }
+}
+
 /** What the console will be given: a GDTF zip with description.xml, or a grandMA3 fixture-type XML. Throws a reason. */
 export function checkContent(format: "gdtf" | "xml", bytes: Buffer): FixtureHeader {
   if (format === "gdtf") {
     const zip = readZip(bytes);
     if (!zip.names.includes("description.xml")) throw new Error("the GDTF has no description.xml at the top of the zip");
-    const xml = zip.read("description.xml").toString("utf8");
+    const xml = utf8(zip.read("description.xml"));
     try {
       return { ...fixtureHeader(xml, "GDTF"), files: zip.names.length };
     } catch (err) {
       throw new Error(`its description.xml: ${(err as Error).message}`);
     }
   }
-  return fixtureHeader(bytes.toString("utf8"), "GMA3");
+  return fixtureHeader(utf8(bytes), "GMA3");
 }
 
 interface Stat {

@@ -7,7 +7,7 @@ import { crc32, deflateRawSync } from "node:zlib";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
 import { BridgeReplyError } from "./helpers/fake-bridge.js";
 import { registerPatchTools } from "../src/tools/patch.js";
-import { LIBRARY_ADD_CHUNK, checkContent, decodeBase64, libraryFileName } from "../src/tools/patchlibrary.js";
+import { LIBRARY_ADD_CHUNK, checkContent, decodeBase64, libraryFileName, parseXml } from "../src/tools/patchlibrary.js";
 
 /**
  * SU-22: gma3_patch_library_add against a fake bridge that models patch.libraryStat / patch.libraryAdd the way the
@@ -178,6 +178,10 @@ test("checkContent parses the XML: comments, quotes, entities and well-formednes
     ['<GMA3><FixtureType Name="a & b"/></GMA3>', /bare &/],
     ['<GMA3><FixtureType Name="&ent;"/></GMA3>', /undefined entity/],
     ['<GMA3><FixtureType Name="&toString;"/></GMA3>', /undefined entity/],
+    ['<GMA3><FixtureType Name="Spot&#xD800;"/></GMA3>', /character XML does not allow/],
+    ['<GMA3><FixtureType Name="Spot&#1;"/></GMA3>', /character XML does not allow/],
+    ['<GMA3><FixtureType Name="Spot&#xFFFE;"/></GMA3>', /character XML does not allow/],
+    ['<GMA3><FixtureType Name="Spot\u0001"/></GMA3>', /U\+0001/],
     ['<GMA3><FixtureType Name="&__proto__;"/></GMA3>', /undefined entity/],
     ['<GMA3><FixtureType Name="&constructor;"/></GMA3>', /undefined entity/],
     ['<GMA3><FixtureType __proto__="x" __proto__="y" Name="S"/></GMA3>', /twice/],
@@ -190,6 +194,11 @@ test("checkContent parses the XML: comments, quotes, entities and well-formednes
     assert.throws(() => checkContent("xml", xml(bad)), why, bad);
   }
   assert.throws(() => checkContent("gdtf", zip([["description.xml", '<GDTF><FixtureType Name="x"></GDTF>']])), /its description\.xml: it is not well-formed XML/);
+  // An unpaired surrogate cannot come out of strict UTF-8 decoding, but parseXml refuses it in a string too.
+  assert.throws(() => parseXml('<GMA3><FixtureType Name="Spot\uD800"/></GMA3>'), /U\+D800/);
+  // Allowed: tab, newline, CR, astral characters (a valid surrogate pair) and their references.
+  assert.equal(checkContent("xml", xml('<GMA3>\t\r\n<FixtureType Name="Spot &#x1F4A1; \u{1F4A1} &#9;"/></GMA3>')).name, "Spot \u{1F4A1} \u{1F4A1} \t");
+  assert.throws(() => checkContent("xml", Buffer.concat([xml('<GMA3><FixtureType Name="'), Buffer.from([0xff, 0xfe]), Buffer.from('"/></GMA3>')])), /not valid UTF-8/);
   assert.throws(() => checkContent("gdtf", zip([["description.xml", '<GDTF><!-- <FixtureType Name="x"/> --></GDTF>']])), /its description\.xml: it has no FixtureType/);
 });
 
