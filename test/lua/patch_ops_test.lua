@@ -119,7 +119,7 @@ local MODE8 = mode(3, "Ch08", 8)
 local MODE1 = mode(1, "Mode 0", 1)
 local MODE2B = mode(1, "Two Breaks", 4, "0,1,0,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1")
 local GROUPMODE = mode(1, "Default", 0, "-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1")
-local function ftype(no, name, modes, manufacturer) local t = obj("FixtureType", name, no, { { "MANUFACTURER", manufacturer or "Test" }, { "SHORTNAME", name:sub(1, 6) }, { "REALUSED", 0 }, { "GUID", "G-" .. name .. "-" .. no } }, { obj("DMXModes", "DMXModes", 1, {}, modes) }); t.DMXModes = t.kids[1]; return t end
+local function ftype(no, name, modes, manufacturer) local t = obj("FixtureType", name, no, { { "MANUFACTURER", manufacturer or "Test" }, { "SHORTNAME", name:sub(1, 6) }, { "REALUSED", 0 }, { "GUID", "G-" .. name .. "-" .. no }, { "ORIGINALFILENAME", "" } }, { obj("DMXModes", "DMXModes", 1, {}, modes) }); t.DMXModes = t.kids[1]; return t end
 -- A console-derived subfixture list (on the console it sits in each DMX mode; the mock's modes are shared
 -- between live and copy, so it hangs off the type here). The copy renumbers its geometry references.
 local function overview() return obj("SubfixtureOverview", "SubfixtureOverview", 2, {}, { obj("FTSubfixture", "Instance2", 1, { { "INDEX", 2 } }) }) end
@@ -308,7 +308,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.38.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.38.1", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -372,6 +372,10 @@ local copyAttr = console.copy.kids[2].kids[1].kids[2]
 local copyOverviewRow = console.copy.FixtureTypes.kids[3].kids[2].kids[1]
 copyAttr:Set("ATTRIBUTEINDEXOLD", 351); copyOverviewRow:Set("NAME", "Instance1"); copyOverviewRow:Set("INDEX", 1)
 check("a numbered ATTRIBUTEINDEXOLD and a renumbered SubfixtureOverview leave the fingerprint equal", fpOf("copy") == fpOf("live"), fpOf("copy") .. " | " .. fpOf("live"))
+-- The live type remembers the library file it was imported from; every copy made after the import has it empty
+-- (bridge 0.38.1, live 2026-10-21: the first patch_add after a GDTF import failed its isolation check on it).
+console.live.FixtureTypes.kids[3]:Set("ORIGINALFILENAME", "Test@Mega_Hex_Par@rev1.gdtf")
+check("a type's ORIGINALFILENAME, set live and empty in the copy, leaves the fingerprint equal", fpOf("copy") == fpOf("live"), fpOf("copy") .. " | " .. fpOf("live"))
 copyAttr:Set("PRETTY", "Pixel Mask")
 check("a real change to an attribute still changes the fingerprint", fpOf("copy") ~= fpOf("live"))
 copyAttr:Set("PRETTY", "PixelMask")
@@ -523,6 +527,12 @@ check("includeSets lists scenery", r.ok and r.result.total == 1 and r.result.ent
 r = request("patch.library", { sources = { "user" } })
 local gdtf = r.ok and r.result.entries[2]
 check("a GDTF file name gives manufacturer, model and revision", r.ok and r.result.total == 2 and gdtf.format == "gdtf" and gdtf.manufacturer == "solo" and gdtf.model == "user only" and gdtf.revision == "rev2", J(r))
+-- Library file names spell spaces as underscores (bridge 0.38.1, live 2026-10-21: Chauvet_DJ@Sentinel_Spot_Q60_ILS).
+LIBFILES[4][#LIBFILES[4] + 1] = "Test@Two_Break@rev1.gdtf"
+r = request("patch.library", { file = "Test@Two_Break@rev1.gdtf" })
+check("inShow matches a type whose name has spaces where the file name has underscores",
+  r.ok and r.result.total == 1 and #r.result.entries[1].inShow == 1 and r.result.entries[1].inShow[1].name == "Two Break", J(r))
+table.remove(LIBFILES[4])
 r = request("patch.library", { file = "generic@dimmer.pxml" })
 check("patch.library file is an exact lookup", r.ok and r.result.total == 1 and r.result.entries[1].file == "generic@dimmer.pxml", J(r))
 r = request("patch.library", { sources = { "nowhere" } })

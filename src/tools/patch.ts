@@ -26,8 +26,7 @@
  * read over several seconds), so every change tool requires exclusive: true: the client confirms that
  * nobody else uses the console while it runs. When a session cannot be finished, it is closed again only
  * when the copy provably holds no change (fingerprints equal with nothing left out); otherwise the copy is
- * left open, the result says so (copyLeftOpen), and the operator decides at the console (Menu > Patch,
- * Save and Exit or Discard and Exit).
+ * left open, the result says so (copyLeftOpen), and the operator decides at the console (LEFT_OPEN_HELP).
  */
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
@@ -131,6 +130,21 @@ function requireExclusive(v: Validator, exclusive: unknown): void {
 // Session machinery
 // ---------------------------------------------------------------------------
 
+/**
+ * What the operator can do about an open copy (live 2026-10-21). A session enters the copy from the command line,
+ * never through the Patch menu, so no Patch window is open, and Menu > Patch only answers "Already in edit patch!".
+ * ChangeDestination Root typed at the console commits the copy without a question; discarding needs the Patch menu's
+ * exit dialog (KB-25), and no form without the menu is known.
+ */
+export const LEFT_OPEN_HELP =
+  'the command line is inside the edit patch and no Patch window is open (Menu > Patch answers "Already in edit patch!"). ' +
+  "To keep everything in the copy, type ChangeDestination Root at the console: it commits without a question. " +
+  "No way to discard the copy without the Patch menu is known";
+/** The pre-check's version: the copy may also be open because someone is in the Patch menu. */
+export const COPY_OPEN_HELP =
+  "if the Patch menu is open on a display, close it there (Save and Exit or Discard and Exit); otherwise an earlier session left it open: " +
+  LEFT_OPEN_HELP;
+
 const POLL_TRIES = 30;
 const POLL_MS = 100;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -144,7 +158,7 @@ async function checkStateStep(bridge: Gma3Bridge, t: number): Promise<StepResult
   try {
     const s = await readState(bridge, t);
     const problems: string[] = [];
-    if (s.copyOpen) problems.push("the patch copy is open (someone is in the Patch menu, or an earlier session was not finished): close it at the console first (Menu > Patch, Save and Exit or Discard and Exit)");
+    if (s.copyOpen) problems.push(`the patch copy is open: ${COPY_OPEN_HELP}`);
     else if (s.destination !== "Root") problems.push(`the command line destination is ${JSON.stringify(s.destination)}, not Root: ChangeDestination Root at the console first`);
     if (s.modal) problems.push(`a modal is open (${s.modal.name ?? s.modal.class ?? "unknown"}): close it at the console first`);
     if (problems.length) return asRead({ name: "check_state", status: "failed", op: "patch.state", error: problems.join("; "), detail: s });
@@ -353,7 +367,7 @@ export async function runSessionLocked(ctx: ToolContext, spec: SessionSpec): Pro
       steps.push(...skippedSteps(remaining, reason));
       const c = await closeSession(bridge, t);
       steps.push(...c.steps);
-      const state = c.closed ? "the patch copy was closed again without changes; the show is unchanged" : "THE PATCH COPY WAS LEFT OPEN (it may hold this call's change and the command line is in the patch): resolve it at the console with Menu > Patch, then Discard and Exit (or Save and Exit to keep it)";
+      const state = c.closed ? "the patch copy was closed again without changes; the show is unchanged" : `THE PATCH COPY WAS LEFT OPEN (it may hold this call's change): ${LEFT_OPEN_HELP}`;
       return finish(outcome, `${spec.operation} was not completed: ${reason}. ${state}.`, spec.verify ? unavailable("nothing was committed") : notRequested(), { committed: false, copyLeftOpen: c.leftOpen });
     };
 
@@ -383,7 +397,7 @@ export async function runSessionLocked(ctx: ToolContext, spec: SessionSpec): Pro
     steps.push(iso);
     if (iso.status !== "succeeded") {
       steps.push(...skippedSteps(["commit", "wait_commit"], "the isolation check did not pass"));
-      return finish("failed", `${spec.operation} was not committed: ${iso.error}. THE PATCH COPY WAS LEFT OPEN with this call's change in it: resolve it at the console with Menu > Patch, then Discard and Exit (drops everything in the copy) or Save and Exit (keeps everything in it).`, spec.verify ? unavailable("nothing was committed") : notRequested(), { committed: false, copyLeftOpen: true });
+      return finish("failed", `${spec.operation} was not committed: ${iso.error}. THE PATCH COPY WAS LEFT OPEN with this call's change in it: ${LEFT_OPEN_HELP}.`, spec.verify ? unavailable("nothing was committed") : notRequested(), { committed: false, copyLeftOpen: true });
     }
 
     let commit: StepResult;
@@ -786,7 +800,13 @@ interface ImportArgs {
 }
 
 const IMPORT_POLL_TRIES = 50;
-const lc = (v: unknown) => (typeof v === "string" ? v.toLowerCase() : undefined);
+/** Library file names spell spaces as underscores (Chauvet_DJ@Sentinel_Spot_Q60_ILS@...gdtf), so names compare
+ * ignoring case, underscores and repeated spaces, as the bridge's inShow match does (bridge 0.38.1). */
+export const sameName = (a: unknown, b: unknown): boolean => {
+  const norm = (v: unknown) => (typeof v === "string" ? v.toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ").trim() : undefined);
+  const x = norm(a);
+  return x !== undefined && x !== "" && x === norm(b);
+};
 
 export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<OperationResult> {
   const op = "patch_import";
@@ -848,9 +868,9 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
           }
           if (last && last.added.length === 1) {
             const got = last.added[0];
-            const expectName = lc(entry?.name ?? entry?.model);
-            const expectMan = lc(entry?.manufacturer);
-            if (expectName && lc(got.name) !== expectName && expectMan && lc(got.manufacturer) !== expectMan) {
+            const expectName = entry?.name ?? entry?.model;
+            const expectMan = entry?.manufacturer;
+            if (expectName && !sameName(got.name, expectName) && expectMan && !sameName(got.manufacturer, expectMan)) {
               return asRead({ name: "wait_import", status: "failed", op: "patch.importState", error: `the new type "${got.name}" by ${got.manufacturer ?? "?"} matches neither the name nor the manufacturer of ${file}; it is not claimed as this import`, detail: last });
             }
             imported = got;
@@ -965,7 +985,7 @@ const SESSION_DESC =
   "Runs one patch session through the patch edit copy, never a dialog: read-only pre-checks (command line at Root, the copy closed, so nobody is in the Patch menu, no modal open, plus the tool's own checks), then enter the copy, apply the change there, an isolation check, commit, and read back. " +
   "Requires exclusive: true. Patch changes need exclusive use of the console: the isolation check compares fingerprints of the copy and the live patch, left out the touched FIDs, over several seconds. It is best-effort detection of someone else's changes, not a guarantee, and on a mismatch nothing is committed and the copy is left open for the operator. " +
   "A committed patch change has NO UNDO (Oops does not revert it). Takes about 10 s (mostly the isolation check). " +
-  "When a session cannot be finished, the copy is closed again only if it provably holds no change; otherwise the result says copyLeftOpen: true and the operator resolves it at the console (Menu > Patch, Save and Exit or Discard and Exit). Needs bridge 0.19.0.";
+  "When a session cannot be finished, the copy is closed again only if it provably holds no change; otherwise the result says copyLeftOpen: true and the command line stays inside the edit patch with no Patch window open: the operator keeps the copy by typing ChangeDestination Root at the console (no way to discard it without the Patch menu is known). Needs bridge 0.19.0.";
 const EXCLUSIVE_DESC = "Required, must be true: confirms nobody else uses the console while this runs (see the description). Without it the call is refused and nothing is sent.";
 const VERIFY_DESC = "Read the patch back after the commit and compare (default true).";
 

@@ -23,7 +23,7 @@ for its ~10 seconds.
 **Isolation check: best-effort detection.** Before committing, the tool fingerprints the copy and the live patch:
 every object and property of every patch collection, leaving out the FIDs the call touches and the data the console
 derives itself (listed in the KB-25 and KB-26 records; bridge 0.25.1 adds what a fresh fixture-type import leaves
-different; bridge 0.38.0 leaves out the default curve's Min and Max points with their default values, one of which a GDTF import swaps for the other). It compares the two, one collection per request. Anything else that
+different; bridge 0.38.0 leaves out the default curve's Min and Max points with their default values, one of which a GDTF import swaps for the other; bridge 0.38.1 leaves out a fixture type's `ORIGINALFILENAME`, which the live type keeps after an import and every copy has empty). It compares the two, one collection per request. Anything else that
 differs means someone changed the show during the session: nothing is committed and the copy is left open.
 
 Fixture types are compared by identity, not by number (bridge 0.26.0): deleting a type renumbers the ones after it,
@@ -55,8 +55,14 @@ required rather than implied.
 **When a session cannot be finished.** If the change step is refused or gets no reply, the tool closes the copy
 again, but only when it provably holds no change at all: fingerprints equal with nothing left out (steps
 `close_check`, `close`, `wait_close`). The same applies if the copy never opens. Otherwise, and always after a failed
-isolation check, the copy is left open and the result carries `copyLeftOpen: true`. The operator then resolves it at
-the console: Menu › Patch, then **Discard and Exit** (drops everything in the copy) or **Save and Exit** (keeps it).
+isolation check, the copy is left open and the result carries `copyLeftOpen: true`.
+
+The command line is then inside the edit patch, and **no Patch window is open**: the session entered the copy from the
+command line, not through the menu. Menu › Patch only answers "Already in edit patch! Command line is inside of the
+edit patch!" (live 2026-10-21). To keep everything in the copy, type `ChangeDestination Root` at the console: it
+commits without a question, like the tools' own commit. No way to discard the copy without the Patch menu is known;
+its "Discard and Exit" only appears when the copy was opened through the menu (KB-25). When the Patch menu itself is
+open on a display (someone is patching there), close it there with **Save and Exit** or **Discard and Exit**.
 
 **Outcome.** The outcome is decided per session, not by counting steps:
 
@@ -170,7 +176,7 @@ Each entry has `source`, `file` (the name to import), `format`, `manufacturer` a
 | --- | --- |
 | `name`, `modes` | From the XML header of a grandMA3 or user `.xml` (`modesKnown: true`). A grandMA2 `.pxml` is encrypted: its modes are known only after the import |
 | `verified` | `false` for user-library `.xml` and WorldServer files: their import is not verified on the console yet. User-library `.gdtf` is verified (bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md)) |
-| `inShow` | Show types with the same manufacturer and name: importing again would add a duplicate |
+| `inShow` | Show types with the same manufacturer and name: importing again would add a duplicate. Names compare ignoring case, and an underscore in the file name matches a space (bridge 0.38.1: `Chauvet_DJ@Sentinel_Spot_Q60_ILS` is "Chauvet DJ", "Sentinel Spot Q60 ILS") |
 | `set` | Scenery |
 
 ## gma3_patch_library_add
@@ -211,7 +217,7 @@ pool:
 | `check_library` | The file is in exactly one library (`Import Library` names the file only, so a name in two libraries is refused); the show has no type matching it unless `allow_duplicate` (the console would silently add a second type with the same name) |
 | `enter` | `patch.enter` with target `fixturetypes`: the copy, then its `FixtureTypes` |
 | `import` | `Import Library "<file>"` with `CmdIndirect` (no dialog) |
-| `wait_import` | Poll until exactly one type is appended. Claimed only when its name or manufacturer matches the file; two new types, or an error answer from the console, fail the step |
+| `wait_import` | Poll until exactly one type is appended. Claimed only when its name or manufacturer matches the file (ignoring case; an underscore matches a space); two new types, or an error answer from the console, fail the step |
 | `isolation_check` | Everything compared in full except the import's appends (the new type; new attributes and features) |
 | `commit`, read-back | The type in the live patch by GUID, with the same modes |
 

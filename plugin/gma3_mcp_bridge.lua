@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.38.0"
+local VERSION      = "0.38.1"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -3819,7 +3819,11 @@ end
 
 ops["patch.enter"] = function(args)
   requireExclusive(args, "patch.enter")
-  if patchCopyOpen() then raise("[copy-open] the patch copy is already open (the Patch menu, or an unfinished session); close it at the console (Menu > Patch, then Save and Exit or Discard and Exit) before patching from here") end
+  -- How the operator gets out of an open copy (live 2026-10-21). A session enters the copy from the command line, not
+  -- through the Patch menu, so there is no window to close, and Menu > Patch then only answers "Already in edit patch!".
+  -- ChangeDestination Root typed at the console commits the copy without a question. Discarding needs the Patch
+  -- menu's exit dialog (KB-25), which only appears when the copy was opened through the menu.
+  if patchCopyOpen() then raise("[copy-open] the patch copy is already open: if the Patch menu is open on a display, close it there (Save and Exit or Discard and Exit); otherwise the command line is inside the edit patch from an unfinished session (no Patch window is open, and Menu > Patch answers \"Already in edit patch!\"): type ChangeDestination Root at the console to keep everything in the copy. No way to discard that copy without the Patch menu is known") end
   local d = patchDestination()
   if d ~= "Root" then raise("[not-root] the command line destination is " .. tostring(d) .. ", not Root; ChangeDestination Root at the console first") end
   local m = patchModal()
@@ -4056,7 +4060,10 @@ end
 -- properties below. ATTRIBUTEINDEXOLD is unset (4294967295) in the live patch for attributes a fixture-type
 -- import added and numbered in the copy (onPC 2.5.1, live 2026-10-14: the only differences after importing
 -- five grandMA2 types). LOGCHANNELS and CHANNELFUNCTIONS count the type channels using an attribute or feature,
--- and ATTRIBCOUNT a feature's attributes; all three rise with an import (SU-03, live 2026-10-15). A read that fails or more than PATCH_FP_LIMIT objects mark
+-- and ATTRIBCOUNT a feature's attributes; all three rise with an import (SU-03, live 2026-10-15). A fixture type's
+-- ORIGINALFILENAME (the library file it was imported from) is set in the live patch and empty in every copy made
+-- after the import, and the next commit empties it live too: without leaving it out, the first patch session after
+-- any import failed its isolation check and left the copy open (live 2026-10-21, a GDTF import, then patch_add). A read that fails or more than PATCH_FP_LIMIT objects mark
 -- it incomplete.
 --
 -- Fixture types are compared by identity, not by number: deleting a type renumbers the ones after it, and every
@@ -4079,7 +4086,7 @@ local PATCH_FP_SHALLOW = { DmxUniverses = true }
 local PATCH_FP_RENUMBERED = { DmxCurves = true }
 local PATCH_FP_PROP_SKIP = { COUNT = true, NO = true, MEMORYFOOTPRINT = true, USED = true, PATCHINFO = true, COARSEPARAMS = true, PARKEDCOUNT = true, TESTERCOUNT = true,
   STRUCTURELOCKED = true, IGNORENETWORK = true, REALUSED = true, MAXID = true, GRANTED = true, SUBFIXTUREINDEX = true, OLDSUBFIXTUREINDEX = true,
-  ATTRIBUTEINDEXOLD = true, LOGCHANNELS = true, CHANNELFUNCTIONS = true, ATTRIBCOUNT = true }
+  ATTRIBUTEINDEXOLD = true, LOGCHANNELS = true, CHANNELFUNCTIONS = true, ATTRIBCOUNT = true, ORIGINALFILENAME = true }
 local PATCH_FP_LIMIT = 200000
 -- Where an import appends (collection -> walk depths whose children may extend the guide's): the type list of
 -- FixtureTypes; the items of AttributeDefinitions' containers (attributes, feature groups, activation groups)
@@ -4365,11 +4372,18 @@ do
 
   -- Show types matching a library entry by manufacturer and name, ignoring case (a .pxml file name carries
   -- both in lower case: "generic@dimmer" is "Dimmer" by "Generic", live 2026-10-15).
+  -- Library file names spell spaces as underscores (Chauvet_DJ@Sentinel_Spot_Q60_ILS@...gdtf for "Chauvet DJ",
+  -- "Sentinel Spot Q60 ILS"), so names compare ignoring case, underscores and repeated spaces.
+  local function sameName(a, b)
+    local function norm(v) return v and (tostring(v):lower():gsub("_", " "):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")) or nil end
+    return norm(a) ~= nil and norm(a) == norm(b)
+  end
+
   local function typesMatching(p, manufacturer, name)
     local out = {}
     if not name then return out end
     for _, t in ipairs(p.FixtureTypes:Children()) do
-      if lower(safeProp(t, "name")) == lower(name) and (manufacturer == nil or lower(displayProp(t, "Manufacturer")) == lower(manufacturer)) then
+      if sameName(safeProp(t, "name"), name) and (manufacturer == nil or sameName(displayProp(t, "Manufacturer"), manufacturer)) then
         out[#out + 1] = { no = safeProp(t, "no"), name = tostring(safeProp(t, "name")), manufacturer = displayProp(t, "Manufacturer"), guid = displayProp(t, "Guid") }
       end
     end

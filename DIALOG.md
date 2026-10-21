@@ -163,7 +163,8 @@ was found.
   build on a verified change-tracking or locking mechanism. `HookObjectChange` is the candidate, and is untested.
 - **Claim only provably created objects.** Claim a created object only once the creating command reported success
   and exactly one attributable object appeared. With a foreign change present, leave the decision to the operator
-  (Menu › Patch › Discard / Save).
+  (`ChangeDestination Root` keeps the copy; with the command line in the patch, Menu › Patch answers "Already in
+  edit patch!", live 2026-10-21).
 
 **Still open** (see the record): a verified way to exclude or track concurrent patch edits (`HookObjectChange`);
 discarding a patch edit without the Patch menu; two physical displays;
