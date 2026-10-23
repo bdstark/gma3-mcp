@@ -40,7 +40,7 @@ class Obj {
       for (const f of (args.fields as string[]) ?? []) {
         if (!(f in this.props)) continue;
         // asText false: a reference property comes back as the referenced object's summary.
-        if (f === "Appearance" && this.props.Appearance === "") continue;
+        if (f === "Appearance" && (this.props.Appearance === "" || (this.rawFails && args.asText === false))) continue;
         fields[f] = f === "Appearance" && args.asText === false ? { name: this.appName(this.props.Appearance), class: "Appearance", addr: `addr:app${this.props.Appearance}` } : f === "Appearance" ? this.appName(this.props.Appearance) : this.props[f];
       }
       return { total: 1, offset: 0, count: 1, items: [{ name: this.props.Name, class: "RenderQuality", fields }] };
@@ -66,6 +66,8 @@ class Obj {
       return { ref: args.ref, property: p, value: p === "Appearance" ? this.appName(this.props[p]) : this.props[p] };
     });
   }
+  /** The raw (asText false) read of Appearance raises, so the bridge leaves the field out. */
+  rawFails = false;
   /** An owner (a page, for its executors) whose Lock blocks writes to this object. */
   owner: { ref: string; Lock: string } | null = null;
   /** A write is taken only with no lock on the object or its owner (StructureLocked is the console's own). */
@@ -391,6 +393,16 @@ test("set_property: StructureLocked, an owner's lock, a repeated clear on a lock
     o.props.Lock = "UL";
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: 3 });
     assert.equal(r.failed, true, JSON.stringify(r.result));
+    o.props.Lock = "";
+    // A raw read that leaves the field out (its read raised) is unknown, not a match by the display name: Appearance 6
+    // is named "Appearance 7" (review of PR #92).
+    o.props.Appearance = "6";
+    o.props.Lock = "UL";
+    o.rawFails = true;
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 7" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.match(String(r.result.error), /raw read of Appearance returned no value.*unknown/);
+    o.rawFails = false;
     o.props.Lock = "";
     // A long wait reads in hundredths: 3600.001 reads "1h00m00.00" and is applied.
     r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 3600.001 });

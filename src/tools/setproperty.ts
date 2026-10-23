@@ -117,6 +117,9 @@ async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: u
   // "not found").
   const isHandle = (v: unknown) => typeof v === "object" && v !== null && typeof (v as { addr?: unknown }).addr === "string";
   const current = isHandle(got) ? got : (await readFields(bridge, ref, [property], { asText: false }))?.[property];
+  // The bridge leaves out a field whose read raised (childSummary), so no raw value where the text read-back had one is
+  // a failed read: unknown, never a fall back to the display name (a kept object can be named "Appearance 7").
+  if ((current === undefined || current === null) && text(got) !== "") throw new Error(`the raw read of ${property} returned no value`);
   if (!isHandle(current)) return undefined;
   const cls = (current as { class?: unknown }).class;
   if (!keyed && (typeof cls !== "string" || !/^[A-Za-z]+$/.test(cls))) return undefined;
