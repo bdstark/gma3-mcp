@@ -978,6 +978,19 @@ do
   check("dialog.press refuses it", r.ok == false and r.code == "modal-unknown" and console.confirmed == nil, J(r))
   table.remove(box.kids[1].kids)
 end
+do
+  -- A visible part whose text cannot be read: incomplete, never bound as an empty title or message.
+  local box = console.modal
+  local bad = ui("UIObject", "Text")
+  setmetatable(bad, { __index = function(_, k) if k == "Text" then error("text not readable") end end })
+  bad.Text = nil
+  box.kids[1].kids[#box.kids[1].kids + 1] = bad
+  r = request("dialog.read")
+  check("dialog.read: a part whose text cannot be read makes the dialog incomplete (PR #89 review)", r.ok and r.result.modal.incomplete ~= nil and r.result.modal.incomplete:find("cannot be read") ~= nil, J(r))
+  r = request("dialog.press", { button = "OK", expectTitle = "", exclusive = true })
+  check("dialog.press refuses it", r.ok == false and r.code == "modal-unknown" and console.confirmed == nil, J(r))
+  table.remove(box.kids[1].kids)
+end
 console.mouseFailRelease = 1
 r = request("dialog.press", { button = "OK", expectTitle = "", exclusive = true })
 check("dialog.press: a release that fails after the press is press-uncertain, never 'nothing was clicked', and is released again (PR #89 review)", r.ok == false and r.code == "press-uncertain" and console.mouseFailRelease == -1, J(r))

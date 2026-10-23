@@ -33,7 +33,7 @@ named `Text`), `display`, and `buttons` with their `text` and `enabled`, in scre
 
 | Step | Kind | Bridge op | What it does |
 | --- | --- | --- | --- |
-| `read_dialog` | read | `dialog.read` | A dialog is open with the expected title and/or message, and the button is there and enabled; otherwise nothing is sent. A dialog whose UI tree could only be read in part (`incomplete`) is refused here and again in the bridge |
+| `read_dialog` | read | `dialog.read` | A dialog is open with the expected title and/or message, and the button is there and enabled; otherwise nothing is sent. A dialog read only in part (`incomplete`: the walk failed, the tree is deeper than its bound, or a visible part's text could not be read) is refused here and again in the bridge |
 | `press` | mutation | `dialog.press` | The bridge reads the top modal again and compares it with the whole dialog `read_dialog` saw (class, title and message, not only the caller's expectations), then clicks the one visible, enabled button with that text at its centre with `Mouse(display, "move" / "press" / "release")`. Two buttons with the same text are refused. A mouse event that fails after the press is `press-uncertain`: the step is `unknown` (the button may have acted), the bridge releases once more, and the dialog is still read again |
 | `read_after` | read | `dialog.read` | Polls (100 ms, up to 1.5 s) until the dialog closed or another took its place |
 

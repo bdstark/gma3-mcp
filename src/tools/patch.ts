@@ -301,7 +301,7 @@ export interface SessionSpec {
    * steps are reported in order; the first one that did not succeed stops the session, which then closes the copy only
    * when it provably holds no change. It cleans up its own leftovers (an open dialog) before returning.
    */
-  runEdit?: (stage: string | undefined) => Promise<{ steps: StepResult[]; detail?: unknown }>;
+  runEdit?: (stage: string | undefined) => Promise<{ steps: StepResult[]; detail?: unknown; leaveOpen?: string }>;
   /** Read-back after a commit. */
   readBack?: () => Promise<{ steps: StepResult[]; verification: Verification; extra?: Record<string, unknown> }>;
   verify: boolean;
@@ -384,10 +384,12 @@ export async function runSessionLocked(ctx: ToolContext, spec: SessionSpec): Pro
 
     let editSteps: StepResult[];
     let editDetail: unknown;
+    let leaveOpen: string | undefined;
     if (spec.runEdit) {
       const r = await spec.runEdit(entered?.stage);
       editSteps = r.steps;
       editDetail = r.detail;
+      leaveOpen = r.leaveOpen;
     } else {
       if (!spec.edit) throw new Error(`${spec.operation}: a session needs edit or runEdit`);
       const edit = spec.edit(entered?.stage);
@@ -404,6 +406,11 @@ export async function runSessionLocked(ctx: ToolContext, spec: SessionSpec): Pro
     }
     steps.push(...editSteps);
     const badEdit = editSteps.find((s) => s.status !== "succeeded");
+    if (leaveOpen) {
+      // The edit says the copy must not be closed (a dialog may still be open): leave it, and say so.
+      steps.push(...skippedSteps(planned(3), leaveOpen));
+      return finish("unknown", `${spec.operation} was not completed: ${leaveOpen}. THE PATCH COPY WAS LEFT OPEN: ${LEFT_OPEN_HELP}.`, spec.verify ? unavailable("nothing was committed") : notRequested(), { committed: false, copyLeftOpen: true });
+    }
     if (badEdit || editSteps.length === 0) {
       const status = badEdit?.status ?? "failed";
       return abort(status === "unknown" ? "unknown" : "failed", `the ${badEdit?.name ?? spec.editName} step ${status === "unknown" ? "got no reply or did not finish" : status === "skipped" ? "was not attempted" : "was refused"}: ${badEdit?.error ?? "no step ran"}`, planned(3));

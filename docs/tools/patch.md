@@ -201,8 +201,10 @@ to 3 s) before the next one:
 | `move_answer`, `wait_paste` | `patch.moveAnswer` | Clicks Absolute or Relative on that dialog, and only on a dialog with that title and message; waits for `OK: Paste …` with every fixture under the target |
 
 Any other dialog stops the move and is left alone, and so does a poll that cannot read whether a dialog is open. When a step fails after the paste and the Move Fixtures dialog is
-still open, the tool clicks Cancel (`cancel_dialog`), which moves nothing, so the copy can be closed unchanged. A
-paste without a reply may still have been queued: the tool waits for its dialog and cancels it the same way. If the
+still open, the tool clicks Cancel (`cancel_dialog`), which moves nothing, so the copy can be closed unchanged. When
+it cannot read whether that dialog is open, it clicks nothing and leaves the copy open (`copyLeftOpen: true`, outcome
+`unknown`). A paste without a reply may still have been queued: its dialog, or a completed paste (every fixture under
+the target and `OK: Paste …`), confirms it, and the move goes on (`move_paste` detail `replyLost`). If the
 console pastes without asking, the result says `dialog: "not_shown"` and the read-back still checks the pose.
 
 The isolation check leaves out the moved FIDs and compares fixtures without their number in their list
@@ -236,7 +238,8 @@ preset values are kept. The case it is for: a GDTF fixed and imported again (`gm
 `allow_duplicate`, Halloween finding #5) lands as a second type with the same name; this moves the fixtures to the new
 import, and `gma3_patch_remove_type` then removes the old one by number. It is the same session as
 `gma3_assign_cell_layout` (`patch.retype`, [positions.md](positions.md#gma3_assign_cell_layout)) under a patch-centred
-name. Give `type` by number when two types share a name.
+name. Give `type` by number when two types share a name. The read-back checks each fixture's type by number and name
+and every DMX break against the state before.
 
 ## gma3_patch_library
 

@@ -6104,6 +6104,8 @@ end)()
         pcall(function() vis = c:IsVisible() end)
         if vis then
           local okT, tx = pcall(function() return c.Text end)
+          -- A visible part whose text cannot be read (the title, the message, a button) leaves the dialog unidentified.
+          if not okT then r.incomplete = "the text of " .. tostring(safeProp(c, "name")) .. " cannot be read" end
           if okT and tx ~= nil and tx ~= "" then
             if safeCall(c, "GetClass") == "Button" then
               local en = true

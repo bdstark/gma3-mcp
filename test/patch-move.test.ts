@@ -54,6 +54,10 @@ class MoveWorld {
   dropBreak2 = false;
   /** patch.moveState cannot read the top modal. */
   modalUnknown = false;
+  /** The console pastes without asking Move Fixtures. */
+  noDialog = false;
+  /** After a refused answer the top modal can no longer be read. */
+  unknownAfterAnswerError = false;
   /** The grouping fixtures' poses cannot be read. */
   parentPoseUnreadable = false;
   answered: string[] = [];
@@ -149,7 +153,11 @@ class MoveWorld {
         this.pasteCmd = "Paste 9";
         queue(this.pasteCmd, () => {
           if (this.otherDialog) this.modal = { title: "Error", text: "Something else", buttons: [{ text: "OK", enabled: true }] };
-          else {
+          else if (this.noDialog) {
+            for (const fid of this.clip ?? []) this.copy!.find((x) => x.fid === fid)!.parent = target;
+            this.clip = null;
+            this.last = `OK: ${this.pasteCmd}`;
+          } else {
             this.modal = { title: "Move Fixtures", text: MOVE_TEXT, buttons: ["Absolute", "Relative", "Cancel"].map((text) => ({ text, enabled: true })) };
             this.moveDialog = true;
           }
@@ -159,7 +167,10 @@ class MoveWorld {
       return { step: args.step, commands };
     });
     f.on("patch.moveAnswer", (args) => {
-      if (this.answerError && args.button !== "Cancel") throw new BridgeReplyError("[no-button] refused", "no-button");
+      if (this.answerError && args.button !== "Cancel") {
+        if (this.unknownAfterAnswerError) this.modalUnknown = true;
+        throw new BridgeReplyError("[no-button] refused", "no-button");
+      }
       if (!this.moveDialog) throw new BridgeReplyError("[wrong-modal] not Move Fixtures", "wrong-modal");
       this.answered.push(args.button as string);
       this.modal = false;
@@ -373,16 +384,46 @@ test("gma3_patch_move: a refused answer cancels the Move Fixtures dialog; nothin
   }
 });
 
-test("gma3_patch_move: a paste without a reply still has its Move Fixtures dialog cancelled (PR #89 review)", async () => {
+test("gma3_patch_move: a paste without a reply that its Move Fixtures dialog confirms goes on and is answered (PR #89 review)", async () => {
   const { h, w } = await setup();
   try {
     w.pasteSilent = true;
     const { result } = await h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true });
+    assert.equal(result.outcome, "succeeded", JSON.stringify(stepNames(result)));
+    assert.deepEqual(w.answered, ["Absolute"]);
+    assert.equal(result.steps.find((s: any) => s.name === "move_paste").detail.replyLost, true);
+    assert.equal(w.live.find((x) => x.fid === 101)!.parent, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_move: a paste without a reply that completed without the dialog is recognized and committed (PR #89 review)", async () => {
+  const { h, w } = await setup();
+  try {
+    w.pasteSilent = true;
+    w.noDialog = true;
+    const { result } = await h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true });
+    assert.equal(result.outcome, "succeeded", JSON.stringify(stepNames(result)));
+    assert.equal(result.dialog, "not_shown");
+    assert.equal(result.committed, true);
+    assert.equal(w.live.find((x) => x.fid === 101)!.parent, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_move: when the dialog state cannot be read during cleanup the copy is left open, never closed over a dialog (PR #89 review)", async () => {
+  const { h, w, ops } = await setup();
+  try {
+    w.answerError = true;
+    w.unknownAfterAnswerError = true;
+    const { result } = await h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true });
     assert.equal(result.outcome, "unknown");
-    assert.deepEqual(w.answered, ["Cancel"]);
-    assert.ok(stepNames(result).includes("cancel_dialog:succeeded"), JSON.stringify(stepNames(result)));
-    assert.equal(result.copyLeftOpen, false);
-    assert.equal(w.live.find((x) => x.fid === 101)!.parent, null);
+    assert.equal(result.copyLeftOpen, true);
+    assert.match(result.summary, /cannot be read.*LEFT OPEN/);
+    assert.ok(stepNames(result).includes("cancel_dialog:unknown"), JSON.stringify(stepNames(result)));
+    assert.ok(!ops().includes("patch.commit"), "nothing tried to close the copy");
   } finally {
     await h.close();
   }
@@ -470,7 +511,7 @@ test("gma3_patch_retype: runs the retype session under its own operation name", 
 });
 
 test("gma3_patch_retype: the read-back checks the type by number, so the old import of the same name is a mismatch (PR #89 review)", async () => {
-  for (const [applies, expect] of [[true, "matched"], [false, "mismatched"]] as const) {
+  for (const [applies, expect, breakLost] of [[true, "matched", false], [false, "mismatched", false], [true, "mismatched", true]] as const) {
     const h = await startHarness(registerPatchMoveTools);
     try {
       let copy: string | null = null;
@@ -487,7 +528,7 @@ test("gma3_patch_retype: the read-back checks the type by number, so the old imp
         return { destination: copy === null ? "Root" : "Stage 1.Fixtures", copyOpen: copy !== null, atRoot: copy === null, modal: false, stages: ["Stage 1"] };
       });
       f.on("patch.types", () => ({ count: 2, types: [{ no: 16, name: "180W Beam", modes: [] }, { no: 19, name: "180W Beam", modes: [] }] }));
-      f.on("patch.list", () => ({ total: 1, offset: 0, count: 1, fixtures: [{ fid: 101, name: "Beam 1", type: live, mode: "1 Mode", patch: "1.001" }] }));
+      f.on("patch.list", () => ({ total: 1, offset: 0, count: 1, fixtures: [{ fid: 101, name: "Beam 1", type: live, mode: "1 Mode", patch: "1.001", breaks: [{ break: 1, address: "1.001" }, ...(live.startsWith("19") && breakLost ? [] : [{ break: 2, address: "2.001" }])] }] }));
       f.on("patch.enter", () => {
         pending.push(() => (copy = live));
         return { queued: true, stage: "Stage 1", expectDestination: "Stage 1.Fixtures" };
@@ -509,6 +550,7 @@ test("gma3_patch_retype: the read-back checks the type by number, so the old imp
       assert.equal(result.operation, "patch_retype");
       assert.equal(result.verification.status, expect, JSON.stringify(result.verification));
       if (!applies) assert.match(result.verification.detail, /not of type 19 180W Beam/);
+      if (breakLost) assert.match(result.verification.detail, /FIDs 101 changed address or a DMX break/);
     } finally {
       await h.close();
     }
