@@ -991,6 +991,17 @@ do
   check("dialog.press refuses it", r.ok == false and r.code == "modal-unknown" and console.confirmed == nil, J(r))
   table.remove(box.kids[1].kids)
 end
+do
+  -- A class that cannot be read: incomplete (the class is part of the identity the press checks).
+  local box = console.modal
+  local getClass = box.GetClass
+  box.GetClass = function() error("class not readable") end
+  r = request("dialog.read")
+  check("dialog.read: an unreadable class makes the dialog incomplete (PR #89 review)", r.ok and r.result.modal.incomplete == "the dialog's class cannot be read", J(r))
+  r = request("dialog.press", { button = "OK", expectTitle = "", exclusive = true })
+  check("dialog.press refuses it", r.ok == false and r.code == "modal-unknown" and console.confirmed == nil, J(r))
+  box.GetClass = getClass
+end
 console.mouseFailRelease = 1
 r = request("dialog.press", { button = "OK", expectTitle = "", exclusive = true })
 check("dialog.press: a release that fails after the press is press-uncertain, never 'nothing was clicked', and is released again (PR #89 review)", r.ok == false and r.code == "press-uncertain" and console.mouseFailRelease == -1, J(r))

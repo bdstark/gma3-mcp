@@ -6092,6 +6092,8 @@ end)()
     if not ok then return nil, nil, "GetTopModal failed: " .. tostring(m) end
     if not m then return nil end
     local r = { class = safeCall(m, "GetClass"), name = tostring(safeProp(m, "name")), buttons = {} }
+    -- The class is part of the dialog's identity: unreadable, the dialog is incomplete (never bound without it).
+    if type(r.class) ~= "string" or r.class == "" then r.incomplete = "the dialog's class cannot be read" end
     pcall(function() r.display = m:GetDisplayIndex() end)
     local function walk(h, d)
       -- A tree deeper than the bound is incomplete, never complete without what lies below it (a message, a button).
