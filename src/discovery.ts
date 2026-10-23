@@ -10,7 +10,7 @@
 /** Setup and show tasks, each with the tools that do it (the first one is usually the one to start with). */
 export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] }> = [
   { task: "find and import fixture types", tools: ["gma3_patch_library", "gma3_patch_import", "gma3_patch_library_add", "gma3_patch_types", "gma3_patch_remove_type"] },
-  { task: "patch fixtures (add, readdress, rename, remove)", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list"] },
+  { task: "patch fixtures (add, readdress, rename, remove, nest in a grouping fixture, retype)", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list", "gma3_patch_move", "gma3_patch_retype"] },
   { task: "a fixture type's modes, cells, channels and size", tools: ["gma3_patch_type_structure"] },
   { task: "place fixtures in 3D (position, rotation, mirroring)", tools: ["gma3_place_fixtures", "gma3_fixture_positions"] },
   { task: "lay out a fixture's cells (string lights, pixel strands)", tools: ["gma3_layout_cells", "gma3_assign_cell_layout"] },
@@ -23,14 +23,14 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "executors and sequence playback", tools: ["gma3_assign_to_executor", "gma3_configure_executor", "gma3_configure_sequence", "gma3_playback", "gma3_goto_cue", "gma3_set_fader"] },
   { task: "speed masters and tempo", tools: ["gma3_configure_speed_master", "gma3_speed_master_action", "gma3_speed_masters"] },
   { task: "recipes", tools: ["gma3_recipes", "gma3_edit_recipe", "gma3_cook_recipes"] },
-  { task: "macros", tools: ["gma3_store_macro", "gma3_edit_macro_line", "gma3_run_macro", "gma3_macros"] },
+  { task: "macros and their dialogs", tools: ["gma3_store_macro", "gma3_edit_macro_line", "gma3_run_macro", "gma3_macros", "gma3_dialog"] },
   { task: "console variables ($name in macros and cue commands)", tools: ["gma3_variables", "gma3_set_variable"] },
   { task: "tags: tag sequences, groups, macros and cues, kill types, and which objects carry a tag", tools: ["gma3_tags", "gma3_assign_tag", "gma3_store_tag", "gma3_delete_tag", "gma3_configure_tag", "gma3_playback"] },
   { task: "timecode shows", tools: ["gma3_build_timecode", "gma3_timecode_transport", "gma3_timecodes"] },
   { task: "DMX output: universes, grants, Art-Net and sACN (why output is missing)", tools: ["gma3_dmx_output", "gma3_configure_dmx_output", "gma3_dmx", "gma3_fixture_output"] },
-  { task: "OSC input and output (external controllers and helpers sending commands)", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
+  { task: "OSC input and output", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
   { task: "save the show file (current or new name) and list the show files", tools: ["gma3_save_show", "gma3_show_files"] },
-  { task: "the tempo-sync plugin (an external tempo source): status and configuration; ReSync of running phasers", tools: ["gma3_tempo_sync_status", "gma3_configure_tempo_sync", "gma3_playback"] },
+  { task: "tempo-sync plugin: status, configuration, ReSync of phasers", tools: ["gma3_tempo_sync_status", "gma3_configure_tempo_sync", "gma3_playback"] },
   { task: "read show data and live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences"] },
 ];
 
@@ -78,7 +78,7 @@ export function serverInstructions(staleWarning?: string): string {
 
 /** The pointer at the start of gma3_lua's description. */
 export const LUA_FALLBACK_NOTE =
-  "FALLBACK: use a structured tool when one fits; they check, read back and need no Lua. Patch: gma3_patch_library, gma3_patch_import, gma3_patch_add, gma3_patch_set, gma3_patch_type_structure, gma3_place_fixtures, gma3_layout_cells. " +
+  "FALLBACK: use a structured tool when one fits; they check, read back and need no Lua. Patch: gma3_patch_library, gma3_patch_import, gma3_patch_add, gma3_patch_set, gma3_patch_move, gma3_patch_retype, gma3_patch_type_structure, gma3_place_fixtures, gma3_layout_cells. Dialogs: gma3_dialog (never Mouse()). " +
   "Groups: gma3_store_group, gma3_configure_matricks. Presets: gma3_apply_preset, gma3_store_preset. Phasers: gma3_build_phaser. Looks: gma3_set_attributes. Cues: gma3_store_cues, gma3_edit_cues, gma3_build_chase, gma3_cue_contents. " +
   "Playback: gma3_configure_sequence, gma3_configure_executor, gma3_playback, gma3_goto_cue. Reads: gma3_objects, gma3_get_object, gma3_list_children, gma3_programmer. " +
   `${BATCH_NOTE} ` +

@@ -1,7 +1,7 @@
 # Import Library and the console's library listing (bridge 0.41.0)
 
 - **Date:** 2026-10-23
-- **Platform:** macOS (Darwin 25.5), grandMA3 onPC 2.5.1.0, bridge 0.40.0 (`patch.import` as on main, 0.38.2), then
+- **Platform:** macOS (Darwin 25.5), grandMA3 onPC 2.5.1.0, bridge 0.42.0 (`patch.import` as on main, 0.38.2), then
   0.41.0
 - **Show:** mcp-test-disposable (throwaway, not saved)
 - **Files:** `generic@fan.pxml` (grandMA2 library), `generic@grouping.xml` (grandMA3 library),

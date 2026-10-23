@@ -465,16 +465,21 @@ async function layoutCellsLocked(ctx: ToolContext, job: LayoutJob): Promise<Oper
   return result;
 }
 
-export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unknown>): Promise<OperationResult> {
-  const op = "assign_cell_layout";
+export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unknown>, op = "assign_cell_layout"): Promise<OperationResult> {
   const v = new Validator();
   const fids = Array.isArray(raw.fixtures) && raw.fixtures.length ? raw.fixtures.map((x, i) => v.check(() => finiteNumber(`fixtures[${i}]`, x, { integer: true, min: 1 })) ?? 0) : (v.fail("fixtures must list FIDs"), []);
+  // A FID given twice would be recorded twice by the bridge's retype, and its rollback would re-apply the new type.
+  const twice = fids.filter((f, i) => f > 0 && fids.indexOf(f) !== i);
+  if (twice.length) v.fail(`fixtures lists FID ${[...new Set(twice)].join(", ")} more than once`);
   const type = typeof raw.type === "number" || (typeof raw.type === "string" && raw.type.trim()) ? raw.type : (v.fail("type (number or name) is required"), undefined);
   if (raw.exclusive !== true) v.fail("exclusive must be true: the fixtures are moved to another fixture type in a patch session, committed with no undo");
   const target = { fixtures: raw.fixtures, type: raw.type };
   if (!v.ok || type === undefined) return validationFailure(op, target, v.errors);
   const t = ctx.requestTimeoutMs;
   let toName = "";
+  let toNo = 0;
+  let before: Map<number, { patch?: string; breaks?: Array<{ break: number; address: string }> }> | undefined;
+  const addressing = (r?: { patch?: string; breaks?: Array<{ break: number; address: string }> }) => `${r?.patch ?? ""}|${(r?.breaks ?? []).map((b) => `${b.break}=${b.address}`).join(",")}`;
   return runSession(ctx, {
     operation: op,
     target,
@@ -486,7 +491,9 @@ export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unk
         const to = types.types.find((x) => x.no === type || x.name === type);
         if (!to) return asRead({ name: "check_type", status: "failed", op: "patch.types", error: `no fixture type ${JSON.stringify(type)} in the show` });
         toName = to.name;
+        toNo = to.no;
         const rows = await listFids(ctx.bridge, fids, t);
+        before = rows;
         const missing = fids.filter((f) => !rows.has(f));
         if (missing.length) return asRead({ name: "check_type", status: "failed", op: "patch.list", error: `not in the patch: ${missing.join(", ")}` });
         return asRead({ name: "check_type", status: "succeeded", op: "patch.types", detail: { type: to } });
@@ -499,10 +506,14 @@ export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unk
     readBack: async () => {
       try {
         const rows = await listFids(ctx.bridge, fids, t);
-        const wrong = fids.filter((f) => !String(rows.get(f)?.type ?? "").endsWith(toName));
+        // By number and name: after a re-import two types share the name (PR #89 review). patch.list's type reads
+        // "<no> <name>"; the number cannot change within the session (a retype removes no type).
+        const wrong = fids.filter((f) => String(rows.get(f)?.type ?? "") !== `${toNo} ${toName}`);
+        // Every DMX break as before (the bridge's own guard compares the first one only).
+        const moved = before ? fids.filter((f) => addressing(rows.get(f)) !== addressing(before!.get(f))) : [];
         return {
           steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.list", detail: [...rows.values()] })],
-          verification: wrong.length ? { status: "mismatched", checked: "the fixtures' type", detail: `FIDs ${wrong.join(", ")} are not of type ${toName}` } : { status: "matched", checked: "the fixtures' type, address and mode (the bridge refuses a change of either)" },
+          verification: wrong.length || moved.length ? { status: "mismatched", checked: "the fixtures' type and every DMX break", detail: [wrong.length ? `FIDs ${wrong.join(", ")} are not of type ${toNo} ${toName}` : "", moved.length ? `FIDs ${moved.join(", ")} changed address or a DMX break` : ""].filter(Boolean).join("; ") } : { status: "matched", checked: "the fixtures' type and every DMX break (address) as before" },
         };
       } catch (err) {
         return { steps: [asRead(stepFromError("read_back", err, { op: "patch.list" }))], verification: unavailable("the fixtures could not be read back") };

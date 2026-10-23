@@ -467,6 +467,27 @@ test("run: dispatched and observed are separate; a manual wait is observed and c
   assert.equal(off.result.execution.observed.state, "stopped");
 });
 
+test("run: a dialog a line opened (a Lua Confirm()) is reported with its buttons, to answer with gma3_dialog", async () => {
+  con.macro(901, [{ command: "Lua \"Confirm(nil, 'Are you sure?', nil, true)\"", wait: "Go" }, { command: "Echo 2" }]);
+  h.fake.on("dialog.read", () => ({ open: true, modal: { class: "MessageBox", name: "MsgBox", text: "Are you sure you want to overwrite positions?", display: 1, buttons: [{ text: "OK", enabled: true }, { text: "Cancel", enabled: true }] }, lastCommand: "OK: Go+ Macro 901" }));
+  try {
+    const go = await h.callJson("gma3_run_macro", { macro: 901, action: "go", observe_seconds: 0.3, interval_ms: 50 });
+    assert.equal(go.result.execution.dialog.text, "Are you sure you want to overwrite positions?");
+    assert.match(go.result.summary, /a dialog is open: "Are you sure you want to overwrite positions\?" \(buttons: OK, Cancel\), answer it with gma3_dialog/);
+    assert.ok(go.result.warnings.some((w: string) => /gma3_dialog/.test(w)));
+    h.fake.on("dialog.read", () => ({ open: false, modal: false }));
+    const off = await h.callJson("gma3_run_macro", { macro: 901, action: "off", observe_seconds: 0.3 });
+    assert.equal(off.result.execution.dialog, undefined, "Off does not read the dialog");
+  } finally {
+    h.fake.on("dialog.read", () => {
+      throw new Error("unknown op 'dialog.read'");
+    });
+  }
+  const old = await h.callJson("gma3_run_macro", { macro: 901, action: "go", observe_seconds: 0.2, interval_ms: 50 });
+  assert.equal(old.result.execution.dialog, "unknown", "an older bridge without dialog.read: unknown, never no dialog");
+  await h.callJson("gma3_run_macro", { macro: 901, action: "off", observe_seconds: 0.3 });
+});
+
 test("a macro that ends before the first sample is not_observed, never claimed finished", async () => {
   con.lineMs = 0;
   con.macro(901, [{ command: "Echo quick" }]);
