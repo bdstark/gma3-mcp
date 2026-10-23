@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.41.0"
+local VERSION      = "0.44.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -2836,8 +2836,10 @@ ops.set = function(args)
   if type(value) ~= "string" then value = tostring(value) end
   local ok, err = pcall(h.Set, h, args.property, value)
   if not ok then error("Set failed: " .. tostring(err)) end
-  local newValue = getProp(h, args.property, true)
-  return { ref = args.ref, property = args.property, value = newValue }
+  -- readOk tells an empty property (a cleared reference reads nil) from a read-back that failed: both send no value
+  -- (bridge 0.44.0).
+  local newValue, readError = getProp(h, args.property, true)
+  return { ref = args.ref, property = args.property, value = newValue, readOk = readError == nil, readError = readError }
 end
 
 ops.setfader = function(args)
