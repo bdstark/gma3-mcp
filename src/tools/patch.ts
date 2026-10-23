@@ -859,12 +859,18 @@ export function shapeLibraryPage(page: LibraryPage, compact: boolean, maxChars =
     const files: Record<string, string[]> = {};
     const inShow: Record<string, Record<string, Array<{ no: number; name: string }>>> = {};
     const notVerified: Record<string, string[]> = {};
+    // An entry listed in its bounded form keeps saying so: how many show types match in all, and why it was cut.
+    const inShowCount: Record<string, Record<string, number>> = {};
+    const oversizedFiles: Record<string, Record<string, string>> = {};
     for (const e of entries) {
       (files[e.source] ??= []).push(e.file);
       if (e.inShow?.length) (inShow[e.source] ??= {})[e.file] = e.inShow.map((x) => ({ no: x.no, name: x.name }));
       if (e.verified === false) (notVerified[e.source] ??= []).push(e.file);
+      const cut = e as LibraryEntry & { inShowCount?: number; oversized?: string };
+      if (typeof cut.inShowCount === "number") (inShowCount[e.source] ??= {})[e.file] = cut.inShowCount;
+      if (typeof cut.oversized === "string") (oversizedFiles[e.source] ??= {})[e.file] = cut.oversized;
     }
-    return { ...head, ...nextOffset, ...truncated, compact: true, files, ...(Object.keys(inShow).length ? { inShow } : {}), ...(Object.keys(notVerified).length ? { notVerified } : {}) };
+    return { ...head, ...nextOffset, ...truncated, compact: true, files, ...(Object.keys(inShow).length ? { inShow } : {}), ...(Object.keys(inShowCount).length ? { inShowCount } : {}), ...(Object.keys(oversizedFiles).length ? { oversized: oversizedFiles } : {}), ...(Object.keys(notVerified).length ? { notVerified } : {}) };
   };
   const size = (v: unknown) => JSON.stringify(v, null, 2).length;
   let keep = page.entries.length;

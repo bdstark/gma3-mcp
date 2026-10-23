@@ -254,6 +254,13 @@ test("gma3_patch_library: an entry over the budget on its own is listed without 
     assert.equal(big.result.entries[0].inShowCount, 400);
     assert.equal(big.result.nextOffset, 1);
     assert.match(big.result.truncated, /offset 1/);
+    // Compact keeps the same warning: five of 400 matching types, and why (review of PR #87).
+    w.library = [w.library[0]];
+    const compact = await h.callJson("gma3_patch_library", { query: "huge", compact: true });
+    assert.ok(compact.text.length <= LIBRARY_MAX_CHARS, `${compact.text.length} characters`);
+    assert.equal(compact.result.inShow.user["huge@header.xml"].length, 5);
+    assert.equal(compact.result.inShowCount.user["huge@header.xml"], 400);
+    assert.match(compact.result.oversized.user["huge@header.xml"], /over 40000 characters/);
   } finally {
     await h.close();
   }
