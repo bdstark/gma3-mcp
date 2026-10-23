@@ -89,14 +89,23 @@ function poseOf(p: FixturePose | undefined): Pose | null {
 
 /** A fixture's pose in the world from its pose relative to its parent (a parent at the top level of the stage). */
 export function worldPose(local: Pose, parent: Pose): Pose {
-  const r = rotate(parent.quaternion, local.position);
-  return { position: { x: parent.position.x + r.x, y: parent.position.y + r.y, z: parent.position.z + r.z }, quaternion: quatMul(parent.quaternion, local.quaternion) };
+  const pq = unit(parent.quaternion);
+  const r = rotate(pq, local.position);
+  return { position: { x: parent.position.x + r.x, y: parent.position.y + r.y, z: parent.position.z + r.z }, quaternion: unit(quatMul(pq, unit(local.quaternion))) };
 }
 
-/** Within 1 mm and the same rotation (q and -q are the same rotation). */
+/** The quaternion scaled to unit length (the console displays rounded components, so products drift from 1). */
+function unit(q: Quat): Quat {
+  const n = Math.hypot(...q);
+  return n > 0 ? (q.map((v) => v / n) as Quat) : q;
+}
+
+/** Within 1 mm and the same rotation within about 0.16° (q and -q are the same rotation). */
 export function samePose(a: Pose, b: Pose): boolean {
   const d = Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y, a.position.z - b.position.z);
-  const dot = Math.abs(a.quaternion.reduce((s, v, i) => s + v * b.quaternion[i], 0));
+  const qa = unit(a.quaternion);
+  const qb = unit(b.quaternion);
+  const dot = Math.abs(qa.reduce((s, v, i) => s + v * qb[i], 0));
   return d <= TOLERANCE_M && dot >= 1 - 1e-6;
 }
 

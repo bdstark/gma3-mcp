@@ -249,6 +249,14 @@ test("pose helpers: world pose under a parent, and pose equality within 1 mm and
   assert.ok(Math.abs(w.position.x - 1) < 1e-9 && Math.abs(w.position.y - 1) < 1e-9, JSON.stringify(w));
   assert.ok(samePose({ position: { x: 0, y: 0, z: 0 }, quaternion: [0, 0, 0, 1] }, { position: { x: 0.0005, y: 0, z: 0 }, quaternion: [0, 0, 0, -1] }));
   assert.ok(!samePose({ position: { x: 0, y: 0, z: 0 }, quaternion: [0, 0, 0, 1] }, { position: { x: 0.002, y: 0, z: 0 }, quaternion: [0, 0, 0, 1] }));
+  // Rounded display quaternions (45° about Z, six decimals) compose to a world rotation that is still the same pose
+  // (PR #89 review): parent 45° + local 45° before, the same after.
+  const q45: [number, number, number, number] = [0, 0, 0.382683, 0.923880];
+  const p45 = { position: { x: 0, y: 0, z: 0 }, quaternion: q45 };
+  const local = { position: { x: 1, y: 0, z: 0 }, quaternion: q45 };
+  assert.ok(samePose(worldPose(local, p45), worldPose(local, p45)));
+  assert.ok(samePose({ position: { x: 0, y: 0, z: 0 }, quaternion: [0, 0, 0.707107, 0.707107] }, worldPose({ position: { x: 0, y: 0, z: 0 }, quaternion: q45 }, p45)));
+  assert.ok(!samePose({ position: { x: 0, y: 0, z: 0 }, quaternion: [0, 0, 0.71, 0.704] }, worldPose({ position: { x: 0, y: 0, z: 0 }, quaternion: q45 }, p45)), "half a degree off is still a mismatch");
 });
 
 test("gma3_patch_move: top level into a grouping fixture, every step in order, Absolute answered, committed and read back", async () => {
