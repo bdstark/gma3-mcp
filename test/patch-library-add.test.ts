@@ -363,6 +363,22 @@ test("gma3_patch_library_add: a type whose name and manufacturer differ from the
   }
 });
 
+test("gma3_patch_library_add: underscores in the file name match spaces in the type, as gma3_patch_import's claim does", async () => {
+  const { h } = await setup();
+  try {
+    const hue = zip([["description.xml", DESCRIPTION.replace(/Name="180W Beam" ShortName="180W Beam" Manufacturer="SHEHDS"/, 'Name="Color Downlight 4in" ShortName="Downlight" Manufacturer="Philips Hue"')]]);
+    // Both match; only the manufacturer; only the name (any case).
+    for (const file_name of ["Philips_Hue@Color_Downlight_4in@2026-10-23.gdtf", "Philips_Hue@Other.gdtf", "Signify@color_downlight_4IN.gdtf"]) {
+      const { result, isError } = await h.callJson("gma3_patch_library_add", { file_name, content_base64: hue.toString("base64") });
+      assert.equal(isError, false, JSON.stringify(result, null, 2));
+      assert.equal(result.fixtureType.manufacturer, "Philips Hue");
+      assert.equal(result.warnings, undefined, `${file_name}: no claim warning`);
+    }
+  } finally {
+    await h.close();
+  }
+});
+
 test("gma3_patch_library_add: an older bridge is named", async () => {
   const h = await startHarness(registerPatchTools);
   try {
