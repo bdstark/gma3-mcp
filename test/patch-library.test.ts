@@ -215,6 +215,27 @@ test("gma3_patch_library: a broad page is cut to fit the client, with the offset
   }
 });
 
+test("gma3_patch_library: an entry over the budget on its own is listed without its modes and description, and the next page moves on (review of PR #87)", async () => {
+  const { h, w } = await setup();
+  const modes = Array.from({ length: 3000 }, (_, i) => `Mode number ${i} with a long name`);
+  w.library = [
+    { source: "user", file: "huge@header.xml", format: "xml", manufacturer: "Huge", model: "header", name: "Header", modes, description: "x".repeat(5000), modesKnown: true, verified: false, set: false } as any,
+    { source: "user", file: "huge@second.xml", format: "xml", manufacturer: "Huge", model: "second", name: "Second", modes: ["A"], modesKnown: true, verified: false, set: false },
+  ];
+  try {
+    const { result, text } = await h.callJson("gma3_patch_library", { query: "huge" });
+    assert.ok(text.length <= LIBRARY_MAX_CHARS, `${text.length} characters`);
+    assert.equal(result.count, 1);
+    assert.equal(result.entries[0].file, "huge@header.xml");
+    assert.equal(result.entries[0].modes, undefined);
+    assert.equal(result.entries[0].description, undefined);
+    assert.match(result.entries[0].oversized, /3000/);
+    assert.equal(result.nextOffset, 1, "the next page starts after the oversized entry");
+  } finally {
+    await h.close();
+  }
+});
+
 test("gma3_patch_import: the whole session, committed and read back with the new type's modes", async () => {
   const { h, w } = await setup();
   try {

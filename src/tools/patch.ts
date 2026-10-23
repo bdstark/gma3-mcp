@@ -805,8 +805,16 @@ export const LIBRARY_MAX_CHARS = 40_000;
  * where the next page starts.
  */
 export function shapeLibraryPage(page: LibraryPage, compact: boolean, maxChars = LIBRARY_MAX_CHARS): Record<string, unknown> {
+  // An entry too large on its own (an .xml header's description or mode list) is listed without them, so the page still
+  // holds one entry and nextOffset moves on.
+  let oversized = false;
+  const shrink = (e: LibraryEntry): LibraryEntry => {
+    const { modes, ...rest } = e as LibraryEntry & { description?: unknown };
+    delete (rest as { description?: unknown }).description;
+    return { ...rest, modesKnown: false, oversized: `the full entry is over ${maxChars} characters; its modes${modes ? ` (${modes.length})` : ""} and description are left out` } as LibraryEntry;
+  };
   const render = (n: number): Record<string, unknown> => {
-    const entries = page.entries.slice(0, n);
+    const entries = oversized ? [shrink(page.entries[0])] : page.entries.slice(0, n);
     const head = { total: page.total, offset: page.offset, count: entries.length, ...(page.scanned !== undefined ? { scanned: page.scanned } : {}) };
     const nextOffset = page.offset + entries.length < page.total ? { nextOffset: page.offset + entries.length } : {};
     if (!compact) return { ...head, ...nextOffset, entries, ...(page.paths !== undefined ? { paths: page.paths } : {}) };
@@ -825,6 +833,10 @@ export function shapeLibraryPage(page: LibraryPage, compact: boolean, maxChars =
   let out = render(keep);
   for (let len = size(out); keep > 0 && len > maxChars; len = size(out)) {
     keep = Math.max(0, Math.min(keep - 1, Math.floor((keep * maxChars) / len)));
+    if (keep === 0 && !oversized) {
+      oversized = true;
+      keep = 1;
+    }
     out = render(keep);
   }
   if (keep < page.entries.length) out.truncated = `cut from ${page.entries.length} to ${keep} entries to stay under ${maxChars} characters (clients cut off longer results); ask again with offset ${page.offset + keep}${compact ? "" : ", or compact: true for file names only"}`;

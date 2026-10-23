@@ -12,17 +12,29 @@ import { readFields } from "./common.js";
 
 const LOCK_FIELDS = ["Lock", "SystemLocked"];
 
-/** Compare a read-back with a requested value: case, spacing, number format and Yes/No spellings aside. */
-export function sameValue(got: unknown, want: unknown): boolean {
-  const text = (v: unknown): string | undefined => {
-    if (v === null || v === undefined) return undefined;
-    if (typeof v === "object") {
-      const name = (v as { name?: unknown }).name;
-      return typeof name === "string" ? name : JSON.stringify(v);
-    }
-    return String(v);
-  };
-  const a = text(got)?.trim().toLowerCase().replace(/\s+/g, " ");
+const text = (v: unknown): string | undefined => {
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === "object") {
+    const name = (v as { name?: unknown }).name;
+    return typeof name === "string" ? name : JSON.stringify(v);
+  }
+  return String(v);
+};
+
+/** Properties holding free text: a name "Off" is not the value No, and a case-only rename is a change. */
+const TEXTUAL = /name|note|label|text|description|comment|title|command|cmd|path|file|appearance/i;
+
+/**
+ * Compare a read-back with a requested value. Free-text properties (Name, Note, ...) compare exactly. Otherwise case,
+ * spacing, number format and Yes/No spellings aside: a property set from a boolean or a number, or one whose name is
+ * not a text field (HazeEnabled "Yes" for true, FadeTime "2.500" for 2.5, Trigger "Follow" for "follow").
+ */
+export function sameValue(got: unknown, want: unknown, property = ""): boolean {
+  const exactA = text(got);
+  const exactB = typeof want === "boolean" || typeof want === "number" ? undefined : text(want);
+  if (exactA !== undefined && exactA === exactB) return true;
+  if (typeof want === "string" && TEXTUAL.test(property)) return false;
+  const a = exactA?.trim().toLowerCase().replace(/\s+/g, " ");
   const b = text(want)?.trim().toLowerCase().replace(/\s+/g, " ");
   if (a === undefined || b === undefined) return false;
   if (a === b) return true;
@@ -53,9 +65,10 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   const before = await readFields(bridge, ref, fields).catch(() => null);
   const res = (await bridge.request("set", { ref, property, value })) as Record<string, unknown>;
   const got = lockField && res.value === "" ? "No" : res.value;
-  if (sameValue(got, value)) return { result: { ...res, requested: value, verified: true }, failed: false };
+  if (sameValue(got, value, property)) return { result: { ...res, requested: value, verified: true }, failed: false };
   const old = lockField && before?.[lockField] === "" ? "No" : before?.[lockField ?? property];
-  const unchanged = old !== undefined && old !== null && sameValue(got, old);
+  // Unchanged means the very same text: any other read-back is a change the console made.
+  const unchanged = old !== undefined && old !== null && text(got) === text(old);
   const locks = LOCK_FIELDS.filter((f) => f !== lockField && isLocked(before?.[f]));
   if (old !== undefined && old !== null && !unchanged && locks.length === 0) {
     return { result: { ...res, requested: value, verified: true, note: `the console reads ${JSON.stringify(got)} for the requested ${JSON.stringify(value)} (its own spelling; it changed from ${JSON.stringify(old)})` }, failed: false };

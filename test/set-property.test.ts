@@ -72,6 +72,23 @@ test("set_property: an applied value matches, also in the console's spelling; a 
   }
 });
 
+test("set_property: a refused rename of a locked object is not taken for a Yes/No or case spelling (review of PR #87)", async () => {
+  const { h, o } = await setup();
+  o.props.Lock = "Yes";
+  try {
+    o.props.Name = "Off";
+    let r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Name", value: "No" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.deepEqual(r.result.locked, { Lock: "Yes" });
+    o.props.Name = "gobo";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Name", value: "Gobo" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.match(String(r.result.error), /is locked/);
+  } finally {
+    await h.close();
+  }
+});
+
 test("sameValue ignores case, spacing, number format and Yes/No spellings, not the value", () => {
   assert.ok(sameValue("Yes", true));
   assert.ok(sameValue("Off", "no"));
@@ -81,4 +98,8 @@ test("sameValue ignores case, spacing, number format and Yes/No spellings, not t
   assert.ok(!sameValue("No", "Yes"));
   assert.ok(!sameValue("2.5s", "2.5%"));
   assert.ok(!sameValue(null, "x"));
+  assert.ok(sameValue("Follow", "follow", "Trigger"));
+  assert.ok(!sameValue("Off", "No", "Name"));
+  assert.ok(!sameValue("gobo", "Gobo", "Name"));
+  assert.ok(sameValue("Gobo", "Gobo", "Name"));
 });
