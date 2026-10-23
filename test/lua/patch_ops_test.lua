@@ -165,7 +165,7 @@ end
 
 local console
 local function reset()
-  console = { live = buildLive(), copyOpen = false, dest = "Root", queue = {}, modal = false, last = "", addMode = "ok", addCalls = {} }
+  console = { live = buildLive(), copyOpen = false, dest = "Root", queue = {}, modal = false, last = "", addMode = "ok", addCalls = {}, importPath = "" }
   console.copy = obj("Patch", "Patch", 10, {}, {}); console.copy.addr = "14.10"
 end
 reset()
@@ -187,10 +187,13 @@ local function frame()
       console.dest = cmd:match('^ChangeDestination "Stages"%."(.-)"%."Fixtures"$') .. ".Fixtures"
     elseif cmd == 'ChangeDestination "FixtureTypes"' and console.copyOpen then
       console.dest = "FixtureTypes"
-    elseif cmd:match('^Import Library "(.-)"$') then
-      local file = cmd:match('^Import Library "(.-)"$')
+    elseif cmd:match('^Import Library "') then
+      -- The console keeps the /Path of an earlier import command and resolves an Import Library without one
+      -- against it (live 2026-10-22: "Object not found" until an import was sent with /Path "").
+      local file, path = cmd:match('^Import Library "(.-)" /Path "(.-)"$')
+      if file then console.importPath = path else file = cmd:match('^Import Library "(.-)"$') end
       local spec = LIBTYPES[file]
-      if console.dest ~= "FixtureTypes" or not spec then console.last = "Error: Object not found"; goto continue end
+      if console.dest ~= "FixtureTypes" or not spec or console.importPath ~= "" then console.last = "Error: Object not found"; goto continue end
       local ft = console.copy.FixtureTypes
       local t = ftype(#ft.kids + 1, spec[2], { MODE1 }, spec[1])
       t.pv.GUID = "G-imported-" .. file .. "-" .. (#ft.kids + 1)
@@ -308,7 +311,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.38.1", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.38.2", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -553,8 +556,10 @@ r = request("patch.import", with({ file = 'bad"name.pxml' }))
 check("a file name with a quote is refused", r.ok == false and r.code == "bad-file", J(r))
 r = request("patch.import", with({ file = "acme@spot one.xml", source = "grandma3" }))
 check("a file name in two libraries is refused (Import Library names the file only)", r.ok == false and r.code == "ambiguous-file" and #console.queue == 0, J(r))
+-- A path left over from an earlier import command (bridge 0.38.2): the import names /Path "" and still lands.
+console.importPath = "/Users/someone/old-gdtfs"
 r = request("patch.import", with({ file = "generic@dimmer.pxml" }))
-check("patch.import queues Import Library and reports the counts before", r.ok and r.result.typesBefore == 5 and r.result.attributesBefore == 2 and console.queue[1] == 'Import Library "generic@dimmer.pxml"' and r.result.source == "grandma2", J(r))
+check("patch.import queues Import Library with /Path \"\" and reports the counts before", r.ok and r.result.typesBefore == 5 and r.result.attributesBefore == 2 and console.queue[1] == 'Import Library "generic@dimmer.pxml" /Path ""' and r.result.command == console.queue[1] and r.result.source == "grandma2", J(r))
 local beforeTypes = r.ok and r.result.typesBefore
 r = request("patch.importState", { typesBefore = beforeTypes })
 check("before the frame nothing was added", r.ok and #r.result.added == 0 and r.result.types == 5, J(r))

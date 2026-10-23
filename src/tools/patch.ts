@@ -1131,7 +1131,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
       description:
         "Import one fixture type from the console's library into the show, so gma3_patch_add can patch it. file is a file name exactly as gma3_patch_library lists it. " +
         "Pre-checks (nothing sent on failure): the file is in exactly one library, and the show has no type with the same manufacturer and name (the console would silently add a second one) unless allow_duplicate. " +
-        "Runs one patch session at the copy's fixture-type pool: Import Library \"<file>\" (no dialog), then waits for exactly one new type and claims it only when its name or manufacturer matches the file. " +
+        "Runs one patch session at the copy's fixture-type pool: Import Library \"<file>\" /Path \"\" (no dialog; the empty path stops a path left by an earlier import command being used), then waits for exactly one new type and claims it only when its name or manufacturer matches the file. " +
         "The isolation check compares everything the live patch already has; the new type and the attributes it brings are appended and left out. Then commit and read back: the result has the new type's number, name, GUID and DMX modes with footprints, and attributesAdded. " +
         "Imports of user-library .xml and WorldServer files are not verified on the console yet (the result warns); user-library .gdtf is (bridge 0.38.0). " +
         "Requires exclusive: true (see gma3_patch_add for what the patch session means). A committed import has NO UNDO; gma3_patch_remove_type removes an unused type again, but the attributes it brought stay. Needs bridge 0.26.0.",
