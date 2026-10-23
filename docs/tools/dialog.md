@@ -41,6 +41,19 @@ named `Text`), `display`, and `buttons` with their `text` and `enabled`, in scre
 `unknown`. The console's last command afterwards (`OK: …`, `User Canceled Command: …`) does not name the button, so the
 effect is checked on the object the dialog was about.
 
+## Live
+
+onPC 2.5.1, bridge 0.40.0, 2026-10-23 (`test/live/patch-move.live.ts`): a macro line `Lua "Confirm(nil, '…', nil, true)"`
+opened a `MessageBox` without a title and with OK and Cancel. `gma3_run_macro` reported it in `execution.dialog`;
+a press with another `expect_text` was refused before anything was clicked; Cancel closed it (`state: "closed"`).
+
+Found on the way, while switching shows for the run:
+- A button that loads a show (Do not save in the "Show file … has changed!" question a `LoadShow` asks) stops the bridge
+  before it can reply: the press gets no answer (`unknown`), and the bridge must be started again in the new show.
+- `LoadShow … /NoSave` run from a macro still asked that question; `LoadShow` sent over OSC was not executed at all.
+- After loading a show with OSC input off and then one with it on, OSC commands were not received until the bridge was
+  started by hand (the input socket re-binds only when EnableInput goes off and on: SU-18).
+
 ## What it does not do
 
 - It binds a dialog by its title and message, not by the UI object: two open-and-closed dialogs with the same title

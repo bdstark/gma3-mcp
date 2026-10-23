@@ -5,7 +5,8 @@
  * patch changes are committed with no undo. Not part of `npm test`.
  *
  * Show objects used (all must be free; the cleanup removes only what this run created, by FID and name):
- *   - Fixture FID 996 "MCP live move parent", a grouping fixture (type Grouping), placed at x = 1 m.
+ *   - Fixture FID 996 "MCP live move parent", a grouping fixture (type Grouping), placed at x = 1 m. A show without the
+ *     Grouping type (one not made from the MA Show Start) gets generic@grouping.xml imported, removed again at the end.
  *   - Fixtures FID 997, 998 "MCP live move", of the first single-break type with a footprint, patched in the first free
  *     block from 3.001; 997 placed at (2, 3, 4) m.
  *   - Group 996 holding 997 and 998.
@@ -61,7 +62,7 @@ async function listed(): Promise<Array<{ fid: number; name: string; parentFid?: 
   return l.result.fixtures ?? [];
 }
 
-const cleanup = { armed: false, group: false, macro: false };
+const cleanup = { armed: false, group: false, macro: false, groupingType: null as number | null };
 after(async () => {
   if (!liveEnabled || !exclusive || !cleanup.armed) return;
   try {
@@ -74,6 +75,7 @@ after(async () => {
     if (kids.some((f) => f.parentFid === PARENT)) await call("gma3_patch_move", { fids: kids.filter((f) => f.parentFid === PARENT).map((f) => f.fid), parent: "root", exclusive: true });
     if (kids.length) await call("gma3_patch_remove", { fids: kids.map((f) => f.fid), exclusive: true });
     if (mine.some((f) => f.fid === PARENT && f.name.startsWith(MARK))) await call("gma3_patch_remove", { fids: [PARENT], exclusive: true });
+    if (cleanup.groupingType !== null) await call("gma3_patch_remove_type", { type: cleanup.groupingType, exclusive: true });
   } catch {
     // best effort; the test reports what failed
   }
@@ -92,8 +94,15 @@ liveTest("gma3_patch_move into a grouping fixture (absolute) and back (relative)
   cleanup.armed = true;
 
   // Fixtures: a grouping fixture and two dimmers, placed so that absolute and relative differ.
-  const types = await call("gma3_patch_types", {});
-  const grouping = types.result.types.find((tp: any) => tp.name === "Grouping");
+  let types = await call("gma3_patch_types", {});
+  let grouping = types.result.types.find((tp: any) => tp.name === "Grouping");
+  if (!grouping) {
+    const imp = ok(await call("gma3_patch_import", { file: "generic@grouping.xml", source: "grandma3", exclusive: true }), "import the Grouping type");
+    cleanup.groupingType = imp.type?.no ?? null;
+    types = await call("gma3_patch_types", {});
+    grouping = types.result.types.find((tp: any) => tp.name === "Grouping");
+    cleanup.groupingType = grouping?.no ?? cleanup.groupingType;
+  }
   assert.ok(grouping, "the show has the Grouping fixture type");
   let pick: { type: number; mode: number } | undefined;
   for (const tp of types.result.types) for (const md of tp.modes) if (!pick && tp.name !== "Grouping" && md.breaks === 1 && (md.footprint ?? 0) > 0 && (md.footprint ?? 0) <= 64) pick = { type: tp.no, mode: md.no };
@@ -111,13 +120,16 @@ liveTest("gma3_patch_move into a grouping fixture (absolute) and back (relative)
   for (const f of into.fixtures) {
     assert.equal(f.parentFid, PARENT);
     assert.equal(f.patch, before[f.fid].patch);
-    assert.deepEqual(f.groups, [GROUP]);
+    assert.equal(f.groups.length, 1, JSON.stringify(f.groups));
+    assert.match(f.groups[0], new RegExp(`^\\d+\\.${GROUP}$`), "groups are named <data pool>.<group>");
   }
+  t.diagnostic(`into: ${JSON.stringify({ steps: into.steps.map((s: any) => `${s.name}:${s.status}`), fixtures: into.fixtures })}`);
   const p0 = into.fixtures.find((f: any) => f.fid === FIDS[0]);
   assert.ok(Math.abs(p0.after.position.x - 1) < 0.001 && Math.abs(p0.world.position.x - 2) < 0.001, `absolute: local x 1 under a parent at x 1, world x 2: ${JSON.stringify(p0)}`);
 
   // Back to the top level, keeping the offset: the world position becomes the old local one.
   const out = ok(await call("gma3_patch_move", { fids: FIDS, parent: "root", position: "relative", exclusive: true }), "move back to the top level");
+  t.diagnostic(`out: ${JSON.stringify({ steps: out.steps.map((s: any) => `${s.name}:${s.status}`), dialog: out.dialog, fixtures: out.fixtures })}`);
   const p1 = out.fixtures.find((f: any) => f.fid === FIDS[0]);
   assert.ok(Math.abs(p1.after.position.x - 1) < 0.001, `relative: the local x stays 1: ${JSON.stringify(p1)}`);
   for (const f of out.fixtures) assert.equal(f.parentFid, null);
@@ -135,4 +147,16 @@ liveTest("gma3_patch_move into a grouping fixture (absolute) and back (relative)
   assert.equal(refused.isError, true);
   const press = ok(await call("gma3_dialog", { action: "press", button: "Cancel", expect_title: read.result.modal.title ?? "", expect_text: PROMPT, exclusive: true }), "press Cancel");
   assert.equal(press.state, "closed");
+  t.diagnostic(`dialog: ${JSON.stringify({ runDialog: run.result.execution.dialog, read: read.result, refused: refused.result.summary, press: { state: press.state, lastCommand: press.lastCommand } })}`);
+
+  // Clean up through the tools (the after hook only catches what a failure left).
+  await cmd(`Delete Macro ${MACRO} /NoConfirmation`);
+  cleanup.macro = false;
+  await cmd(`Delete Group ${GROUP} /NoConfirmation`);
+  cleanup.group = false;
+  ok(await call("gma3_patch_remove", { fids: [...FIDS, PARENT], exclusive: true }), "remove the fixtures");
+  if (cleanup.groupingType !== null) {
+    ok(await call("gma3_patch_remove_type", { type: cleanup.groupingType, exclusive: true }), "remove the imported Grouping type");
+    cleanup.groupingType = null;
+  }
 });

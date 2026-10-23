@@ -217,6 +217,16 @@ considered), `relative` the pose relative to the parent, within 1 mm and by quat
 makes the verification `unavailable` and names it; the result's `fixtures` lists each fixture's parent, address,
 groups and poses.
 
+**Live** (onPC 2.5.1, bridge 0.40.0, 2026-10-23, `test/live/patch-move.live.ts` 1/1 in 71 s on a disposable show):
+two fixtures moved into a grouping fixture placed at x = 1 m (absolute), then back to the top level (relative), every
+step succeeded and both read-backs matched. What the run established:
+- `ChangeDestination ..` leaves a grouping fixture for the stage's list, and `Paste <count + 1>` appends at the end.
+- Pasting back to the top level asks "Move Fixtures" too.
+- Absolute changed fixture 997's local x from 2 to 1 under the parent at x 1 (world x stayed 2); relative kept the
+  local pose. Addresses (3.001, 3.007) and Group 996 were kept.
+- The isolation check (with `fixturePositions: false`) passed on both moves. Whether a move would have failed it
+  without that option was not tried.
+
 ## gma3_patch_retype
 
 Moves fixtures to another fixture type in the show whose DMX mode of the same name has the same expanded DMX
