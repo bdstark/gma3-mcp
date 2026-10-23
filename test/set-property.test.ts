@@ -27,7 +27,8 @@ class Obj {
     h.fake.on("set", (args) => {
       const p = String(args.property);
       const v = String(args.value);
-      if (p === "Lock") this.props.Lock = /^(yes|on|true)$/i.test(v) ? "Yes" : "";
+      // As on onPC 2.5.1: a lock reads "UL" when locked and "" when not.
+      if (p === "Lock") this.props.Lock = /^(yes|on|true)$/i.test(v) ? "UL" : "";
       // A macro line's Wait coerces a value it does not take to Follow (review of PR #87).
       else if (this.props.Lock === "" && p === "Appearance") this.props[p] = v.replace(/^Appearance /, "");
       else if (this.props.Lock === "" && p === "AddToCmdline") this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
@@ -37,7 +38,7 @@ class Obj {
   }
   /** The set op reads a reference back as the referenced object's name. */
   appName(no: string) {
-    return no === "3" || no === "5" ? "Red" : `App ${no}`;
+    return no === "3" || no === "5" ? "Red" : no === "6" ? "Appearance 7" : `App ${no}`;
   }
 }
 
@@ -148,6 +149,28 @@ test("set_property: a Yes/No field named with Command or Cmd, a reference proper
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 5" });
     assert.equal(r.failed, true, JSON.stringify(r.result));
     assert.equal(r.result.value, "Red");
+    // ... and when the kept object is named exactly like the requested reference (Appearance 6 named "Appearance 7").
+    o.props.Lock = "";
+    await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 6" });
+    o.props.Lock = "UL";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 7" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.equal(r.result.value, "Appearance 7");
+  } finally {
+    await h.close();
+  }
+});
+
+test("set_property: locking an unlocked object verifies although Lock reads \"UL\" (review of PR #87)", async () => {
+  const { h, o } = await setup();
+  try {
+    let r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Lock", value: "Yes" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    assert.equal(o.props.Lock, "UL");
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Lock", value: false });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Lock", value: true });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
   } finally {
     await h.close();
   }

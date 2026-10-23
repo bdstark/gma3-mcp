@@ -57,11 +57,12 @@ export function sameValue(got: unknown, want: unknown, property = ""): boolean {
  * A reference property (Appearance, Object, ...) reads back as the referenced object's name or a handle summary, not
  * the reference that was sent ("Appearance 3"): the request is resolved to its object and compared by address or name.
  */
-async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: unknown, property: string): Promise<boolean> {
-  if (typeof want !== "string" || TEXTUAL.test(property) || got === null || got === undefined || !/^[A-Za-z][A-Za-z ]*\s+\d+(\.\d+)*$/.test(want.trim())) return false;
+async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: unknown, property: string): Promise<boolean | undefined> {
+  // undefined: the request is not a reference to exactly one object, so the text comparison decides.
+  if (typeof want !== "string" || TEXTUAL.test(property) || got === null || got === undefined || !/^[A-Za-z][A-Za-z ]*\s+\d+(\.\d+)*$/.test(want.trim())) return undefined;
   const res = await readObjects(bridge, want.trim(), [], 2, { asText: false }).catch(() => null);
   const items = res?.items ?? [];
-  if (items.length !== 1) return false;
+  if (items.length !== 1) return undefined;
   const target = items[0] as { addr?: string };
   if (typeof target.addr !== "string") return false;
   // By address, never by name: two objects can share a name (Appearance 3 and 4 both "Red"), so a refused write
@@ -90,12 +91,18 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   const fields = lockField ? LOCK_FIELDS : [property, ...LOCK_FIELDS];
   const before = await readFields(bridge, ref, fields).catch(() => null);
   const res = (await bridge.request("set", { ref, property, value })) as Record<string, unknown>;
-  const got = lockField && res.value === "" ? "No" : res.value;
-  const old = lockField && before?.[lockField] === "" ? "No" : before?.[lockField ?? property];
+  // A lock reads "" when unlocked and "UL" when locked (onPC 2.5.1, docs/probes/sb-01-playback-macos-2.5.1.md), so
+  // a lock field's read-back counts as No or Yes.
+  const lockState = (v: unknown) => (isLocked(v) ? "Yes" : "No");
+  const got = lockField ? lockState(res.value) : res.value;
+  const old = lockField ? (before ? lockState(before[lockField]) : undefined) : before?.[property];
   // Unchanged means the very same text: any other read-back is a change the console made.
   const unchanged = old !== undefined && old !== null && text(got) === text(old);
   const locks = LOCK_FIELDS.filter((f) => f !== lockField && isLocked(before?.[f]));
-  if (sameValue(got, value, property) || (await sameObject(bridge, ref, got, value, property))) {
+  // A reference request is decided by the object it resolves to, before any text: a kept object can be named like the
+  // requested reference (Appearance 3 named "Appearance 5").
+  const byObject = await sameObject(bridge, ref, got, value, property);
+  if (byObject ?? sameValue(got, value, property)) {
     // Already the requested value: the end state is right, but on a locked object the write itself was refused.
     const note = unchanged && locks.length ? { note: `${property} already read ${JSON.stringify(old)}; ${ref} is locked (${locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ")}), so the console did not take the write itself`, locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {};
     return { result: { ...res, requested: value, verified: true, ...note }, failed: false };
