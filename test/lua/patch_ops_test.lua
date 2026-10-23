@@ -640,6 +640,41 @@ if r.ok then for _, t in ipairs(r.result.types) do names[#names + 1] = t.no .. "
 local listed = table.concat(names, ",")
 check("after the commit the type is gone and the ones after it renumbered", r.ok and r.result.count == 5 and not listed:find("Spare") and listed:find("5:Mega Hex Par"), listed)
 
+-- Two imports of one GDTF share its GUID (a rebuilt file imported with allow_duplicate, live 2026-10-22: the
+-- Halloween build's 180W Beam, types 16 and 19). After the fixtures move to the newer import the older one is
+-- unused, and only it is removed and left out of the check (bridge 0.39.0).
+do
+  local types = console.live.FixtureTypes
+  local old
+  for _, t in ipairs(types.kids) do if t.name == "Two Break" then old = t end end
+  local newer = ftype(old.no + 10, "Two Break", { MODE2B })
+  newer.pv.GUID = old.pv.GUID
+  types.kids[#types.kids + 1] = newer
+  local tb = fixture("TB 1", 601, MODE2B, "2.001"); tb.TypeRef = newer
+  console.live.Stages.kids[1].Fixtures.kids[#console.live.Stages.kids[1].Fixtures.kids + 1] = tb
+  local oldIndex
+  for i, t in ipairs(types.kids) do if t == old then oldIndex = i end end
+  r = request("patch.typeInfo", { type = old.no })
+  check("patch.typeInfo: a fixture on the newer import is not a user of the older one with the same GUID", r.ok and #r.result.type.usedBy == 0 and r.result.type.index == oldIndex, J(r))
+  r = request("patch.typeInfo", { type = newer.no })
+  check("patch.typeInfo: the newer import counts its own fixture", r.ok and #r.result.type.usedBy == 1 and r.result.type.usedBy[1] == 601, J(r))
+  local count = #types.kids
+  enter()
+  r = request("patch.removeType", with({ type = old.no, guid = old.pv.GUID }))
+  local renDup
+  if r.ok then for _, x in ipairs(r.result.renumbered) do if x.name == "Two Break" then renDup = x end end end
+  check("patch.removeType removes the unused import although another type shares its GUID", r.ok and r.result.types == count - 1 and renDup ~= nil and renDup.from == newer.no, J(r))
+  local live = { excludeTypes = { { index = oldIndex, guid = old.pv.GUID } } }
+  check("excludeGuids leaves both imports out, so the copy still differs", fpAll("copy") ~= fpAll("live", { excludeGuids = { old.pv.GUID } }))
+  check("excludeTypes leaves out only the removed one: the fingerprints match", fpAll("copy") == fpAll("live", live), fpAll("copy") .. " | " .. fpAll("live", live))
+  r = request("patch.fingerprint", { side = "live", collection = "FixtureTypes", excludeTypes = { { index = "x" } } })
+  check("excludeTypes without an index and GUID is refused", r.ok == false and r.code == "bad-args", J(r))
+  request("patch.commit", X); frame()
+  local left = 0
+  for _, t in ipairs(console.live.FixtureTypes.kids) do if t.name == "Two Break" then left = left + 1 end end
+  check("after the commit one Two Break is left, the one the fixture uses", left == 1 and #console.live.FixtureTypes.kids == count - 1, tostring(left))
+end
+
 print(string.format("%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) end
 print("ALL PASSED")

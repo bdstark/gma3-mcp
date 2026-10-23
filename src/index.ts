@@ -35,6 +35,7 @@ import { registerVariableTools } from "./tools/variables.js";
 import { registerOscTools } from "./tools/osc.js";
 import { registerShowTools } from "./tools/show.js";
 import { registerTagTools, tagPlayback, tagTarget } from "./tools/tags.js";
+import { setPropertyChecked } from "./tools/setproperty.js";
 import { registerTempoSyncTools, resyncPlayback, RESYNC_NOTE } from "./tools/temposync.js";
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 
@@ -403,14 +404,23 @@ server.registerTool(
     title: "Set an object property",
     description:
       "Set a property of a show object via the Lua Set() API, e.g. ref 'Sequence 1', property 'Name' or 'Tracking'; ref 'Sequence 1 Cue 2', property 'TrigTime'. " +
-      "Values are passed as text the way they would be typed in the editor (e.g. 'Yes', 'No', '2.5', 'Follow'). This modifies the show file.",
+      "Values are passed as text the way they would be typed in the editor (e.g. 'Yes', 'No', '2.5', 'Follow'). This modifies the show file. " +
+      "The property (and the object's Lock) is read before the write and compared with the read-back: the console keeps the old value without an error when it does not take a value, " +
+      "so a read-back that is still the old value is an error that names the lock when the object is locked (Unlock, set, Lock again). A value the console spells differently (2.5 as 2.500, true as Yes) counts as applied.",
     inputSchema: {
       ref: refSchema,
       property: z.string(),
       value: z.union([z.string(), z.number(), z.boolean()]),
     },
   },
-  async ({ ref, property, value }) => run(() => mutations.run(() => bridge.request("set", { ref, property, value }))),
+  async ({ ref, property, value }) => {
+    try {
+      const { result, failed } = await mutations.run(() => setPropertyChecked(bridge, { ref, property, value }));
+      return failed ? { ...text(result), isError: true } : text(result);
+    } catch (err) {
+      return errorResult(err);
+    }
+  },
 );
 
 // ---------------------------------------------------------------------------

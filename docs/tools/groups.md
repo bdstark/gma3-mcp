@@ -30,7 +30,9 @@ and property operations, and nothing needs `gma3_lua`. Evidence: [the SB-02 prob
   Two fixtures **may share a cell** (then MAtricks treats them as one position): refused unless
   `allow_shared_cells: true`. **Gaps and negative cells** are kept. A multi-instance fixture (501) and its cells
   (501.1, 501.2) are separate selection items; listing both is allowed and reported as a warning.
-- **Recalling a group adds the grid cursor** to its stored cells. The tools recall at `Grid 0/0/0`.
+- **Recalling a group adds the grid cursor** to its stored cells. The tools recall at `Grid 0/0/0`. A group of **one
+  fixture** is recalled at the cursor whatever its stored cell (live 2026-10-22: stored 3/2/0, recalled 0/0/0), so
+  `gma3_store_group` checks only the fixture on its recall; the read-back of the stored group checks the cell.
   **PreserveGridPositions** (stored with the group) decides whether gaps and the offset from 0/0/0 survive a recall at
   the origin; with it off they are compacted. `gma3_store_group` sets it explicitly (default on).
 - **Store Group on an existing group overwrites it** (with or without `/Overwrite`) and keeps its name. `/Merge`

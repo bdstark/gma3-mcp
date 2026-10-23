@@ -26,7 +26,7 @@
 | `gma3_list_children` | Children of an object with selected property values, paginated |
 | `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)) |
 | `gma3_dump` | Raw `Dump()` text of an object |
-| `gma3_set_property` | `Set()` a property |
+| `gma3_set_property` | `Set()` a property; the read-back is compared with the request, and a value the console kept (a locked object) is an error naming the lock |
 | `gma3_playback` | Go+, Go-, Pause, Off, Top, Flash, Load, ReSync, ... on a sequence, executor or tag; reads the playback state back a frame later (for a tag, every tagged sequence) ([docs](tools/live-reads.md), [resync](tools/tempo-sync.md#resync)) |
 | `gma3_set_fader` / `gma3_get_fader` | Fader levels via `SetFader` / `GetFader` |
 | `gma3_sequences`, `gma3_cues`, `gma3_executors`, `gma3_fixtures`, `gma3_pool` | Convenience views; sequences carry the current cue, and `gma3_cues` reads several sequences ([docs](tools/live-reads.md)) |
@@ -89,7 +89,7 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_patch_add` | Add fixtures of one type/mode at consecutive FIDs, patched from an address or the first free block; pre-checked, committed, read back |
 | `gma3_patch_set` | Readdress (swaps and moves across a fixture's own range work), unpatch or rename fixtures |
 | `gma3_patch_remove` | Delete fixtures (not ones with sub-fixtures) |
-| `gma3_patch_library` | Read-only: search the fixture-type library (grandMA3, grandMA2, user, WorldServer) by manufacturer and model; modes when readable; which show types match (bridge 0.26.0) |
+| `gma3_patch_library` | Read-only: search the fixture-type library (grandMA3, grandMA2, user, WorldServer) by manufacturer and model; modes when readable; which show types match; `compact` for file names only; every page fits the client (bridge 0.26.0) |
 | `gma3_patch_import` | Import one library file into the show: duplicate check, wait for exactly one new type, committed, read back with its modes (bridge 0.26.0) |
 | `gma3_patch_remove_type` | Delete a fixture type no fixture uses; reports the renumbered types; its attributes stay (bridge 0.26.0) |
 | `gma3_patch_library_add` | Put a `.gdtf` or user `.xml` into the user library over the bridge (content or a server-side path): name, size and content checked first, written in chunks, moved into place on a matching CRC-32, read back (bridge 0.38.0) |

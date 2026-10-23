@@ -4074,6 +4074,8 @@ end
 --
 -- opts (SU-03):
 --   excludeGuids  types (by GUID) left out with their subtree: the type a removal deletes, on the live side
+--   excludeTypes  { [position] = GUID }: the same, but only the type at that position of the list and with that GUID,
+--                 so another import of the same GDTF (same GUID) is still compared; replaces excludeGuids (0.39.0)
 --   guide         the live patch, for the copy of an import session. An import appends its type to the
 --                 fixture-type list and its attributes and features to the attribute-definition lists (live
 --                 2026-10-15), so at exactly those levels (PATCH_FP_APPEND below) a container hashes only as many
@@ -4101,6 +4103,7 @@ end
 local function patchFingerprint(p, only, exclude, opts)
   opts = opts or {}
   local excludeGuids = opts.excludeGuids or {}
+  local excludeTypes = opts.excludeTypes
   local r = { objects = 0, hash = 2166136261, complete = true }
   local names = {}
   local function guidOf(h) local ok, g = pcall(function() return h:Get("Guid", Enums.Roles.Display) end); return ok and g ~= nil and tostring(g) or "" end
@@ -4159,7 +4162,7 @@ local function patchFingerprint(p, only, exclude, opts)
       local c = kids[i]
       local class = safeCall(c, "GetClass")
       local fid = class == "Fixture" and numericFid(c) or nil
-      local skipType = typeList and excludeGuids[guidOf(c)]
+      local skipType = typeList and (excludeTypes and excludeTypes[i] == guidOf(c) or (not excludeTypes and excludeGuids[guidOf(c)]))
       local skipPoint = defaultCurve and class == "DmxCurvePoint" and defaultEndPoint(c)
       if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType and not skipPoint then
         if not add(c, depth, renumbered, typeList) then return end
@@ -4192,7 +4195,7 @@ ops["patch.collections"] = function()
 end
 
 -- args: { side = "live" | "copy", collection = <name>, excludeFids = [ ... ],
---         excludeGuids = [ type GUID, ... ], prefixOfLive = true (copy side only: hash only what the live patch
+--         excludeGuids = [ type GUID, ... ], excludeTypes = [ { index, guid }, ... ], prefixOfLive = true (copy side only: hash only what the live patch
 --         has in every container, leaving out what an import appended) }
 ops["patch.fingerprint"] = function(args)
   if type(args.collection) ~= "string" then raise("[bad-args] collection (string) is required; patch.collections lists them") end
@@ -4200,6 +4203,14 @@ ops["patch.fingerprint"] = function(args)
   if type(args.excludeFids) == "table" then for _, f in ipairs(args.excludeFids) do local n = tonumber(f); if n then exclude[n] = true end end end
   local opts = { excludeGuids = {} }
   if type(args.excludeGuids) == "table" then for _, g in ipairs(args.excludeGuids) do opts.excludeGuids[tostring(g)] = true end end
+  if type(args.excludeTypes) == "table" then
+    opts.excludeTypes = {}
+    for _, x in ipairs(args.excludeTypes) do
+      local i = type(x) == "table" and math.tointeger(x.index) or nil
+      if not i or type(x.guid) ~= "string" then raise("[bad-args] excludeTypes must be a list of { index, guid }") end
+      opts.excludeTypes[i] = x.guid
+    end
+  end
   local p = patchSide(args.side or "live")
   if args.prefixOfLive == true then
     if args.side ~= "copy" then raise("[bad-args] prefixOfLive applies to the copy side only") end
@@ -4705,12 +4716,15 @@ do
     return t
   end
 
+  -- The fixtures whose FixtureType is this type object. Two imports of one GDTF share a GUID (a rebuilt file
+  -- imported with allow_duplicate, live 2026-10-22), so a type is matched by its number as well as its GUID: a
+  -- fixture moved to the newer import no longer counts as a user of the older one (bridge 0.39.0).
   local function typeUsers(p, t)
-    local guid = displayProp(t, "Guid")
+    local guid, no = displayProp(t, "Guid"), safeProp(t, "no")
     local users = {}
     for _, e in ipairs(walkFixtures(p)) do
       local ok, ft = pcall(function() return e.fixture:Get("FixtureType") end)
-      if ok and (isHandle(ft) or (type(ft) == "table" and type(ft.Get) == "function")) and displayProp(ft, "Guid") == guid then users[#users + 1] = numericFid(e.fixture) or tostring(safeProp(e.fixture, "name")) end
+      if ok and (isHandle(ft) or (type(ft) == "table" and type(ft.Get) == "function")) and (ft == t or (safeProp(ft, "no") == no and displayProp(ft, "Guid") == guid)) then users[#users + 1] = numericFid(e.fixture) or tostring(safeProp(e.fixture, "name")) end
     end
     return users
   end
@@ -5114,15 +5128,18 @@ do
       if c == t then index = i elseif index then after[#after + 1] = { guid = displayProp(c, "Guid"), name = tostring(safeProp(c, "name")), from = safeProp(c, "no") } end
     end
     if not index then raise("[no-type] the type was not found among the copy's fixture types") end
-    local removed = typeRow(t)
+    local removed, countBefore = typeRow(t), #kids
     local okD, err = pcall(function() p.FixtureTypes:Delete(index) end)
     if not okD then raise("[remove-failed] deleting the type raised: " .. tostring(err)) end
-    for _, c in ipairs(p.FixtureTypes:Children()) do if displayProp(c, "Guid") == guid then raise("[remove-failed] the type is still in the copy after Delete") end end
+    -- By position, not GUID: another import of the same GDTF shares it (bridge 0.39.0). The types after the
+    -- removed one move up one place, in order.
+    local left = p.FixtureTypes:Children()
+    if #left ~= countBefore - 1 then raise("[remove-failed] the type is still in the copy after Delete") end
+    for _, c in ipairs(left) do if c == t then raise("[remove-failed] the type is still in the copy after Delete") end end
     local renumbered = {}
-    for _, a in ipairs(after) do
-      for _, c in ipairs(p.FixtureTypes:Children()) do
-        if displayProp(c, "Guid") == a.guid then renumbered[#renumbered + 1] = { name = a.name, from = a.from, to = safeProp(c, "no") } end
-      end
+    for k, a in ipairs(after) do
+      local c = left[index + k - 1]
+      if c and displayProp(c, "Guid") == a.guid then renumbered[#renumbered + 1] = { name = a.name, from = a.from, to = safeProp(c, "no") } end
     end
     return { removed = removed, renumbered = emptyArray(renumbered), types = p.FixtureTypes:Count() }
   end

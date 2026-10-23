@@ -167,7 +167,13 @@ Read-only (`patch.library`). The fixture-type files the console can import, from
 library and WorldServer downloads. Every word of `query` must occur in the manufacturer, model or file name, ignoring
 case; for an `.xml` file also in its header's name, manufacturer, short name or description (read from the first
 16 KB before filtering, cached by path, size and time). `sources` limits the libraries; scenery (`set@` files) is left out unless `include_sets`; `limit` (default 50,
-max 500) / `offset` paginate.
+max 500) / `offset` paginate, and `nextOffset` says where the next page starts.
+
+`compact: true` lists file names only, grouped by library (`files: {grandma2: [...], user: [...]}`), with `inShow` and
+`notVerified` for just the files that have them; its default `limit` is 500. Use it for a broad query (a manufacturer),
+then ask for the full entries of the files you need. Every page is cut to 40 000 characters so a client takes it whole
+(`truncated` says so and names the next offset): the Halloween build's 500-entry pages for `adj` and `chauvet` were 95
+and 145 KB and were cut off by the client.
 
 Each entry has `source`, `file` (the name to import), `format`, `manufacturer` and `model` (from the file name,
 `manufacturer@model[@revision].ext`), and:
@@ -176,7 +182,7 @@ Each entry has `source`, `file` (the name to import), `format`, `manufacturer` a
 | --- | --- |
 | `name`, `modes` | From the XML header of a grandMA3 or user `.xml` (`modesKnown: true`). A grandMA2 `.pxml` is encrypted: its modes are known only after the import |
 | `verified` | `false` for user-library `.xml` and WorldServer files: their import is not verified on the console yet. User-library `.gdtf` is verified (bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md)) |
-| `inShow` | Show types with the same manufacturer and name: importing again would add a duplicate. Names compare ignoring case, and an underscore in the file name matches a space (bridge 0.38.1: `Chauvet_DJ@Sentinel_Spot_Q60_ILS` is "Chauvet DJ", "Sentinel Spot Q60 ILS") |
+| `inShow` | Show types with the same manufacturer and name: importing again would add a duplicate. Names compare ignoring case, and an underscore in the file name matches a space (bridge 0.38.1: `Chauvet_DJ@Sentinel_Spot_Q60_ILS` is "Chauvet DJ", "Sentinel Spot Q60 ILS"; `gma3_patch_import` compares the show's types the same way itself, so an older bridge's miss is still caught) |
 | `set` | Scenery |
 
 ## gma3_patch_library_add
@@ -214,12 +220,12 @@ pool:
 
 | Step | |
 | --- | --- |
-| `check_library` | The file is in exactly one library (`Import Library` names the file only, so a name in two libraries is refused); the show has no type matching it unless `allow_duplicate` (the console would silently add a second type with the same name) |
+| `check_library` | The file is in exactly one library (`Import Library` names the file only, so a name in two libraries is refused); the show has no type matching it unless `allow_duplicate` (the console would silently add a second type with the same name). The match is the bridge's `inShow` plus the server's own comparison of the live types (an underscore matches a space), which also records the type list before the import |
 | `enter` | `patch.enter` with target `fixturetypes`: the copy, then its `FixtureTypes` |
 | `import` | `Import Library "<file>" /Path ""` with `CmdIndirect` (no dialog). The console keeps the path of an earlier import command and resolves the next `Import Library` against it, so without `/Path ""` every library import answered "Object not found" (bridge 0.38.2, live 2026-10-22); an empty path is the library's own folders |
 | `wait_import` | Poll until exactly one type is appended. Claimed only when its name or manufacturer matches the file (ignoring case; an underscore matches a space); two new types, or an error answer from the console, fail the step |
 | `isolation_check` | Everything compared in full except the import's appends (the new type; new attributes and features) |
-| `commit`, read-back | The type in the live patch by GUID, with the same modes |
+| `commit`, read-back | The type in the live patch at the number the copy gave it, with the same name, GUID and modes, and one type more than before. Not looked up by GUID: a rebuilt GDTF imported with `allow_duplicate` shares its GUID with the older import, and the GUID lookup found that one (live 2026-10-22: type 16 instead of 19) |
 
 The result has `type` (number, name, manufacturer, GUID, and the DMX modes with footprints and breaks),
 `attributesAdded`, `library`, and a `warning` for an unverified source. A committed import has no undo.
@@ -227,9 +233,13 @@ The result has `type` (number, name, manufacturer, GUID, and the DMX modes with 
 ## gma3_patch_remove_type
 
 `type` by number or name (a number when two types share a name). Pre-flight (`patch.typeInfo`): the type exists, has a
-GUID, and no fixture uses it. The change (`patch.removeType`) deletes it by GUID in the copy. The types after it move
-down one number; fixtures keep their type and only the displayed number changes. The result's `renumbered` lists
-`{name, from, to}`. Read-back checks the GUID is gone. **The attributes the type brought stay in the show**, unused: the
+GUID, and no fixture uses it: the fixtures whose type is this object (bridge 0.39.0), so after a retype to a newer import
+of the same GDTF (same GUID) the older one counts as unused (live 2026-10-22: `usedBy: [101, 102]` with `realUsed: 0`
+on bridge 0.38). The change (`patch.removeType`) deletes it by number in the copy, checking its GUID. The types after it
+move down one number; fixtures keep their type and only the displayed number changes. The result's `renumbered` lists
+`{name, from, to}`. The isolation check leaves the type out of the live side by position and GUID (`excludeTypes`,
+bridge 0.39.0; an older bridge leaves out every type with the GUID). Read-back checks the live patch has one type fewer,
+and one fewer with the GUID. **The attributes the type brought stay in the show**, unused: the
 console keeps them, and they cannot be told apart from its own unused attributes.
 
 ## gma3_patch_type_structure (SU-07)

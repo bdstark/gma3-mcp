@@ -189,12 +189,14 @@ async function waitStep(bridge: Gma3Bridge, name: string, t: number, pred: (s: P
  * import adds, SU-03) are left out; the bridge compares every other container and collection in full, so an
  * unrelated addition still differs. excludeGuidsLive: fixture types left
  * out of the live side, the type a removal deletes (fixture types are compared by identity, so the renumbering
- * that follows is not a difference).
+ * that follows is not a difference). excludeTypesLive: the same type by its position and GUID; a bridge from 0.39.0
+ * uses it instead, so another import of the same GDTF (same GUID) is still compared.
  */
 interface IsolationSpec {
   excludeFids: number[];
   prefixOfLive?: boolean;
   excludeGuidsLive?: string[];
+  excludeTypesLive?: Array<{ index: number; guid: string }>;
 }
 
 /** Collections an import appends to (the bridge applies prefixOfLive only there either way). */
@@ -210,7 +212,7 @@ async function fingerprints(bridge: Gma3Bridge, iso: IsolationSpec, t: number): 
   const reasons: string[] = [];
   if (JSON.stringify(cols.live) !== JSON.stringify(cols.copy)) mismatched.push(`collections differ: live ${cols.live.join(", ")} / copy ${cols.copy.join(", ")}`);
   for (const collection of cols.live) {
-    const live = (await bridge.request("patch.fingerprint", { side: "live", collection, excludeFids, ...(iso.excludeGuidsLive?.length ? { excludeGuids: iso.excludeGuidsLive } : {}) }, ft)) as Fingerprint;
+    const live = (await bridge.request("patch.fingerprint", { side: "live", collection, excludeFids, ...(iso.excludeGuidsLive?.length ? { excludeGuids: iso.excludeGuidsLive } : {}), ...(iso.excludeTypesLive?.length ? { excludeTypes: iso.excludeTypesLive } : {}) }, ft)) as Fingerprint;
     const prefix = iso.prefixOfLive && PREFIX_COLLECTIONS.has(collection);
     const copy = (await bridge.request("patch.fingerprint", { side: "copy", collection, excludeFids, ...(prefix ? { prefixOfLive: true } : {}) }, ft)) as Fingerprint;
     if (!live.complete || !copy.complete) {
@@ -218,7 +220,7 @@ async function fingerprints(bridge: Gma3Bridge, iso: IsolationSpec, t: number): 
       reasons.push(`${collection}: ${live.reason ?? copy.reason ?? "incomplete"}`);
     } else if (live.objects !== copy.objects || live.hash !== copy.hash) mismatched.push(collection);
   }
-  const leftOut = { ...(iso.prefixOfLive ? { prefixOfLive: true } : {}), ...(iso.excludeGuidsLive?.length ? { excludeGuidsLive: iso.excludeGuidsLive } : {}) };
+  const leftOut = { ...(iso.prefixOfLive ? { prefixOfLive: true } : {}), ...(iso.excludeGuidsLive?.length ? { excludeGuidsLive: iso.excludeGuidsLive } : {}), ...(iso.excludeTypesLive?.length ? { excludeTypesLive: iso.excludeTypesLive } : {}) };
   return { equal: complete && mismatched.length === 0, complete, mismatched, detail: { collections: cols.live, excludeFids, ...leftOut, ...(reasons.length ? { incomplete: reasons } : {}) } };
 }
 
@@ -781,6 +783,54 @@ export interface LibraryEntry {
   inShow: Array<{ no: number; name: string; manufacturer?: string; guid?: string }>;
 }
 
+/** One page of patch.library as the bridge answers it. */
+export interface LibraryPage {
+  total: number;
+  offset: number;
+  count: number;
+  entries: LibraryEntry[];
+  scanned?: number;
+  paths?: unknown;
+}
+
+/**
+ * Characters a gma3_patch_library result may take. MCP clients cut off long tool results (Claude Code at about 25 000
+ * tokens): the Halloween build's 500-entry pages for "adj" and "chauvet" were 95 and 145 KB and arrived as files.
+ */
+export const LIBRARY_MAX_CHARS = 40_000;
+
+/**
+ * Shape a library page for the client: full entries, or compact (file names per library, plus the files the show
+ * already has a type for and the unverified ones). Either way the page is cut to LIBRARY_MAX_CHARS, and nextOffset says
+ * where the next page starts.
+ */
+export function shapeLibraryPage(page: LibraryPage, compact: boolean, maxChars = LIBRARY_MAX_CHARS): Record<string, unknown> {
+  const render = (n: number): Record<string, unknown> => {
+    const entries = page.entries.slice(0, n);
+    const head = { total: page.total, offset: page.offset, count: entries.length, ...(page.scanned !== undefined ? { scanned: page.scanned } : {}) };
+    const nextOffset = page.offset + entries.length < page.total ? { nextOffset: page.offset + entries.length } : {};
+    if (!compact) return { ...head, ...nextOffset, entries, ...(page.paths !== undefined ? { paths: page.paths } : {}) };
+    const files: Record<string, string[]> = {};
+    const inShow: Record<string, Array<{ no: number; name: string }>> = {};
+    const notVerified: string[] = [];
+    for (const e of entries) {
+      (files[e.source] ??= []).push(e.file);
+      if (e.inShow?.length) inShow[e.file] = e.inShow.map((x) => ({ no: x.no, name: x.name }));
+      if (e.verified === false) notVerified.push(e.file);
+    }
+    return { ...head, ...nextOffset, compact: true, files, ...(Object.keys(inShow).length ? { inShow } : {}), ...(notVerified.length ? { notVerified } : {}) };
+  };
+  const size = (v: unknown) => JSON.stringify(v, null, 2).length;
+  let keep = page.entries.length;
+  let out = render(keep);
+  for (let len = size(out); keep > 0 && len > maxChars; len = size(out)) {
+    keep = Math.max(0, Math.min(keep - 1, Math.floor((keep * maxChars) / len)));
+    out = render(keep);
+  }
+  if (keep < page.entries.length) out.truncated = `cut from ${page.entries.length} to ${keep} entries to stay under ${maxChars} characters (clients cut off longer results); ask again with offset ${page.offset + keep}${compact ? "" : ", or compact: true for file names only"}`;
+  return out;
+}
+
 export interface TypeRow {
   no: number;
   name: string;
@@ -808,6 +858,13 @@ export const sameName = (a: unknown, b: unknown): boolean => {
   return x !== undefined && x !== "" && x === norm(b);
 };
 
+/** Show types an import of the entry would duplicate: same name (or model) and manufacturer, by sameName. */
+export function matchingTypes(types: TypeRow[], entry: Pick<LibraryEntry, "manufacturer" | "model" | "name">): TypeRow[] {
+  const name = entry.name ?? entry.model;
+  if (!name) return [];
+  return types.filter((x) => sameName(x.name, name) && (entry.manufacturer === undefined || sameName(x.manufacturer, entry.manufacturer)));
+}
+
 export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<OperationResult> {
   const op = "patch_import";
   const v = new Validator();
@@ -824,6 +881,7 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
   let queued: { typesBefore: number; attributesBefore?: number; verified?: boolean } | undefined;
   let imported: TypeRow | undefined;
   let attributesAfter: number | undefined;
+  let typesBefore: TypeRow[] | undefined;
 
   return runSession(ctx, {
     operation: op,
@@ -838,8 +896,14 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
         if (lib.entries.length === 0) return asRead({ name: "check_library", status: "failed", op: "patch.library", error: `${file} is not in the ${raw.source ?? "fixture-type"} library (gma3_patch_library searches it)`, detail });
         if (all.entries.length > 1) return asRead({ name: "check_library", status: "failed", op: "patch.library", error: `${file} is in more than one library (${all.entries.map((e) => e.source).join(", ")}); Import Library names the file only and cannot choose between them`, detail: { entries: all.entries } });
         entry = lib.entries[0];
-        if (entry.inShow.length && raw.allow_duplicate !== true) {
-          return asRead({ name: "check_library", status: "failed", op: "patch.library", error: `the show already has ${entry.inShow.map((x) => `type ${x.no} "${x.name}"`).join(", ")} matching ${file}; the console would add a second type with the same name. Use that type, or pass allow_duplicate: true`, detail });
+        // The live types, for the duplicate check and to tell the new type apart on read-back. A bridge before
+        // 0.38.1 compared the file name's model with underscores (180W_Beam) to the type name (180W Beam), so inShow
+        // missed a type a GDTF had already imported; the names are compared here too.
+        typesBefore = ((await ctx.bridge.request("patch.types", {}, t)) as { types: TypeRow[] }).types;
+        const inShow = [...entry.inShow];
+        for (const x of matchingTypes(typesBefore, entry)) if (!inShow.some((y) => y.no === x.no)) inShow.push({ no: x.no, name: x.name, manufacturer: x.manufacturer, guid: x.guid });
+        if (inShow.length && raw.allow_duplicate !== true) {
+          return asRead({ name: "check_library", status: "failed", op: "patch.library", error: `the show already has ${inShow.map((x) => `type ${x.no} "${x.name}"`).join(", ")} matching ${file}; the console would add a second type with the same name. Use that type, or pass allow_duplicate: true`, detail: { ...detail, inShow } });
         }
         return asRead({ name: "check_library", status: "succeeded", op: "patch.library", detail });
       } catch (err) {
@@ -895,9 +959,14 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
     readBack: async () => {
       try {
         const res = (await ctx.bridge.request("patch.types", {}, t)) as { types: TypeRow[] };
-        const live = imported?.guid ? res.types.find((x) => x.guid === imported?.guid) : undefined;
-        const checked = "the imported type is in the live patch, by GUID, with the same modes";
+        // By number, not GUID: a rebuilt GDTF imported with allow_duplicate shares its GUID with the older import,
+        // and a GUID lookup found that one (live 2026-10-22: type 16 instead of 19). The import appends one type, at
+        // the number the copy gave it.
+        const live = imported ? res.types.find((x) => x.no === imported?.no) : undefined;
+        const checked = "the imported type is in the live patch at its number, with the same name, GUID and modes, and is the only type added";
         const expected = imported ? { no: imported.no, name: imported.name, guid: imported.guid, modes: imported.modes.map((m) => m.name) } : null;
+        const added = typesBefore ? res.types.length - typesBefore.length : undefined;
+        if (added !== undefined && added !== 1) return { steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.types", detail: { before: typesBefore?.length, after: res.types.length } })], verification: { status: "mismatched", checked, expected, actual: live ?? null, detail: `the live patch has ${added} type(s) more than before the session, not 1` } };
         if (!live) return { steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.types", detail: { found: false } })], verification: { status: "mismatched", checked, expected, actual: null, detail: "the imported type is not in the live patch" } };
         const actual = { no: live.no, name: live.name, guid: live.guid, modes: live.modes.map((m) => m.name) };
         const same = JSON.stringify(actual) === JSON.stringify(expected);
@@ -928,7 +997,8 @@ export async function patchRemoveType(ctx: ToolContext, raw: RemoveTypeArgs): Pr
   const target: Record<string, unknown> = { type: raw.type };
   if (!v.ok) return validationFailure(op, target, v.errors);
   const t = ctx.requestTimeoutMs;
-  let info: (TypeRow & { usedBy: Array<number | string>; realUsed?: number }) | undefined;
+  let info: (TypeRow & { usedBy: Array<number | string>; realUsed?: number; index?: number }) | undefined;
+  let typesBefore: TypeRow[] | undefined;
   let removed: { removed: TypeRow; renumbered: Array<{ name: string; from: number; to: number }> } | undefined;
 
   return runSession(ctx, {
@@ -941,10 +1011,13 @@ export async function patchRemoveType(ctx: ToolContext, raw: RemoveTypeArgs): Pr
         const res = (await ctx.bridge.request("patch.typeInfo", { type }, t)) as { type: typeof info };
         info = res.type;
         if (!info?.guid) return asRead({ name: "check_type", status: "failed", op: "patch.typeInfo", error: "the type has no readable GUID, so it cannot be removed safely", detail: res });
+        // The bridge counts the fixtures whose type is this object (0.39.0), not every type with its GUID: after a
+        // retype to a newer import of the same GDTF the older one is unused (live 2026-10-22).
         if (info.usedBy.length > 0 || (info.realUsed ?? 0) > 0) {
           const n = info.usedBy.length || info.realUsed;
           return asRead({ name: "check_type", status: "failed", op: "patch.typeInfo", error: `fixture type ${info.no} "${info.name}" is used by ${n} fixture(s)${info.usedBy.length ? ` (${info.usedBy.slice(0, 10).join(", ")}${info.usedBy.length > 10 ? ", ..." : ""})` : ""}; remove or repatch them first`, detail: res });
         }
+        typesBefore = ((await ctx.bridge.request("patch.types", {}, t)) as { types: TypeRow[] }).types;
         return asRead({ name: "check_type", status: "succeeded", op: "patch.typeInfo", detail: res });
       } catch (err) {
         return asRead(stepFromError("check_type", err, { op: "patch.typeInfo" }));
@@ -955,7 +1028,7 @@ export async function patchRemoveType(ctx: ToolContext, raw: RemoveTypeArgs): Pr
     onEdit: (detail) => {
       removed = detail as typeof removed;
     },
-    isolation: () => ({ excludeGuidsLive: info?.guid ? [info.guid] : [] }),
+    isolation: () => ({ excludeGuidsLive: info?.guid ? [info.guid] : [], ...(info?.guid && typeof info.index === "number" ? { excludeTypesLive: [{ index: info.index, guid: info.guid }] } : {}) }),
     extra: () => ({
       ...(info ? { type: { no: info.no, name: info.name, manufacturer: info.manufacturer, guid: info.guid } } : {}),
       ...(removed ? { renumbered: removed.renumbered } : {}),
@@ -964,11 +1037,18 @@ export async function patchRemoveType(ctx: ToolContext, raw: RemoveTypeArgs): Pr
     readBack: async () => {
       try {
         const res = (await ctx.bridge.request("patch.types", {}, t)) as { types: TypeRow[] };
-        const still = res.types.find((x) => x.guid === info?.guid);
-        const checked = "the type is gone from the live patch (by GUID)";
+        // Counted, not looked up by GUID: another import of the same GDTF shares it and stays.
+        const sameGuid = (list: TypeRow[]) => list.filter((x) => x.guid === info?.guid);
+        const before = typesBefore ?? [];
+        const left = sameGuid(res.types);
+        const gone = res.types.length === before.length - 1 && left.length === sameGuid(before).length - 1;
+        const checked = left.length ? "the live patch has one type fewer, and one fewer with the removed type's GUID (another import of the same GDTF stays)" : "the type is gone from the live patch (by GUID)";
+        const still = left.find((x) => x.no === info?.no && x.name === info?.name);
         return {
-          steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.types", detail: { count: res.types.length, found: Boolean(still) } })],
-          verification: still ? { status: "mismatched", checked, expected: null, actual: still, detail: `type ${still.no} "${still.name}" is still in the live patch` } : { status: "matched", checked, expected: null, actual: null },
+          steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.types", detail: { count: res.types.length, countBefore: before.length, sameGuid: left.map((x) => x.no) } })],
+          verification: gone
+            ? { status: "matched", checked, expected: null, actual: null }
+            : { status: "mismatched", checked, expected: null, actual: still ?? { count: res.types.length, countBefore: before.length, sameGuid: left.map((x) => x.no) }, detail: still ? `type ${still.no} "${still.name}" is still in the live patch` : `the live patch has ${res.types.length} type(s) (${before.length} before) and ${left.length} with the GUID` },
         };
       } catch (err) {
         return { steps: [asRead(stepFromError("read_back", err, { op: "patch.types" }))], verification: unavailable("the fixture types could not be read back") };
@@ -1105,23 +1185,27 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
         "Every word of query must occur in the manufacturer, model or file name (case-insensitive), e.g. \"chauvet festoon\" or \"mega hex\". Each entry has the source, the file name to pass to gma3_patch_import, manufacturer and model, " +
         "the mode names when the file is readable (grandMA3 and user .xml; grandMA2 .pxml files are encrypted, so their modes are known only after the import: gma3_patch_types then lists them), " +
         "verified (false for user-library .xml and WorldServer files, whose import is not verified on the console yet; user-library .gdtf is verified) and inShow: show types already matching it by manufacturer and name (importing again would add a duplicate). " +
-        "Scenery (set@ files) is left out unless include_sets. Paginated (limit default 50, max 500). gma3_patch_library_add puts a .gdtf or .xml file into the user library. Needs bridge 0.26.0.",
+        "Scenery (set@ files) is left out unless include_sets. Paginated (limit default 50, max 500; nextOffset is where the next page starts). " +
+        "compact: true lists file names only, per library, with inShow and notVerified for the files that have them (default limit 500): use it for a broad query (a manufacturer) and ask for the full entries of the files you need. " +
+        `Every page is cut to about ${LIBRARY_MAX_CHARS / 1000}000 characters so it fits the client; the result says truncated when it was. gma3_patch_library_add puts a .gdtf or .xml file into the user library. Needs bridge 0.26.0.`,
       inputSchema: {
         query: z.string().optional().describe("Words to match, e.g. \"oppsk wall washer\". Omit to list everything."),
         sources: z.array(z.enum(LIBRARY_SOURCES)).optional().describe("Libraries to search (default all)."),
         include_sets: z.boolean().optional().describe("Include scenery (set@ files: trusses, buildings, markers)."),
-        limit: z.number().optional().describe("Maximum entries (default 50, max 500)."),
+        limit: z.number().optional().describe("Maximum entries (default 50, or 500 with compact; max 500)."),
         offset: z.number().optional().describe("Entries to skip (default 0)."),
+        compact: z.boolean().optional().describe("File names only, grouped by library, plus inShow and notVerified where they apply (default false)."),
       },
     },
-    async (args) =>
-      json(
-        await ctx.bridge.request(
-          "patch.library",
-          { ...(args.query !== undefined ? { query: args.query } : {}), ...(args.sources ? { sources: args.sources } : {}), ...(args.include_sets ? { includeSets: true } : {}), ...(args.limit !== undefined ? { limit: args.limit } : {}), ...(args.offset !== undefined ? { offset: args.offset } : {}) },
-          ctx.requestTimeoutMs,
-        ),
-      ),
+    async (args) => {
+      const limit = args.limit ?? (args.compact ? 500 : undefined);
+      const page = (await ctx.bridge.request(
+        "patch.library",
+        { ...(args.query !== undefined ? { query: args.query } : {}), ...(args.sources ? { sources: args.sources } : {}), ...(args.include_sets ? { includeSets: true } : {}), ...(limit !== undefined ? { limit } : {}), ...(args.offset !== undefined ? { offset: args.offset } : {}) },
+        ctx.requestTimeoutMs,
+      )) as LibraryPage;
+      return json(shapeLibraryPage(page, args.compact === true));
+    },
   );
 
   server.registerTool(
