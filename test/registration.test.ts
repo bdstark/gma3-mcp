@@ -78,6 +78,10 @@ const WORKFLOW_TOOLS = [
   "gma3_patch_add",
   "gma3_patch_set",
   "gma3_patch_remove",
+  // Grouping fixtures, retype and dialogs (bridge 0.42.0)
+  "gma3_patch_move",
+  "gma3_patch_retype",
+  "gma3_dialog",
   // SU-03 fixture-type library
   "gma3_patch_library",
   "gma3_patch_import",

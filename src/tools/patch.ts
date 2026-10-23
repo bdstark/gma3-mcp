@@ -101,7 +101,7 @@ export function dmxAddress(field: string, value: unknown, opts: { optional?: boo
   return `${u}.${String(a).padStart(3, "0")}`;
 }
 
-function fidNumber(field: string, value: unknown): number | undefined {
+export function fidNumber(field: string, value: unknown): number | undefined {
   return finiteNumber(field, value, { integer: true, min: 1, max: MAX_FID });
 }
 
@@ -118,7 +118,7 @@ function occupancyMessage(unknown: Array<{ fid: number | string; reason: string 
   return `the DMX occupancy of ${unknown.length} patched fixture(s) cannot be established (FID ${first.fid}: ${first.reason}), so free addresses cannot be proven`;
 }
 
-function requireExclusive(v: Validator, exclusive: unknown): void {
+export function requireExclusive(v: Validator, exclusive: unknown): void {
   if (exclusive !== true) {
     v.fail(
       "exclusive must be true: patch changes need exclusive use of the console (nobody else editing the show while the tool runs). The tool's isolation check only detects other changes on a best-effort basis and cannot prevent them, and a committed patch change has no undo.",
@@ -195,6 +195,8 @@ interface IsolationSpec {
   excludeFids: number[];
   prefixOfLive?: boolean;
   excludeGuidsLive?: string[];
+  /** false: fixtures are compared without their position in their list (a move renumbers the fixtures after the moved ones). */
+  fixturePositions?: false;
 }
 
 /** Collections an import appends to (the bridge applies prefixOfLive only there either way). */
@@ -210,15 +212,16 @@ async function fingerprints(bridge: Gma3Bridge, iso: IsolationSpec, t: number): 
   const reasons: string[] = [];
   if (JSON.stringify(cols.live) !== JSON.stringify(cols.copy)) mismatched.push(`collections differ: live ${cols.live.join(", ")} / copy ${cols.copy.join(", ")}`);
   for (const collection of cols.live) {
-    const live = (await bridge.request("patch.fingerprint", { side: "live", collection, excludeFids, ...(iso.excludeGuidsLive?.length ? { excludeGuids: iso.excludeGuidsLive } : {}) }, ft)) as Fingerprint;
+    const positions = iso.fixturePositions === false ? { fixturePositions: false } : {};
+    const live = (await bridge.request("patch.fingerprint", { side: "live", collection, excludeFids, ...positions, ...(iso.excludeGuidsLive?.length ? { excludeGuids: iso.excludeGuidsLive } : {}) }, ft)) as Fingerprint;
     const prefix = iso.prefixOfLive && PREFIX_COLLECTIONS.has(collection);
-    const copy = (await bridge.request("patch.fingerprint", { side: "copy", collection, excludeFids, ...(prefix ? { prefixOfLive: true } : {}) }, ft)) as Fingerprint;
+    const copy = (await bridge.request("patch.fingerprint", { side: "copy", collection, excludeFids, ...positions, ...(prefix ? { prefixOfLive: true } : {}) }, ft)) as Fingerprint;
     if (!live.complete || !copy.complete) {
       complete = false;
       reasons.push(`${collection}: ${live.reason ?? copy.reason ?? "incomplete"}`);
     } else if (live.objects !== copy.objects || live.hash !== copy.hash) mismatched.push(collection);
   }
-  const leftOut = { ...(iso.prefixOfLive ? { prefixOfLive: true } : {}), ...(iso.excludeGuidsLive?.length ? { excludeGuidsLive: iso.excludeGuidsLive } : {}) };
+  const leftOut = { ...(iso.prefixOfLive ? { prefixOfLive: true } : {}), ...(iso.excludeGuidsLive?.length ? { excludeGuidsLive: iso.excludeGuidsLive } : {}), ...(iso.fixturePositions === false ? { fixturePositions: false } : {}) };
   return { equal: complete && mismatched.length === 0, complete, mismatched, detail: { collections: cols.live, excludeFids, ...leftOut, ...(reasons.length ? { incomplete: reasons } : {}) } };
 }
 
@@ -292,7 +295,13 @@ export interface SessionSpec {
   /** Isolation options beyond the touched FIDs, read after the edit (and settle) succeeded. */
   isolation?: () => Omit<IsolationSpec, "excludeFids">;
   /** The edit inside the copy (patch.add / patch.set / patch.remove), built once the copy is open; `stage` is the stage patch.enter entered. */
-  edit: (stage: string | undefined) => { op: string; args: Record<string, unknown> };
+  edit?: (stage: string | undefined) => { op: string; args: Record<string, unknown> };
+  /**
+   * An edit of several steps instead of `edit` (gma3_patch_move: queued commands and a dialog, each step polled). Its
+   * steps are reported in order; the first one that did not succeed stops the session, which then closes the copy only
+   * when it provably holds no change. It cleans up its own leftovers (an open dialog) before returning.
+   */
+  runEdit?: (stage: string | undefined) => Promise<{ steps: StepResult[]; detail?: unknown; leaveOpen?: string }>;
   /** Read-back after a commit. */
   readBack?: () => Promise<{ steps: StepResult[]; verification: Verification; extra?: Record<string, unknown> }>;
   verify: boolean;
@@ -373,22 +382,42 @@ export async function runSessionLocked(ctx: ToolContext, spec: SessionSpec): Pro
 
     if (wc.status !== "succeeded") return abort("unknown", `the patch copy did not open as expected (${wc.error ?? wc.status})`, planned(2));
 
-    const edit = spec.edit(entered?.stage);
-    let editStep: StepResult;
-    try {
-      const res = await bridge.request(edit.op, { exclusive: true, ...edit.args }, t);
-      editStep = { name: spec.editName, status: "succeeded", op: edit.op, detail: res };
-    } catch (err) {
-      editStep = stepFromError(spec.editName, err, { op: edit.op });
-      if (err instanceof BridgeError && err.detail !== undefined) editStep.detail = err.detail;
+    let editSteps: StepResult[];
+    let editDetail: unknown;
+    let leaveOpen: string | undefined;
+    if (spec.runEdit) {
+      const r = await spec.runEdit(entered?.stage);
+      editSteps = r.steps;
+      editDetail = r.detail;
+      leaveOpen = r.leaveOpen;
+    } else {
+      if (!spec.edit) throw new Error(`${spec.operation}: a session needs edit or runEdit`);
+      const edit = spec.edit(entered?.stage);
+      let editStep: StepResult;
+      try {
+        const res = await bridge.request(edit.op, { exclusive: true, ...edit.args }, t);
+        editStep = { name: spec.editName, status: "succeeded", op: edit.op, detail: res };
+      } catch (err) {
+        editStep = stepFromError(spec.editName, err, { op: edit.op });
+        if (err instanceof BridgeError && err.detail !== undefined) editStep.detail = err.detail;
+      }
+      editSteps = [editStep];
+      editDetail = editStep.detail;
     }
-    steps.push(editStep);
-    if (editStep.status !== "succeeded") {
-      return abort(editStep.status === "unknown" ? "unknown" : "failed", `the ${spec.editName} step ${editStep.status === "unknown" ? "got no reply" : "was refused"}: ${editStep.error}`, planned(3));
+    steps.push(...editSteps);
+    const badEdit = editSteps.find((s) => s.status !== "succeeded");
+    if (leaveOpen) {
+      // The edit says the copy must not be closed (a dialog may still be open): leave it, and say so.
+      steps.push(...skippedSteps(planned(3), leaveOpen));
+      return finish("unknown", `${spec.operation} was not completed: ${leaveOpen}. THE PATCH COPY WAS LEFT OPEN: ${LEFT_OPEN_HELP}.`, spec.verify ? unavailable("nothing was committed") : notRequested(), { committed: false, copyLeftOpen: true });
     }
-    spec.onEdit?.(editStep.detail);
+    if (badEdit || editSteps.length === 0) {
+      const status = badEdit?.status ?? "failed";
+      return abort(status === "unknown" ? "unknown" : "failed", `the ${badEdit?.name ?? spec.editName} step ${status === "unknown" ? "got no reply or did not finish" : status === "skipped" ? "was not attempted" : "was refused"}: ${badEdit?.error ?? "no step ran"}`, planned(3));
+    }
+    spec.onEdit?.(editDetail);
     if (spec.settle) {
-      const st = await spec.settle.run(editStep.detail);
+      const st = await spec.settle.run(editDetail);
       steps.push(st);
       if (st.status !== "succeeded") return abort(st.status === "unknown" ? "unknown" : "failed", `the ${spec.settle.name} step ${st.status}: ${st.error ?? ""}`, planned(4));
     }
@@ -987,13 +1016,13 @@ export async function patchRemoveType(ctx: ToolContext, raw: RemoveTypeArgs): Pr
 // Registration
 // ---------------------------------------------------------------------------
 
-const SESSION_DESC =
+export const SESSION_DESC =
   "Runs one patch session through the patch edit copy, never a dialog: read-only pre-checks (command line at Root, the copy closed, so nobody is in the Patch menu, no modal open, plus the tool's own checks), then enter the copy, apply the change there, an isolation check, commit, and read back. " +
   "Requires exclusive: true. Patch changes need exclusive use of the console: the isolation check compares fingerprints of the copy and the live patch, left out the touched FIDs, over several seconds. It is best-effort detection of someone else's changes, not a guarantee, and on a mismatch nothing is committed and the copy is left open for the operator. " +
   "A committed patch change has NO UNDO (Oops does not revert it). Takes about 10 s (mostly the isolation check). " +
   "When a session cannot be finished, the copy is closed again only if it provably holds no change; otherwise the result says copyLeftOpen: true and the command line stays inside the edit patch with no Patch window open: the operator keeps the copy by typing ChangeDestination Root at the console (no way to discard it without the Patch menu is known). Needs bridge 0.19.0.";
-const EXCLUSIVE_DESC = "Required, must be true: confirms nobody else uses the console while this runs (see the description). Without it the call is refused and nothing is sent.";
-const VERIFY_DESC = "Read the patch back after the commit and compare (default true).";
+export const EXCLUSIVE_DESC = "Required, must be true: confirms nobody else uses the console while this runs (see the description). Without it the call is refused and nothing is sent.";
+export const VERIFY_DESC = "Read the patch back after the commit and compare (default true).";
 
 export const registerPatchTools: RegisterTools = (server, ctx) => {
   server.registerTool(
