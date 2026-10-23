@@ -27,7 +27,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "console variables ($name in macros and cue commands)", tools: ["gma3_variables", "gma3_set_variable"] },
   { task: "tags: tag sequences, groups, macros and cues, kill types, which objects carry a tag", tools: ["gma3_tags", "gma3_assign_tag", "gma3_store_tag", "gma3_delete_tag", "gma3_configure_tag", "gma3_playback"] },
   { task: "timecode shows", tools: ["gma3_build_timecode", "gma3_timecode_transport", "gma3_timecodes"] },
-  { task: "DMX output: universes, grants, Art-Net, sACN (why output is missing)", tools: ["gma3_dmx_output", "gma3_configure_dmx_output", "gma3_dmx", "gma3_fixture_output"] },
+  { task: "DMX output: universes, grants, Art-Net, sACN (why output is missing)", tools: ["gma3_dmx_output", "gma3_configure_dmx_output", "gma3_dmx", "gma3_fixture_output", "gma3_network_output"] },
   { task: "OSC input and output", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
   { task: "save the show (current or new name) and list show files", tools: ["gma3_save_show", "gma3_show_files"] },
   { task: "tempo-sync plugin: status, configuration, ReSync of phasers", tools: ["gma3_tempo_sync_status", "gma3_configure_tempo_sync", "gma3_playback"] },
