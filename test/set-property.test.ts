@@ -32,6 +32,7 @@ class Obj {
         return { total: nos.length, offset: 0, count: nos.length, items: nos.map((n) => ({ name: named[1], class: "Appearance", addr: `addr:app${n}` })) };
       }
       if (String(args.ref) === "Appearance 66") throw new Error("request timed out");
+      if (this.owner && String(args.ref) === this.owner.ref && this.ownerFails) throw new Error("request timed out");
       if (this.owner && String(args.ref) === this.owner.ref) return { total: 1, offset: 0, count: 1, items: [{ name: "Owner", class: "Page", fields: { Lock: this.owner.Lock } }] };
       const app = String(args.ref).match(/^Appearance (\d+)$/);
       if (app && Number(app[1]) > 50) throw new Error(`no objects found for '${args.ref}'`);
@@ -41,7 +42,7 @@ class Obj {
         if (!(f in this.props)) continue;
         // asText false: a reference property comes back as the referenced object's summary.
         if (f === "Appearance" && (this.props.Appearance === "" || (this.rawFails && args.asText === false))) continue;
-        fields[f] = f === "Appearance" && args.asText === false ? { name: this.appName(this.props.Appearance), class: "Appearance", addr: `addr:app${this.props.Appearance}` } : f === "Appearance" ? this.appName(this.props.Appearance) : this.props[f];
+        fields[f] = typeof this.props[f] === "string" && f !== "Appearance" ? this.props[f].trim() : f === "Appearance" && args.asText === false ? { name: this.appName(this.props.Appearance), class: "Appearance", addr: `addr:app${this.props.Appearance}` } : f === "Appearance" ? this.appName(this.props.Appearance) : this.props[f];
       }
       return { total: 1, offset: 0, count: 1, items: [{ name: this.props.Name, class: "RenderQuality", fields }] };
     });
@@ -63,9 +64,13 @@ class Obj {
       else if (this.writable) this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) && Number(v) > 0 ? waitText(Number(v)) : "Follow") : v;
       // Clearing a reference: the property reads nil, and the set op sends no value.
       if (p === "Appearance" && this.props.Appearance === "") return { ref: args.ref, property: p, readOk: true };
-      return { ref: args.ref, property: p, value: p === "Appearance" ? this.appName(this.props[p]) : this.props[p] };
+      // As getProp: the value trimmed, and exact (0.44.0) with the text as stored when trimming changed it.
+      const stored = p === "Appearance" ? this.appName(this.props[p]) : this.props[p];
+      return { ref: args.ref, property: p, value: stored.trim(), ...(stored.trim() !== stored ? { exact: stored } : {}) };
     });
   }
+  /** The owner's read fails at the bridge. */
+  ownerFails = false;
   /** The raw (asText false) read of Appearance raises, so the bridge leaves the field out. */
   rawFails = false;
   /** An owner (a page, for its executors) whose Lock blocks writes to this object. */
@@ -298,11 +303,14 @@ test("set_property: the console's form of a command and a duration's display tex
     o.install(h);
     // A repeated abbreviated request finds its own console form again, unchanged (review of PR #87).
     o.props.Lock = "";
+    // The second reads the same as a refused write would: not an error, and not verified (review of PR #92).
     for (let i = 0; i < 2; i++) {
       r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "go+ seq 1" });
       assert.equal(r.failed, false, JSON.stringify(r.result));
       assert.equal(r.result.value, "Go+ Sequence 1");
+      assert.equal(r.result.verified, i === 0, JSON.stringify(r.result));
     }
+    assert.match(String(r.result.warning), /console's form of "go\+ seq 1", but it did not change/);
     // Locked on that line, the console did not write it, so its form proves nothing: an error naming the lock
     // (review of PR #92: a kept "Echo Sequence" is not "Echo Seq").
     o.props.Lock = "UL";
@@ -404,6 +412,30 @@ test("set_property: StructureLocked, an owner's lock, a repeated clear on a lock
     assert.match(String(r.result.error), /raw read of Appearance returned no value.*unknown/);
     o.rawFails = false;
     o.props.Lock = "";
+    // Spaces count in a text property: " cue " is stored as is and verifies; a kept " cue " is not "cue".
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Note", value: " cue " });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    o.props.Lock = "UL";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Note", value: "cue" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    o.props.Lock = "";
+    // An executor that already has the value on a locked page: verified, with the page's lock in the note.
+    o.owner = { ref: "Page 91", Lock: "UL" };
+    r = await setPropertyChecked(h.bridge, { ref: "Page 91.201", property: "HazeEnabled", value: "No" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    assert.deepEqual(r.result.lockedOwner, { ref: "Page 91", Lock: "UL" });
+    assert.match(String(r.result.note), /Page 91 is locked .*which blocks writes to Page 91\.201, so the console did not take the write itself/);
+    o.owner = null;
+    // A locked macro whose Lock cannot be read keeps "Echo Sequence": not verified, with a warning that says so.
+    o.props.Command = "Echo Sequence";
+    o.owner = { ref: "Macro 1", Lock: "UL" };
+    o.ownerFails = true;
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "Echo Seq" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    assert.equal(r.result.verified, false);
+    assert.match(String(r.result.warning), /Lock of Macro 1 could not be read/);
+    o.owner = null;
+    o.ownerFails = false;
     // A long wait reads in hundredths: 3600.001 reads "1h00m00.00" and is applied.
     r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 3600.001 });
     assert.equal(r.result.value, "1h00m00.00");

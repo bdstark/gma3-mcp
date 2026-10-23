@@ -599,8 +599,8 @@ function TagCodec.decode(text)
   return out
 end
 
--- Read a single property as a JSON-safe value.
-local function getProp(h, name, asText)
+-- Read a single property as a JSON-safe value. Strings are trimmed unless keepSpace is set.
+local function getProp(h, name, asText, keepSpace)
   if type(name) == "string" and name:upper() == "TAGS" then
     local text = TagCodec.text(h)
     if text ~= nil then return TagCodec.decode(text) end
@@ -626,6 +626,7 @@ local function getProp(h, name, asText)
         if nm then return nm end
       end
     end
+    if keepSpace then return v end
     return (v:gsub("^%s+", ""):gsub("%s+$", ""))
   end
   return v
@@ -2839,7 +2840,13 @@ ops.set = function(args)
   -- readOk tells an empty property (a cleared reference reads nil) from a read-back that failed: both send no value
   -- (bridge 0.44.0).
   local newValue, readError = getProp(h, args.property, true)
-  return { ref = args.ref, property = args.property, value = newValue, readOk = readError == nil, readError = readError }
+  -- exact: the text as stored when trimming changed it, for properties whose spaces count (a Note " cue ").
+  local exact
+  if type(newValue) == "string" then
+    exact = getProp(h, args.property, true, true)
+    if exact == newValue then exact = nil end
+  end
+  return { ref = args.ref, property = args.property, value = newValue, exact = exact, readOk = readError == nil, readError = readError }
 end
 
 ops.setfader = function(args)

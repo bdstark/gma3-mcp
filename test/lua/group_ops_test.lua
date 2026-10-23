@@ -193,7 +193,9 @@ do
   r = request("set", { ref = "Appearance 5", property = "Note", value = "" })
   check("set: a property that reads empty after the write is readOk with no value", r.ok and r.result.value == nil and r.result.readOk == true and r.result.readError == nil, J(r))
   r = request("set", { ref = "Appearance 5", property = "Note", value = "new" })
-  check("set: a read-back value is readOk", r.ok and r.result.value == "new" and r.result.readOk == true, J(r))
+  check("set: a read-back value is readOk", r.ok and r.result.value == "new" and r.result.readOk == true and r.result.exact == nil, J(r))
+  r = request("set", { ref = "Appearance 5", property = "Note", value = " cue " })
+  check("set: text with surrounding spaces is trimmed in value and stored as is in exact", r.ok and r.result.value == "cue" and r.result.exact == " cue ", J(r))
   r = request("set", { ref = "Appearance 5", property = "Broken", value = "" })
   check("set: a read-back that raises is not readOk and names the error", r.ok and r.result.value == nil and r.result.readOk == false and tostring(r.result.readError):find("read failed") ~= nil, J(r))
   methods.Set = savedSet

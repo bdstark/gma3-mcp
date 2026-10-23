@@ -159,13 +159,23 @@ export function ownerRefs(ref: string): string[] {
   return owners;
 }
 
-/** The nearest owner whose Lock is set, if any (an unreadable owner counts as not locked). */
-async function lockedOwner(bridge: Gma3Bridge, ref: string): Promise<{ ref: string; lock: unknown } | undefined> {
+/** The nearest owner whose Lock is set, if any; unread: owners whose Lock could not be read (not taken as unlocked). */
+async function lockedOwner(bridge: Gma3Bridge, ref: string): Promise<{ locked?: { ref: string; lock: unknown }; unread: string[] }> {
+  const unread: string[] = [];
   for (const o of ownerRefs(ref)) {
-    const lock = (await readFields(bridge, o, ["Lock"]).catch(() => null))?.Lock;
-    if (isLocked(lock)) return { ref: o, lock };
+    let fields: Record<string, unknown> | null;
+    try {
+      fields = await readFields(bridge, o, ["Lock"]);
+    } catch {
+      unread.push(o);
+      continue;
+    }
+    // Not found: no such owner (Cue 2.5 is a cue number, not a child of Cue 2).
+    if (fields === null) continue;
+    if (fields.Lock === undefined || fields.Lock === null) unread.push(o);
+    else if (isLocked(fields.Lock)) return { locked: { ref: o, lock: fields.Lock }, unread };
   }
-  return undefined;
+  return { unread };
 }
 
 const isLocked = (v: unknown): boolean => typeof v === "string" ? v.trim() !== "" && !/^(no|off|false|0)$/i.test(v.trim()) : v === true;
@@ -203,6 +213,8 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
     repeatedClear = cleared && before !== null && (old === undefined || old === null || text(old) === "");
   }
   const got = lockField ? lockState(res.value) : cleared ? "" : res.value;
+  // A text property compares with the text as stored: the read-back value is trimmed, exact (0.44.0) is not.
+  const asStored = TEXTUAL.test(property) && typeof res.exact === "string" ? res.exact : got;
   // Unchanged means the very same text: any other read-back is a change the console made.
   const unchanged = repeatedClear || (old !== undefined && old !== null && text(got) === text(old));
   const locks = LOCK_FIELDS.filter((f) => f !== lockField && isLocked(before?.[f]));
@@ -215,26 +227,29 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
     const why = err instanceof Error ? err.message : String(err);
     return { result: { ...res, requested: value, before: old ?? null, verified: false, error: `the write was sent, but the read to verify ${property} of ${ref} by its object failed (${why}); whether the console applied ${JSON.stringify(value)} is unknown` }, failed: true };
   }
-  // A kept value with no lock on the object: an owner's Lock (a page's for its executors, a macro's for its lines) may
-  // be what refused it. Read once, when needed.
-  let owner: { ref: string; lock: unknown } | undefined;
-  let ownerRead = false;
-  const readOwner = async () => {
-    if (!ownerRead && unchanged && !locks.length && !lockField) owner = await lockedOwner(bridge, ref);
-    ownerRead = true;
-    return owner;
-  };
-  let applied = byObject ?? sameValue(got, value, property, { consoleForm: false });
-  // The console's form of a command counts only when the console wrote the line: it changed from the one read before,
-  // or it is unchanged on a line nothing locks (a repeated request). A kept "Echo Sequence" is not "Echo Seq".
-  if (!applied && byObject === undefined && sameValue(got, value, property)) applied = old !== undefined && old !== null && (!unchanged || (!locks.length && !(await readOwner())));
-  if (applied) {
-    // Already the requested value: the end state is right, but on a locked object the write itself was refused.
-    const note = unchanged && locks.length ? { note: `${property} already read ${JSON.stringify(old ?? "")}; ${ref} is locked (${locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ")}), so the console did not take the write itself`, locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {};
+  // An unchanged value with no lock on the object: an owner's Lock (a page's for its executors, a macro's for its lines)
+  // may be what refused the write.
+  const owners = unchanged && !locks.length && !lockField ? await lockedOwner(bridge, ref) : { unread: [] as string[] };
+  const owner = owners.locked;
+  const lockText = locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ");
+  const lockInfo = { ...(locks.length ? { locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {}), ...(owner ? { lockedOwner: { ref: owner.ref, Lock: owner.lock } } : {}) };
+  if (byObject ?? sameValue(asStored, value, property, { consoleForm: false })) {
+    // Already the requested value: the end state is right, but on a locked object (or owner) the write itself was
+    // refused.
+    const by = locks.length ? `${ref} is locked (${lockText})` : owner ? `${owner.ref} is locked (Lock = ${JSON.stringify(owner.lock)}), which blocks writes to ${ref}` : "";
+    const note = unchanged && by ? { note: `${property} already read ${JSON.stringify(old ?? "")}; ${by}, so the console did not take the write itself`, ...lockInfo } : {};
     return { result: { ...res, requested: value, verified: true, ...note }, failed: false };
   }
-  const lockText = locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ");
-  await readOwner();
+  // The console's form of a command (abbreviated keywords) shows the console wrote the line only when it changed. An
+  // unchanged one with no lock found reads the same after a repeated request as after a refused one ("Echo Sequence"
+  // kept for "Echo Seq"): not an error, and not verified.
+  if (byObject === undefined && sameValue(asStored, value, property)) {
+    if (old !== undefined && old !== null && !unchanged) return { result: { ...res, requested: value, verified: true }, failed: false };
+    if (unchanged && !locks.length && !owner) {
+      const unread = owners.unread.length ? ` The Lock of ${owners.unread.join(", ")} could not be read.` : "";
+      return { result: { ...res, requested: value, verified: false, warning: `${property} of ${ref} reads ${JSON.stringify(got)}, the console's form of ${JSON.stringify(value)}, but it did not change, so whether the console took this write cannot be seen (a repeated request reads the same).${unread}` }, failed: false };
+    }
+  }
   const unlock = locks.some((f) => !READ_ONLY_LOCKS.includes(f));
   const error = got === undefined || got === null
     ? `${property} of ${ref} could not be read back after the write${typeof res.readError === "string" ? ` (${res.readError})` : ""}; whether the console applied ${JSON.stringify(value)} is unknown`
@@ -247,5 +262,5 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
       : old !== undefined && old !== null
         ? `${property} of ${ref} reads ${JSON.stringify(got)} after the write (it was ${JSON.stringify(old)}), not ${JSON.stringify(value)}: the console put its own value in place of one it does not accept`
       : `${property} of ${ref} reads ${JSON.stringify(got)} after the write, not ${JSON.stringify(value)}; the value before could not be read, so whether the console applied it is unknown`;
-  return { result: { ...res, requested: value, before: old ?? null, verified: false, ...(locks.length ? { locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {}), ...(owner ? { lockedOwner: { ref: owner.ref, Lock: owner.lock } } : {}), error }, failed: true };
+  return { result: { ...res, requested: value, before: old ?? null, verified: false, ...lockInfo, error }, failed: true };
 }
