@@ -749,6 +749,15 @@ r = request("patch.moveCheck", { fids = { 501 }, parent = 999 })
 check("patch.moveCheck refuses a missing parent", r.ok == false and r.code == "no-parent", J(r))
 r = request("patch.moveCheck", { fids = { 501, 501 }, parent = 4 })
 check("patch.moveCheck refuses a FID given twice", r.ok == false and r.code == "bad-args", J(r))
+do
+  local dimLive
+  for _, f in ipairs(allFixtures(console.live)) do if f.FID == 501 then dimLive = f end end
+  local child = fixture("Under Dim", 777, MODE1, ""); child.TypeRef = dimLive.TypeRef
+  table.insert(dimLive.kids, child)
+  r = request("patch.moveCheck", { fids = { 777 }, parent = 4 })
+  check("patch.moveCheck refuses children of a fixture that is not a grouping fixture (PR #89 review)", r.ok == false and r.code == "not-grouping" and r.error:find("parent FID 501") ~= nil, J(r))
+  table.remove(dimLive.kids)
+end
 r = request("patch.moveStep", { fids = { 501 }, parent = 4, stage = "Stage 1", step = "cut", exclusive = true })
 check("patch.moveStep refuses while the copy is closed", r.ok == false and r.code == "copy-closed", J(r))
 
@@ -866,6 +875,15 @@ r = request("dialog.press", { button = "OK", expectText = "Delete everything?", 
 check("dialog.press refuses a dialog with another message", r.ok == false and r.code == "wrong-modal" and console.confirmed == nil, J(r))
 r = request("dialog.press", { button = "Yes", expectTitle = "", exclusive = true })
 check("dialog.press refuses a button the dialog does not have", r.ok == false and r.code == "no-button" and console.confirmed == nil, J(r))
+do
+  local box = console.modal
+  local broken = ui("UIObject", "Broken")
+  broken.UIChildren = function() error("UI tree not readable") end
+  box.kids[1].kids[#box.kids[1].kids + 1] = broken
+  r = request("dialog.press", { button = "OK", expectTitle = "", exclusive = true })
+  check("dialog.press refuses a dialog that could only be read in part (PR #89 review)", r.ok == false and r.code == "modal-unknown" and console.confirmed == nil, J(r))
+  table.remove(box.kids[1].kids)
+end
 r = request("dialog.press", { button = "OK", expectTitle = "", expectText = "Are you  sure you want to overwrite\npositions?", exclusive = true })
 check("dialog.press clicks OK (the message compared with whitespace collapsed)", r.ok and r.result.clicked == "OK" and console.confirmed == "OK" and console.modal == false, J(r))
 

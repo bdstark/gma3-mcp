@@ -6147,6 +6147,7 @@ end)()
     local md, m, why = topModal()
     if why then raise("[modal-unknown] the dialog cannot be read (" .. why .. "); nothing was clicked") end
     if not md then raise("[no-modal] no dialog is open; nothing was clicked") end
+    if md.incomplete then raise("[modal-unknown] the dialog could only be read in part (" .. md.incomplete .. "); nothing was clicked") end
     if args.expectClass ~= nil and md.class ~= args.expectClass then raise("[wrong-modal] the open dialog is a " .. tostring(md.class) .. ", not a " .. tostring(args.expectClass) .. "; nothing was clicked") end
     if args.expectTitle ~= nil and (md.title or "") ~= args.expectTitle then raise("[wrong-modal] the open dialog's title is " .. tostring(md.title) .. ", not " .. tostring(args.expectTitle) .. "; nothing was clicked") end
     if args.expectText ~= nil and squash(md.text or "") ~= squash(args.expectText) then raise("[wrong-modal] the open dialog's message is " .. tostring(md.text) .. ", not the one expected; nothing was clicked") end
@@ -6218,6 +6219,10 @@ end)()
     end
     local source = srcFid and by[srcFid] or nil
     if source and source.depth ~= 0 then raise("[nested] the fixtures' parent FID " .. srcFid .. " is inside another fixture; only top-level grouping fixtures are supported") end
+    if source then
+      local sn = typeName(source.fixture)
+      if sn ~= "Grouping" then raise("[not-grouping] the fixtures' parent FID " .. srcFid .. " is a " .. tostring(sn) .. ", not a grouping fixture; moving the children of other fixtures is not supported") end
+    end
     local target
     if parentFid then
       if seen[parentFid] then raise("[bad-args] the parent FID " .. parentFid .. " is one of the fixtures") end
@@ -6329,6 +6334,7 @@ end)()
     local md, m, why = topModal()
     if why then raise("[modal-unknown] the dialog cannot be read (" .. why .. "); nothing was clicked") end
     if not md then raise("[no-modal] no dialog is open; nothing was clicked") end
+    if md.incomplete then raise("[modal-unknown] the dialog could only be read in part (" .. md.incomplete .. "); nothing was clicked") end
     if not isMoveDialog(md) then raise({ code = "wrong-modal", message = "the open dialog is not the console's Move Fixtures question (" .. tostring(md.title) .. "); nothing was clicked", modal = md }) end
     local xy = click(md, m, args.button)
     return { clicked = args.button, title = md.title, display = md.display, at = xy }

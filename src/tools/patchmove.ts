@@ -346,6 +346,9 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
       }
       if ((r.parentFid ?? undefined) !== want) mismatches.push(`FID ${fid}: parent ${r.parentFid ?? "none (top level)"}, expected ${want ?? "none (top level)"}`);
       if (o && (r.patch ?? "") !== (o.patch ?? "")) mismatches.push(`FID ${fid}: address ${JSON.stringify(r.patch ?? "")}, was ${JSON.stringify(o.patch ?? "")}`);
+      // Every DMX break, not only the first (the patch text): a multi-break fixture keeps all of them.
+      const brk = (x?: FixtureRow) => (x?.breaks ?? []).map((b) => `${b.break}=${b.address}`).join(",");
+      if (o && brk(r) !== brk(o)) mismatches.push(`FID ${fid}: breaks [${brk(r)}], were [${brk(o)}]`);
       if (o && r.name !== o.name) mismatches.push(`FID ${fid}: name ${JSON.stringify(r.name)}, was ${JSON.stringify(o.name)}`);
     }
     // Groups

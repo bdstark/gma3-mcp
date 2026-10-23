@@ -208,7 +208,7 @@ The isolation check leaves out the moved FIDs and compares fixtures without thei
 (`fixturePositions: false`, bridge 0.40.0): taking fixtures out of a list renumbers the ones after them. The order of
 every other fixture is still compared.
 
-Read-back, against the state before the session: each fixture's parent, address and name (`patch.list`), its groups
+Read-back, against the state before the session: each fixture's parent, address (every DMX break) and name (`patch.list`), its groups
 (`patch.groupsOf`: every group, in every data pool, whose selection holds the fixture or one of its cells, named
 `<data pool>.<group>`; a group with an entry that
 resolves to no (sub)fixture is reported unreadable, never as not holding them), and its 3D pose (`objects`):

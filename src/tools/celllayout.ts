@@ -468,6 +468,9 @@ async function layoutCellsLocked(ctx: ToolContext, job: LayoutJob): Promise<Oper
 export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unknown>, op = "assign_cell_layout"): Promise<OperationResult> {
   const v = new Validator();
   const fids = Array.isArray(raw.fixtures) && raw.fixtures.length ? raw.fixtures.map((x, i) => v.check(() => finiteNumber(`fixtures[${i}]`, x, { integer: true, min: 1 })) ?? 0) : (v.fail("fixtures must list FIDs"), []);
+  // A FID given twice would be recorded twice by the bridge's retype, and its rollback would re-apply the new type.
+  const twice = fids.filter((f, i) => f > 0 && fids.indexOf(f) !== i);
+  if (twice.length) v.fail(`fixtures lists FID ${[...new Set(twice)].join(", ")} more than once`);
   const type = typeof raw.type === "number" || (typeof raw.type === "string" && raw.type.trim()) ? raw.type : (v.fail("type (number or name) is required"), undefined);
   if (raw.exclusive !== true) v.fail("exclusive must be true: the fixtures are moved to another fixture type in a patch session, committed with no undo");
   const target = { fixtures: raw.fixtures, type: raw.type };

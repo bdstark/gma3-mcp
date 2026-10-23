@@ -86,6 +86,8 @@ export async function pressDialog(ctx: ToolContext, raw: PressArgs): Promise<Ope
     const d = before.modal;
     const problem = !d
       ? "no dialog is open"
+      : d.incomplete
+        ? `the dialog could only be read in part (${d.incomplete}), so it cannot be identified`
       : title !== undefined && (d.title ?? "") !== title
         ? `the open dialog's title is ${JSON.stringify(d.title ?? "")}, not ${JSON.stringify(title)}`
         : text !== undefined && (d.text ?? "").replace(/\s+/g, " ").trim() !== text.replace(/\s+/g, " ").trim()
@@ -126,8 +128,10 @@ export async function pressDialog(ctx: ToolContext, raw: PressArgs): Promise<Ope
       }
       if (!after.modal || !sameDialog(after.modal, d)) break;
     }
-    const state = !after ? "unknown" : !after.modal ? "closed" : sameDialog(after.modal, d) ? "still_open" : "replaced";
-    steps.push(asRead({ name: "read_after", status: after ? "succeeded" : "unknown", op: "dialog.read", ...(after ? { detail: after } : { error: readError }) }));
+    // Only the last poll counts: an earlier snapshot followed by failed reads is stale (the dialog may have closed since).
+    const lastOk = after !== undefined && readError === undefined;
+    const state = !lastOk ? "unknown" : !after!.modal ? "closed" : sameDialog(after!.modal, d) ? "still_open" : "replaced";
+    steps.push(asRead({ name: "read_after", status: lastOk ? "succeeded" : "unknown", op: "dialog.read", ...(lastOk ? { detail: after } : { error: readError, detail: { staleSnapshot: after ?? null } }) }));
     const checked = `the dialog after pressing ${JSON.stringify(button)}`;
     const verification: Verification =
       state === "closed"
@@ -151,7 +155,7 @@ export async function pressDialog(ctx: ToolContext, raw: PressArgs): Promise<Ope
               ? `Clicked ${JSON.stringify(button)} on ${describeDialog(d)}, but the dialog is still open.`
               : `Clicked ${JSON.stringify(button)}; the dialog could not be read afterwards.`,
       warnings: ["what a dialog button does has no undo from here"],
-      extra: { dialog: d, after: after?.modal ?? null, state, lastCommand: after?.lastCommand ?? null },
+      extra: { dialog: d, after: lastOk ? (after?.modal ?? null) : null, state, lastCommand: lastOk ? (after?.lastCommand ?? null) : null },
     });
     return result;
   });

@@ -84,6 +84,33 @@ test("gma3_dialog press: a dialog that stays open is a mismatch; one that is rep
   }
 });
 
+test("gma3_dialog press: a dialog read only in part is refused; failed reads after the click make the state unknown (PR #89 review)", async () => {
+  const h = await startHarness(registerDialogTools);
+  try {
+    h.fake.on("dialog.read", () => ({ open: true, modal: { ...CONFIRM, incomplete: "UI tree not readable" } }));
+    let pressed = 0;
+    h.fake.on("dialog.press", () => {
+      pressed += 1;
+      return { clicked: "OK" };
+    });
+    const part = await h.callJson("gma3_dialog", { action: "press", button: "OK", expect_title: "", exclusive: true });
+    assert.match(part.result.summary, /could only be read in part/);
+    assert.equal(pressed, 0);
+    let reads = 0;
+    h.fake.on("dialog.read", () => {
+      reads += 1;
+      if (reads <= 2) return { open: true, modal: CONFIRM };
+      throw new Error("bridge busy");
+    });
+    const stale = await h.callJson("gma3_dialog", { action: "press", button: "OK", expect_title: "", exclusive: true });
+    assert.equal(stale.result.state, "unknown");
+    assert.equal(stale.result.verification.status, "unavailable");
+    assert.equal(stale.result.after, null);
+  } finally {
+    await h.close();
+  }
+});
+
 test("gma3_dialog press on an older bridge says so", async () => {
   const h = await startHarness(registerDialogTools);
   try {

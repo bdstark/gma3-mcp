@@ -50,6 +50,8 @@ class MoveWorld {
   dropGroup = false;
   /** The paste is queued but its reply is lost. */
   pasteSilent = false;
+  /** The move clears a fixture's second DMX break. */
+  dropBreak2 = false;
   answered: string[] = [];
 
   frame() {
@@ -213,7 +215,8 @@ class MoveWorld {
   }
 
   row(x: Fx) {
-    return { fid: x.fid, name: x.name, patch: x.patch, ...(x.parent !== null ? { parentFid: x.parent } : {}), stage: "Stage 1", depth: x.parent === null ? 0 : 1, subfixtures: 0 };
+    const breaks = [{ break: 1, address: x.patch }, ...(x.fid === 101 && !(this.dropBreak2 && x.parent !== null) ? [{ break: 2, address: "2.001" }] : [])].filter((b) => b.address);
+    return { fid: x.fid, name: x.name, patch: x.patch, breaks, ...(x.parent !== null ? { parentFid: x.parent } : {}), stage: "Stage 1", depth: x.parent === null ? 0 : 1, subfixtures: 0 };
   }
 }
 
@@ -376,6 +379,30 @@ test("gma3_patch_move: a paste without a reply still has its Move Fixtures dialo
     assert.ok(stepNames(result).includes("cancel_dialog:succeeded"), JSON.stringify(stepNames(result)));
     assert.equal(result.copyLeftOpen, false);
     assert.equal(w.live.find((x) => x.fid === 101)!.parent, null);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_move: a second DMX break lost in the move is a read-back mismatch (PR #89 review)", async () => {
+  const { h, w } = await setup();
+  try {
+    w.dropBreak2 = true;
+    const { result } = await h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true });
+    assert.equal(result.verification.status, "mismatched");
+    assert.match(result.verification.detail, /FID 101: breaks \[1=1\.001\], were \[1=1\.001,2=2\.001\]/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_retype: a FID given twice is refused before anything is sent (PR #89 review)", async () => {
+  const h = await startHarness(registerPatchMoveTools);
+  try {
+    const { result, isError } = await h.callJson("gma3_patch_retype", { fixtures: [101, 102, 101], type: 19, exclusive: true });
+    assert.equal(isError, true);
+    assert.match(result.summary, /FID 101 more than once/);
+    assert.equal(h.fake.requests.length, 0);
   } finally {
     await h.close();
   }
