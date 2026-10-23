@@ -280,6 +280,25 @@ test("set_property: the console's form of a command and a duration's display tex
     o.props.Command = "Echo Xyzzy";
     r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "Echo xyz" });
     assert.equal(r.failed, true, JSON.stringify(r.result));
+    // ... nor when the read before the write failed, so nothing shows the line did not change (review of PR #92).
+    h.fake.on("objects", () => {
+      throw new Error("request timed out");
+    });
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "Echo Xyz" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    o.install(h);
+    // A repeated abbreviated request finds its own console form again, unchanged (review of PR #87).
+    o.props.Lock = "";
+    for (let i = 0; i < 2; i++) {
+      r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "go+ seq 1" });
+      assert.equal(r.failed, false, JSON.stringify(r.result));
+      assert.equal(r.result.value, "Go+ Sequence 1");
+    }
+    // Locked on that line: the end state is right, and the note names the lock.
+    o.props.Lock = "UL";
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "go+ seq 1" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    assert.match(String(r.result.note), /locked \(Lock = "UL"\)/);
     o.props.Lock = "";
     o.props.Appearance = "8";
     // A bridge failure while resolving the requested object leaves the result unknown, never a match.
@@ -313,6 +332,8 @@ test("sameValue ignores case, spacing, number format and Yes/No spellings, not t
   assert.ok(!consoleForm('Echo "a b"', 'echo "A b"'), "quoted text compares exactly");
   assert.ok(!consoleForm("Go+ Sequence 1", "go+ macro 1"), "another keyword is not an abbreviation");
   assert.ok(!consoleForm("Echo xyzzy", "Echo xyz"), "a literal argument compares exactly");
+  assert.ok(!consoleForm("Echo Xyzzy", "Echo Xyz"), "a capitalised literal argument is not a keyword");
+  assert.ok(consoleForm("ClearAll; Label Executor 201 \"Gobo\"", "cleara; lab exec 201 \"Gobo\""), "keywords from the list");
   assert.ok(!sameValue("Follow", "abc", "Wait"));
   assert.ok(!sameValue("1h00m00.00", 3599, "Wait"));
 });

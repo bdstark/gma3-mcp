@@ -9,6 +9,7 @@
  * not, even when it changed: the console coerces a value it does not accept (an invalid macro-line Wait reads Follow).
  */
 import type { Gma3Bridge } from "../bridge.js";
+import { COMMAND_KEYWORDS } from "./commandkeywords.js";
 import { readFields, readObjects } from "./common.js";
 import { displaySeconds, tokenize } from "./macros.js";
 
@@ -35,9 +36,9 @@ const TEXTUAL = /^(name|note|label|text|description|comment|title|command|path|f
  * spacing, number format and Yes/No spellings aside: a property set from a boolean or a number, or one whose name is
  * not a text field (HazeEnabled "Yes" for true, FadeTime "2.500" for 2.5, Trigger "Follow" for "follow").
  */
-export function sameValue(got: unknown, want: unknown, property = "", opts: { consoleForm?: boolean } = {}): boolean {
+export function sameValue(got: unknown, want: unknown, property = ""): boolean {
   const exactA = text(got);
-  if (/^command$/i.test(property)) return exactA !== undefined && (exactA === String(want) || (opts.consoleForm !== false && consoleForm(exactA, String(want))));
+  if (/^command$/i.test(property)) return exactA !== undefined && (exactA === String(want) || consoleForm(exactA, String(want)));
   // A macro line's Wait 0 is Follow (SB-07); any other text still has to match.
   if (/^wait$/i.test(property) && /^follow$/i.test(exactA ?? "") && (want === 0 || String(want).trim() === "0")) return true;
   if (TEXTUAL.test(property)) return exactA !== undefined && exactA === String(want);
@@ -67,9 +68,10 @@ export function sameValue(got: unknown, want: unknown, property = "", opts: { co
 /**
  * The console's form of a command line (SB-07: "go+ seq 1" is stored as "Go+ Sequence 1", "store cue 5 /merge /nc" as
  * "Store Cue 5 /Merge /NoConfirmation"): the same statements and tokens, quoted text and numbers exactly. A word may
- * differ only where the console wrote a keyword or option (capitalised: "Sequence", "/NoConfirmation") that the sent
- * word abbreviates (its letters in order, from the first); other words are literal arguments ("Echo xyzzy") and compare
- * exactly.
+ * differ only where the console wrote a command keyword (COMMAND_KEYWORDS: "Sequence", not "Xyzzy") or an option
+ * ("/NoConfirmation"), capitalised, that the sent word abbreviates (its letters in order, from the first); other words
+ * are literal arguments ("Echo xyzzy", "Echo Xyzzy") and compare exactly. So a kept line is never taken for the
+ * spelling of another request, and a repeated request finds its own console form again.
  */
 export function consoleForm(stored: string, sent: string): boolean {
   const a = tokenize(stored);
@@ -87,7 +89,8 @@ export function consoleForm(stored: string, sent: string): boolean {
     const want = b[i][j];
     if (tok === want) return true;
     if (/^["']/.test(tok) || /^["']/.test(want) || /^[\d.]+$/.test(tok) || /^[\d.]+$/.test(want)) return false;
-    return /^\/?[A-Z]/.test(tok) && abbreviates(tok, want);
+    const keyword = tok.startsWith("/") ? /^\/[A-Z]/.test(tok) && want.startsWith("/") : /^[A-Z]/.test(tok) && COMMAND_KEYWORDS.has(tok.toLowerCase());
+    return keyword && abbreviates(tok, want);
   }));
 }
 
@@ -165,9 +168,7 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
     const why = err instanceof Error ? err.message : String(err);
     return { result: { ...res, requested: value, before: old ?? null, verified: false, error: `the write was sent, but the read to verify ${property} of ${ref} by its object failed (${why}); whether the console applied ${JSON.stringify(value)} is unknown` }, failed: true };
   }
-  // The console's form of a command counts only when the line changed: a kept line ("Echo xyzzy", locked) is never taken
-  // for the spelling of another request.
-  if (byObject ?? sameValue(got, value, property, { consoleForm: !unchanged })) {
+  if (byObject ?? sameValue(got, value, property)) {
     // Already the requested value: the end state is right, but on a locked object the write itself was refused.
     const note = unchanged && locks.length ? { note: `${property} already read ${JSON.stringify(old)}; ${ref} is locked (${locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ")}), so the console did not take the write itself`, locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {};
     return { result: { ...res, requested: value, verified: true, ...note }, failed: false };
