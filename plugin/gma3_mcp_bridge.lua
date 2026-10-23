@@ -2839,12 +2839,14 @@ ops.set = function(args)
   if not ok then error("Set failed: " .. tostring(err)) end
   -- readOk tells an empty property (a cleared reference reads nil) from a read-back that failed: both send no value
   -- (bridge 0.44.0).
-  local newValue, readError = getProp(h, args.property, true)
-  -- exact: the text as stored when trimming changed it, for properties whose spaces count (a Note " cue ").
+  -- One read, as stored; value is trimmed as everywhere else, and exact is the stored text when trimming changed it,
+  -- for properties whose spaces count (a Note " cue ").
+  local newValue, readError = getProp(h, args.property, true, true)
   local exact
   if type(newValue) == "string" then
-    exact = getProp(h, args.property, true, true)
-    if exact == newValue then exact = nil end
+    local trimmed = newValue:gsub("^%s+", ""):gsub("%s+$", "")
+    if trimmed ~= newValue then exact = newValue end
+    newValue = trimmed
   end
   return { ref = args.ref, property = args.property, value = newValue, exact = exact, readOk = readError == nil, readError = readError }
 end

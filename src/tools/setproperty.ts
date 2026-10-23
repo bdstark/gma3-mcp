@@ -109,24 +109,26 @@ export function consoleForm(stored: string, sent: string): boolean {
  * the reference that was sent ("Appearance 3", 3): the request is resolved to its object and compared by address.
  */
 async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: unknown, property: string): Promise<boolean | undefined> {
-  // undefined: not a reference (by its shape, or the property holds no object), so the text comparison decides.
+  // undefined: the property holds no object, so the text comparison decides.
+  if (TEXTUAL.test(property) || got === null || got === undefined || text(got) === "") return undefined;
   // A reference is a keyword and a number or a quoted name (Appearance 3, Appearance "Red"), or the number or quoted
   // name alone (3, "Red") in the class of the object the property holds.
-  if (typeof want === "boolean" || TEXTUAL.test(property) || got === null || got === undefined) return undefined;
   const w = String(want).trim();
-  const keyed = /^[A-Za-z][A-Za-z ]*\s+(\d+(\.\d+)*|"[^"]+")$/.test(w);
-  if (!keyed && !/^(\d+(\.\d+)*|"[^"]+")$/.test(w)) return undefined;
-  // First, does the property hold an object? Its current one, as a handle summary (the read-back text is a name).
-  // Bridge errors propagate: a failed read must not decide either way (readFields / readObjects give null only for
-  // "not found").
+  const keyed = typeof want === "string" && /^[A-Za-z][A-Za-z ]*\s+(\d+(\.\d+)*|"[^"]+")$/.test(w);
+  const bare = typeof want !== "boolean" && /^(\d+(\.\d+)*|"[^"]+")$/.test(w);
+  // First, does the property hold an object, whatever the request? Its current one, as a handle summary (the read-back
+  // text is a name). Bridge errors propagate: a failed read must not decide either way (readFields / readObjects give
+  // null only for "not found").
   const isHandle = (v: unknown) => typeof v === "object" && v !== null && typeof (v as { addr?: unknown }).addr === "string";
   const current = isHandle(got) ? got : (await readFields(bridge, ref, [property], { asText: false }))?.[property];
   // The bridge leaves out a field whose read raised (childSummary), so no raw value where the text read-back had one is
   // a failed read: unknown, never a fall back to the display name (a kept object can be named "Appearance 7").
-  if ((current === undefined || current === null) && text(got) !== "") throw new Error(`the raw read of ${property} returned no value`);
+  if (current === undefined || current === null) throw new Error(`the raw read of ${property} returned no value`);
   if (!isHandle(current)) return undefined;
+  // A reference property: a request that does not name one object (true, an unsupported form) is not applied, never
+  // compared with the display name (a kept appearance can be named "Yes").
   const cls = (current as { class?: unknown }).class;
-  if (!keyed && (typeof cls !== "string" || !/^[A-Za-z]+$/.test(cls))) return undefined;
+  if (!keyed && !(bare && typeof cls === "string" && /^[A-Za-z]+$/.test(cls))) return false;
   const res = await readObjects(bridge, keyed ? w : `${cls} ${w}`, [], 2, { asText: false });
   const items = res?.items ?? [];
   // A request that names no single object is not applied, even when the current object is named like it.
@@ -226,7 +228,7 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   // requested reference (Appearance 3 named "Appearance 5").
   let byObject: boolean | undefined;
   try {
-    byObject = await sameObject(bridge, ref, got, value, property);
+    byObject = lockField ? undefined : await sameObject(bridge, ref, got, value, property);
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     return { result: { ...res, requested: value, before: old ?? null, verified: false, error: `the write was sent, but the read to verify ${property} of ${ref} by its object failed (${why}); whether the console applied ${JSON.stringify(value)} is unknown` }, failed: true };

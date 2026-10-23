@@ -183,12 +183,13 @@ SelectionFirst = realFirst
 -- ops.set says whether its read-back worked: a cleared property and a failed read both send no value (bridge 0.44.0,
 -- gma3_set_property).
 do
-  local obj = H({ name = "Settable", class = "Appearance", no = 5, props = { Note = "old", Broken = function() error("read failed") end } })
+  local reads = 0
+  local obj = H({ name = "Settable", class = "Appearance", no = 5, props = { Note = "old", Broken = function() error("read failed") end, Counted = function() reads = reads + 1; return " cue " end } })
   objects["Appearance 5"] = obj
   local savedSet = methods.Set
   methods.Set = function(u, k, v)
     local key = tostring(k):lower()
-    if key ~= "broken" then registry[u].props[key] = (v ~= "" and v or nil) end
+    if key ~= "broken" and key ~= "counted" then registry[u].props[key] = (v ~= "" and v or nil) end
   end
   r = request("set", { ref = "Appearance 5", property = "Note", value = "" })
   check("set: a property that reads empty after the write is readOk with no value", r.ok and r.result.value == nil and r.result.readOk == true and r.result.readError == nil, J(r))
@@ -196,6 +197,8 @@ do
   check("set: a read-back value is readOk", r.ok and r.result.value == "new" and r.result.readOk == true and r.result.exact == nil, J(r))
   r = request("set", { ref = "Appearance 5", property = "Note", value = " cue " })
   check("set: text with surrounding spaces is trimmed in value and stored as is in exact", r.ok and r.result.value == "cue" and r.result.exact == " cue ", J(r))
+  r = request("set", { ref = "Appearance 5", property = "Counted", value = "cue" })
+  check("set: value and exact come from one read, so a second read cannot fail unseen", r.ok and reads == 1 and r.result.value == "cue" and r.result.exact == " cue " and r.result.readOk == true, J(r) .. " reads=" .. tostring(reads))
   r = request("set", { ref = "Appearance 5", property = "Broken", value = "" })
   check("set: a read-back that raises is not readOk and names the error", r.ok and r.result.value == nil and r.result.readOk == false and tostring(r.result.readError):find("read failed") ~= nil, J(r))
   methods.Set = savedSet

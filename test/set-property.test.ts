@@ -440,6 +440,16 @@ test("set_property: StructureLocked, an owner's lock, a repeated clear on a lock
     assert.match(String(r.result.warning), /Lock of Macro 1 could not be read/);
     o.owner = null;
     o.ownerFails = false;
+    // A reference property decides by object whatever the request: true names no appearance, so a kept one named
+    // "Yes" is not taken for it (review of PR #92).
+    o.appNames["10"] = "Yes";
+    o.props.Appearance = "10";
+    o.props.Lock = "UL";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: true });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Yes" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    o.props.Lock = "";
     // A long wait reads in hundredths: 3600.001 reads "1h00m00.00" and is applied.
     r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 3600.001 });
     assert.equal(r.result.value, "1h00m00.00");
