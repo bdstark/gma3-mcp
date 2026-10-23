@@ -42,7 +42,8 @@ test("gma3_dialog press: checks the dialog, presses by text, reports it closed",
     assert.equal(isError, false, JSON.stringify(result, null, 2));
     assert.equal(result.state, "closed");
     assert.equal(result.verification.status, "matched");
-    assert.deepEqual(pressed, [{ button: "OK", exclusive: true, expectTitle: "", expectText: "Are you sure you want to   overwrite positions?" }]);
+    // The bridge gets the whole dialog the server read, not only the caller's expectations (PR #89 review).
+    assert.deepEqual(pressed, [{ button: "OK", exclusive: true, expectClass: "MessageBox", expectTitle: "", expectText: CONFIRM.text }]);
     assert.match(result.summary, /Pressed "OK" on "Are you sure/);
   } finally {
     await h.close();

@@ -6364,15 +6364,22 @@ end)()
       if not okD or type(data) ~= "table" then unreadable[#unreadable + 1] = safeProp(g, "no")
       else
         scanned = scanned + 1
-        local hit = {}
+        local hit, unresolved = {}, false
         for _, e in ipairs(data) do
           entries = entries + 1
           if entries > GROUPS_MAX_ENTRIES then truncated = true; break end
-          if type(e) == "table" and type(e.sf_index) == "number" then
-            local okS, sf = callApi("GetSubfixture", e.sf_index)
-            if okS and isObj(sf) then local fid = ownerIn(sf, want); if fid then hit[fid] = true end end
+          -- An entry that cannot be resolved to a (sub)fixture could be one of the fixtures: the group is unreadable,
+          -- never "does not hold them".
+          local okS, sf = false, nil
+          if type(e) == "table" and type(e.sf_index) == "number" then okS, sf = callApi("GetSubfixture", e.sf_index) end
+          if okS and isObj(sf) then
+            local fid = ownerIn(sf, want)
+            if fid then hit[fid] = true end
+          else
+            unresolved = true
           end
         end
+        if unresolved then unreadable[#unreadable + 1] = safeProp(g, "no") end
         for fid in pairs(hit) do table.insert(out[tostring(fid)], safeProp(g, "no")) end
       end
     end

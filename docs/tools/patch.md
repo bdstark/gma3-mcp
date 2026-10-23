@@ -200,7 +200,8 @@ to 3 s) before the next one:
 | `move_answer`, `wait_paste` | `patch.moveAnswer` | Clicks Absolute or Relative on that dialog, and only on a dialog with that title and message; waits for `OK: Paste …` with every fixture under the target |
 
 Any other dialog stops the move and is left alone. When a step fails after the paste and the Move Fixtures dialog is
-still open, the tool clicks Cancel (`cancel_dialog`), which moves nothing, so the copy can be closed unchanged. If the
+still open, the tool clicks Cancel (`cancel_dialog`), which moves nothing, so the copy can be closed unchanged. A
+paste without a reply may still have been queued: the tool waits for its dialog and cancels it the same way. If the
 console pastes without asking, the result says `dialog: "not_shown"` and the read-back still checks the pose.
 
 The isolation check leaves out the moved FIDs and compares fixtures without their number in their list
@@ -208,7 +209,8 @@ The isolation check leaves out the moved FIDs and compares fixtures without thei
 every other fixture is still compared.
 
 Read-back, against the state before the session: each fixture's parent, address and name (`patch.list`), its groups
-(`patch.groupsOf`: every group whose selection holds the fixture or one of its cells), and its 3D pose (`objects`):
+(`patch.groupsOf`: every group whose selection holds the fixture or one of its cells; a group with an entry that
+resolves to no (sub)fixture is reported unreadable, never as not holding them), and its 3D pose (`objects`):
 `absolute` compares the world pose (the parent's position and rotation applied; mesh mirroring and scale are not
 considered), `relative` the pose relative to the parent, within 1 mm and by quaternion. A part that cannot be read
 makes the verification `unavailable` and names it; the result's `fixtures` lists each fixture's parent, address,

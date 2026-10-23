@@ -34,7 +34,7 @@ named `Text`), `display`, and `buttons` with their `text` and `enabled`, in scre
 | Step | Kind | Bridge op | What it does |
 | --- | --- | --- | --- |
 | `read_dialog` | read | `dialog.read` | A dialog is open with the expected title and/or message, and the button is there and enabled; otherwise nothing is sent |
-| `press` | mutation | `dialog.press` | The bridge reads the top modal again and compares class, title and message once more, then clicks the one visible, enabled button with that text at its centre with `Mouse(display, "move" / "press" / "release")`. Two buttons with the same text are refused |
+| `press` | mutation | `dialog.press` | The bridge reads the top modal again and compares it with the whole dialog `read_dialog` saw (class, title and message, not only the caller's expectations), then clicks the one visible, enabled button with that text at its centre with `Mouse(display, "move" / "press" / "release")`. Two buttons with the same text are refused |
 | `read_after` | read | `dialog.read` | Polls (100 ms, up to 1.5 s) until the dialog closed or another took its place |
 
 `state` is `closed`, `replaced` (another dialog is open now: read it again), `still_open` (verification `mismatched`) or

@@ -882,7 +882,10 @@ local grpB = obj("Group", "B", 9, { { "SELECTIONDATA", { { sf_index = 2 }, { sf_
 local grpC = obj("Group", "C", 11, { { "SELECTIONDATA", { { sf_index = 3 } } } })
 DataPool = function() return { Groups = obj("Groups", "Groups", 1, {}, { grpA, grpB, grpC }) } end
 r = request("patch.groupsOf", { fids = { 401, 501, 402 } })
-check("patch.groupsOf: fixtures and cells, by group number", r.ok and J(r.result.groups["501"]) == "[7,9]" and J(r.result.groups["401"]) == "[9]" and J(r.result.groups["402"]) == "[]" and r.result.scanned == 3 and r.result.truncated == false, J(r))
+check("patch.groupsOf: fixtures and cells, by group number", r.ok and J(r.result.groups["501"]) == "[7,9]" and J(r.result.groups["401"]) == "[9]" and J(r.result.groups["402"]) == "[]" and r.result.scanned == 3 and r.result.truncated == false and #r.result.unreadable == 0, J(r))
+grpC.pv.SELECTIONDATA = { { sf_index = 3 }, { sf_index = 42 }, { grid = {} } }
+r = request("patch.groupsOf", { fids = { 401, 501, 402 } })
+check("patch.groupsOf: a group with an entry that resolves to no (sub)fixture is unreadable, not empty (PR #89 review)", r.ok and J(r.result.unreadable) == "[11]", J(r))
 
 print(string.format("%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) end

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
-import { BridgeReplyError } from "./helpers/fake-bridge.js";
+import { BridgeReplyError, SILENT } from "./helpers/fake-bridge.js";
 import { registerPatchMoveTools, samePose, worldPose } from "../src/tools/patchmove.js";
 
 /**
@@ -48,6 +48,8 @@ class MoveWorld {
   answerError = false;
   /** The move drops a group membership. */
   dropGroup = false;
+  /** The paste is queued but its reply is lost. */
+  pasteSilent = false;
   answered: string[] = [];
 
   frame() {
@@ -146,6 +148,7 @@ class MoveWorld {
             this.moveDialog = true;
           }
         });
+        if (this.pasteSilent) return SILENT;
       }
       return { step: args.step, commands };
     });
@@ -358,6 +361,21 @@ test("gma3_patch_move: a refused answer cancels the Move Fixtures dialog; nothin
     assert.equal(result.copyLeftOpen, false);
     assert.equal(w.live.find((x) => x.fid === 101)!.parent, null);
     assert.equal(w.copy, null);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_move: a paste without a reply still has its Move Fixtures dialog cancelled (PR #89 review)", async () => {
+  const { h, w } = await setup();
+  try {
+    w.pasteSilent = true;
+    const { result } = await h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true });
+    assert.equal(result.outcome, "unknown");
+    assert.deepEqual(w.answered, ["Cancel"]);
+    assert.ok(stepNames(result).includes("cancel_dialog:succeeded"), JSON.stringify(stepNames(result)));
+    assert.equal(result.copyLeftOpen, false);
+    assert.equal(w.live.find((x) => x.fid === 101)!.parent, null);
   } finally {
     await h.close();
   }

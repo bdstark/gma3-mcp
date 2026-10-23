@@ -100,7 +100,9 @@ export async function pressDialog(ctx: ToolContext, raw: PressArgs): Promise<Ope
 
     let press: StepResult;
     try {
-      const res = await bridge.request("dialog.press", { button, exclusive: true, ...(title !== undefined ? { expectTitle: title } : {}), ...(text !== undefined ? { expectText: text } : {}) }, t);
+      // The bridge checks the whole dialog just read (class, title and message), not only the caller's expectations: a
+      // dialog replaced in between by another with the same title is never answered.
+      const res = await bridge.request("dialog.press", { button, exclusive: true, ...(d.class !== undefined ? { expectClass: d.class } : {}), expectTitle: d.title ?? "", expectText: d.text ?? "" }, t);
       press = { name: "press", status: "succeeded", op: "dialog.press", detail: res };
     } catch (err) {
       press = stepFromError("press", err, { op: "dialog.press" });

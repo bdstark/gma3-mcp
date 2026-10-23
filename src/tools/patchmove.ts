@@ -218,13 +218,7 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
     const wt = await poll("wait_target", "reaching the target", (s) => otherModal(s) || s.atTarget);
     steps.push(wt.step);
     if (wt.step.status !== "succeeded") return stop();
-    // move_paste: the dialog, or (if the console asks nothing) the fixtures under the target
-    const paste = await step("move_paste", "paste");
-    steps.push(paste);
-    if (paste.status !== "succeeded") return stop();
-    const pasteCmd = (paste.detail as { commands: string[] }).commands[0];
-    const wp = await poll("wait_dialog", "the Move Fixtures dialog (or the paste)", (s) => otherModal(s) || failedCommand(s, wt.state?.lastCommand, pasteCmd) || s.moveDialog || (!s.modal && s.underTarget === s.count && s.lastCommand === `OK: ${pasteCmd}`));
-    steps.push(wp.step);
+    // Cancels the Move Fixtures dialog if it is open (and only that dialog: patch.moveAnswer checks it).
     const cleanup = async (why: string) => {
       let open = false;
       try {
@@ -241,6 +235,20 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
         steps.push(stepFromError("cancel_dialog", err, { op: "patch.moveAnswer" }));
       }
     };
+    // move_paste: the dialog, or (if the console asks nothing) the fixtures under the target
+    const paste = await step("move_paste", "paste");
+    steps.push(paste);
+    if (paste.status === "unknown") {
+      // The Paste may have been queued without a reply: wait for its dialog, then cancel it, so the copy can be closed.
+      const w = await poll("wait_dialog", "the Move Fixtures dialog after an unacknowledged paste", (s) => otherModal(s) || s.moveDialog);
+      steps.push(w.step);
+      await cleanup("the paste got no reply");
+      return stop();
+    }
+    if (paste.status !== "succeeded") return stop();
+    const pasteCmd = (paste.detail as { commands: string[] }).commands[0];
+    const wp = await poll("wait_dialog", "the Move Fixtures dialog (or the paste)", (s) => otherModal(s) || failedCommand(s, wt.state?.lastCommand, pasteCmd) || s.moveDialog || (!s.modal && s.underTarget === s.count && s.lastCommand === `OK: ${pasteCmd}`));
+    steps.push(wp.step);
     if (wp.step.status !== "succeeded") {
       await cleanup("the paste did not finish");
       return stop();
