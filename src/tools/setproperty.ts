@@ -64,7 +64,9 @@ export function sameValue(got: unknown, want: unknown, property = "", opts: { co
   const num = /^(-?\d+(?:\.\d+)?)\s*([a-z%°]*)$/;
   const x = a.match(num);
   const y = b.match(num);
-  if (x && y && Math.abs(Number(x[1]) - Number(y[1])) < 1e-6 && (!x[2] || !y[2] || x[2] === y[2])) return true;
+  // A Wait's display rounds to its last digit ("2.000" for 2.0004, SB-07); other numbers compare exactly.
+  const shown = /^wait$/i.test(property) && x ? 0.5 * 10 ** -(x[1].split(".")[1]?.length ?? 0) : 0;
+  if (x && y && Math.abs(Number(x[1]) - Number(y[1])) <= Math.max(1e-6, shown + 1e-9) && (!x[2] || !y[2] || x[2] === y[2])) return true;
   // A duration reads back as the console's duration text (a macro line's Wait 3600 reads "1h00m00.00", SB-07).
   if (/^\d+[dhm]/.test(a)) {
     const sa = displaySeconds(a);
@@ -148,6 +150,23 @@ async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: u
   const target = items[0] as { addr?: string };
   // By address, never by name: two objects can share a name (Appearance 3 and 4 both "Red").
   return typeof target.addr === "string" && (current as { addr: string }).addr === target.addr;
+}
+
+/**
+ * Tags read back decoded, one row per tag ({ tag, name, protect }, SU-21), not as the text that was written
+ * ("McpTag B:0", "McpTag A:1,McpTag C:0"): a request by name is compared row by row, the :0/:1 protect flag when given.
+ * undefined for a request by handle ("#BC000E42:1"), whose rows read back by name.
+ */
+export function sameTags(got: unknown, want: unknown): boolean | undefined {
+  if (!Array.isArray(got) || typeof want !== "string") return undefined;
+  const entries = want.split(",").map((e) => e.trim()).filter(Boolean);
+  if (entries.some((e) => e.startsWith("#"))) return undefined;
+  const rows = got as Array<{ name?: unknown; protect?: unknown }>;
+  if (rows.length !== entries.length) return false;
+  const wanted = entries.map((e) => e.match(/^(.*?)(?::([01]))?$/) as RegExpMatchArray);
+  const matches = (r: { name?: unknown; protect?: unknown }, m: RegExpMatchArray) => r.name === m[1].trim() && (m[2] === undefined || r.protect === (m[2] === "1"));
+  // Both ways, so "B,B" is not the list B, C.
+  return wanted.every((m) => rows.some((r) => matches(r, m))) && rows.every((r) => wanted.some((m) => matches(r, m)));
 }
 
 async function hasProperty(bridge: Gma3Bridge, ref: string, property: string): Promise<boolean> {
@@ -236,14 +255,15 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   // requested reference (Appearance 3 named "Appearance 5").
   let byObject: boolean | undefined;
   try {
-    byObject = lockField ? undefined : await sameObject(bridge, ref, got, value, property);
+    byObject = (/^tags$/i.test(property) ? sameTags(got, value) : undefined) ?? (lockField ? undefined : await sameObject(bridge, ref, got, value, property));
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     return { result: { ...res, requested: value, before: old ?? null, verified: false, error: `the write was sent, but the read to verify ${property} of ${ref} by its object failed (${why}); whether the console applied ${JSON.stringify(value)} is unknown` }, failed: true };
   }
   // An unchanged value with no lock on the object: an owner's Lock (a page's for its executors, a macro's for its lines)
   // may be what refused the write.
-  const owners = unchanged && !locks.length && !lockField ? await lockedOwner(bridge, ref) : { unread: [] as string[] };
+  // Setting a Lock too: a locked page blocks its executors' own Lock writes (src/tools/playback.ts).
+  const owners = unchanged && !locks.length && !READ_ONLY_LOCKS.includes(lockField ?? "") ? await lockedOwner(bridge, ref) : { unread: [] as string[] };
   const owner = owners.locked;
   const lockText = locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ");
   const lockInfo = { ...(locks.length ? { locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {}), ...(owner ? { lockedOwner: { ref: owner.ref, Lock: owner.lock } } : {}) };

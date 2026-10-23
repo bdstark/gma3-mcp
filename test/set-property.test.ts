@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
-import { consoleForm, ownerRefs, sameValue, setPropertyChecked } from "../src/tools/setproperty.js";
+import { consoleForm, ownerRefs, sameTags, sameValue, setPropertyChecked } from "../src/tools/setproperty.js";
 
 /**
  * gma3_set_property's read-back check against a fake bridge. A locked object keeps its value and the Set() raises
@@ -52,7 +52,10 @@ class Obj {
       const p = String(args.property);
       const v = String(args.value);
       // As on onPC 2.5.1: a lock reads "UL" when locked and "" when not.
-      if (p === "Lock") this.props.Lock = /^(yes|on|true)$/i.test(v) ? "UL" : "";
+      // A locked owner blocks the object's own Lock write too (a page for its executors).
+      if (p === "Lock") {
+        if (!(this.owner && this.owner.Lock !== "")) this.props.Lock = /^(yes|on|true)$/i.test(v) ? "UL" : "";
+      }
       // The command line's CmdText silently refuses a write (KB-10).
       else if (p === "CmdText") {}
       // A macro line's Wait coerces a value it does not take to Follow (review of PR #87).
@@ -500,6 +503,12 @@ test("set_property: StructureLocked, an owner's lock, a repeated clear on a lock
     r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Name", value: "" });
     assert.equal(r.failed, true, JSON.stringify(r.result));
     o.props.Lock = "";
+    // Locking an executor on a locked page: the page blocks it, and the error names the page.
+    o.owner = { ref: "Page 91", Lock: "UL" };
+    r = await setPropertyChecked(h.bridge, { ref: "Page 91.201", property: "Lock", value: "Yes" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.deepEqual(r.result.lockedOwner, { ref: "Page 91", Lock: "UL" });
+    o.owner = null;
     // A long wait reads in hundredths: 3600.001 reads "1h00m00.00" and is applied.
     r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 3600.001 });
     assert.equal(r.result.value, "1h00m00.00");
@@ -509,6 +518,15 @@ test("set_property: StructureLocked, an owner's lock, a repeated clear on a lock
   }
   assert.ok(!sameValue("/foo", "/Foo", "Prefix"), "an OSC Prefix is text");
   assert.ok(sameValue("1h00m00.00", "3600.004", "Wait") && !sameValue("1h00m00.00", 3600.01, "Wait"), "within half a hundredth");
+  assert.ok(sameValue("2.000", 2.0004, "Wait") && !sameValue("2.000", 2.0004, "FadeTime"), "a Wait's display rounds");
+  const tags = [{ tag: 2, name: "McpTag B", protect: false }, { tag: 3, name: "McpTag C", protect: true }];
+  assert.equal(sameTags(tags, "McpTag B:0,McpTag C:1"), true, "tags by name with their protect flags");
+  assert.equal(sameTags(tags, "McpTag C, McpTag B"), true, "in any order, flags not given");
+  assert.equal(sameTags(tags, "McpTag B:1,McpTag C:1"), false, "a protect flag that differs");
+  assert.equal(sameTags(tags, "McpTag B"), false, "a list of another length");
+  assert.equal(sameTags(tags, "McpTag B,McpTag B"), false, "a tag twice is not two tags");
+  assert.equal(sameTags(tags, ""), false, "a clear the console ignores (SU-21)");
+  assert.equal(sameTags(tags, "#BC000E42:1"), undefined, "a request by handle is not compared by name");
   assert.deepEqual(ownerRefs("Page 91.201"), ["Page 91"]);
   assert.deepEqual(ownerRefs("Sequence 1 Cue 2.5 Part 1"), ["Sequence 1 Cue 2.5", "Sequence 1"]);
   assert.deepEqual(ownerRefs('Sequence "Gobo" Cue 3'), ['Sequence "Gobo"']);
