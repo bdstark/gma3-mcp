@@ -133,23 +133,14 @@ minutes, stored 68 groups in 5 and placed 93 fixtures in 76 seconds.
 ## 3. Patch
 
 1. Run the patch plan through a subagent, as in section 1. Read back with `gma3_patch_list`.
-2. **Put the rig under the Show Start grouping fixtures.** Show Start has eight grouping fixtures at FIDs 1 to 8,
-   named "MA StartShow 1" to "MA StartShow 8". Each slot's rig fixtures belong under the slot's grouping fixture.
-   Show Start's cues and layouts reach the rig through the slot groups, so this orders the patch sheet rather than
-   making the show work, but the user expects it. Rename the grouping fixtures to the slot names with
-   `gma3_patch_set`. In the Halloween build they became Movers, Scanners, Main Wash, Bsmt Wash, Pixel Bars,
-   Specials, Nanoleaf and Deck. Fixtures outside any slot stay at the top level.
-   - If the server has a fixture-move tool, do this right after the patch without being asked.
-   - Without one, it takes Lua inside the patch copy. Put the move in the plan the user reviews, and run it once the
-     user has turned Lua on and closed the Patch menu. The Halloween build moved the fixtures one slot at a time:
-     `Cut <indices>`, `ChangeDestination <grouping index>`, `Paste 1`. Paste opens a "Move Fixtures" dialog
-     (Absolute, Relative, Cancel), which was answered with Absolute. Then `ChangeDestination Root`. Groups, presets,
-     addresses and 3D positions survived. Try it on one scratch fixture first, and only with the Patch menu closed.
+2. Rename the grouping fixtures at FIDs 1 to 8 to the slot names with `gma3_patch_set`. Leave the rig at the top level
+   for now: section 8 moves it under them, after the 3D work.
 3. Save.
 
 ## 4. 3D placement, right after the patch
 
-Place fixtures without being asked. A patched show with every fixture at the origin is not finished.
+Place fixtures without being asked. A patched show with every fixture at the origin is not finished. Place them while
+they are still at the top level of the patch: `gma3_place_fixtures` refuses a fixture inside a grouping fixture.
 
 - Run the placements file through `gma3_place_fixtures` and keep its `restore` list, because positions have no undo.
   Test-place one fixture with an unusual rotation first.
@@ -215,7 +206,28 @@ Do this without being asked. The narrow beams (2.5°) of the Halloween build's m
    physical-0 problem from section 2.
 4. **Clear the programmer afterwards.** The Halloween build left test values in the programmer.
 
-## 8. Universes and Art-Net
+## 8. Show Start parenting
+
+Do this after the 3D work. `gma3_place_fixtures` refuses a fixture inside a grouping fixture, so place every fixture,
+and fix any pose the beam check showed, before the move. The Halloween build moved the rig last, and the poses
+survived.
+
+Show Start has eight grouping fixtures at FIDs 1 to 8, named "MA StartShow 1" to "MA StartShow 8" until section 3
+renames them. Each slot's rig fixtures belong under the slot's grouping fixture. Show Start's cues and layouts reach
+the rig through the slot groups, so this orders the patch sheet rather than making the show work, but the user
+expects it. In the Halloween build the grouping fixtures were named Movers, Scanners, Main Wash, Bsmt Wash, Pixel
+Bars, Specials, Nanoleaf and Deck. Fixtures outside any slot stay at the top level.
+
+- If the server has a fixture-move tool, do this without being asked.
+- Without one, it takes Lua inside the patch copy. Put the move in the plan the user reviews, and run it once the
+  user has turned Lua on and closed the Patch menu. The Halloween build moved the fixtures one slot at a time:
+  `Cut <indices>`, `ChangeDestination <grouping index>`, `Paste 1`. Paste opens a "Move Fixtures" dialog
+  (Absolute, Relative, Cancel), which was answered with Absolute. Then `ChangeDestination Root`. Groups, presets,
+  addresses and 3D positions survived. Try it on one scratch fixture first, and only with the Patch menu closed.
+- Read a few poses with `gma3_fixture_positions` before and after the move, and compare them.
+- Save.
+
+## 9. Universes and Art-Net
 
 1. If the patch went over the budget, re-address it in one `gma3_patch_set` batch. 84 edits took 82 seconds. It is
    better to plan inside the budget.
@@ -233,7 +245,7 @@ Do this without being asked. The narrow beams (2.5°) of the Halloween build's m
    confirm the packets on the wire.
 5. Save.
 
-## 9. Hand-over
+## 10. Hand-over
 
 Clear the programmer and save. Then write a note in the show's project folder with:
 - what is still open on the show and on the rig, such as node ports, fixture modes and addresses to set;
