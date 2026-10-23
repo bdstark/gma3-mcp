@@ -5,7 +5,7 @@
  *                 action press: one button, named by its text, only while the dialog still shows the title and/or
  *                 message the caller read; then the dialog is read again and the result says whether it closed
  *
- * Bridge ops dialog.read / dialog.press (0.39.0). Console facts (KB-25, live onPC 2.5.1): GetTopModal returns the
+ * Bridge ops dialog.read / dialog.press (0.40.0). Console facts (KB-25, live onPC 2.5.1): GetTopModal returns the
  * dialog; a MessageBox names its parts Title and Text and its buttons generically, so a button is known by its text;
  * a Mouse click at the button's centre presses it; afterwards the modal is gone and LastCommand reads OK / User
  * Canceled / Failed, which does not name the button, so the effect is checked on the target object. A Lua Confirm()
@@ -79,7 +79,7 @@ export async function pressDialog(ctx: ToolContext, raw: PressArgs): Promise<Ope
       before = await readDialog(bridge, t);
     } catch (err) {
       const s = asRead(stepFromError("read_dialog", err, { op: "dialog.read" }));
-      if (err instanceof BridgeError && /unknown op/.test(err.message)) s.error = `${s.error}: the console runs an older bridge plugin without dialog ops (bridge 0.39.0); update the plugin`;
+      if (err instanceof BridgeError && /unknown op/.test(err.message)) s.error = `${s.error}: the console runs an older bridge plugin without dialog ops (bridge 0.40.0); update the plugin`;
       steps.push(s);
       return buildResult({ operation: op, target, steps, summary: `nothing was pressed: ${s.error}` });
     }
@@ -164,7 +164,7 @@ export const registerDialogTools: RegisterTools = (server, ctx) => {
         "For a dialog no structured tool answers, e.g. a macro's Lua Confirm() (gma3_run_macro reports an open dialog). action read (read-only): the top modal's class, title, message and buttons (text, enabled), or open: false. " +
         "action press: clicks one button, named by its exact text, after checking that the open dialog still shows expect_title and/or expect_text as read returned them (\"\" for a dialog without a title) and that the button is there and enabled; a different dialog is never answered. " +
         "Then the dialog is read again: closed, replaced by another dialog, or still open, with the console's last command (which does not name the button: check the effect on the object). Requires exclusive: true for press. " +
-        "What a button does has NO UNDO. Buttons that delete, overwrite, load a show or discard changes are pressed only because the call names them: read the message first. Tools that open their own dialogs (gma3_save_show, gma3_patch_move) answer them themselves. Needs bridge 0.39.0.",
+        "What a button does has NO UNDO. Buttons that delete, overwrite, load a show or discard changes are pressed only because the call names them: read the message first. Tools that open their own dialogs (gma3_save_show, gma3_patch_move) answer them themselves. Needs bridge 0.40.0.",
       inputSchema: {
         action: z.enum(["read", "press"]),
         button: z.string().optional().describe("press: the button's text exactly as read lists it, e.g. \"OK\"."),

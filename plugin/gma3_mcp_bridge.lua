@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.39.0"
+local VERSION      = "0.40.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4073,7 +4073,7 @@ end
 -- GUID, MODEDIRECT as the mode's type GUID and mode name, and any other "FixtureType N '" text without the number.
 --
 -- opts (SU-03):
---   fixturePositions  false: a fixture's number and INDEX (its position in its list) are left out (0.39.0). A move
+--   fixturePositions  false: a fixture's number and INDEX (its position in its list) are left out (0.40.0). A move
 --                 takes fixtures out of one list and into another, which renumbers the fixtures after them; the order
 --                 of every other fixture is still hashed (tree order), so a foreign reordering still differs.
 --   excludeGuids  types (by GUID) left out with their subtree: the type a removal deletes, on the live side
@@ -4198,7 +4198,7 @@ end
 
 -- args: { side = "live" | "copy", collection = <name>, excludeFids = [ ... ],
 --         excludeGuids = [ type GUID, ... ], prefixOfLive = true (copy side only: hash only what the live patch
---         has in every container, leaving out what an import appended), fixturePositions = false (a move, 0.39.0) }
+--         has in every container, leaving out what an import appended), fixturePositions = false (a move, 0.40.0) }
 ops["patch.fingerprint"] = function(args)
   if type(args.collection) ~= "string" then raise("[bad-args] collection (string) is required; patch.collections lists them") end
   local exclude = {}
@@ -6045,7 +6045,7 @@ GUARDED_OPS["tags.protect"] = "a tag protection change"
 end)()
 
 -------------------------------------------------------------------------------
--- 0.39.0: dialogs (DIALOG.md KB-27) and moving fixtures under a grouping fixture (docs/tools/patch.md).
+-- 0.40.0: dialogs (DIALOG.md KB-27) and moving fixtures under a grouping fixture (docs/tools/patch.md).
 --   dialog.read       read-only: the top modal: class, name, title, message, its buttons (text, enabled) and display
 --   dialog.press      clicks one button of the top modal, named by its text, only while the modal still shows the
 --                     title and message the caller read: a dialog with another message is never answered

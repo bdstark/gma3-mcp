@@ -6,7 +6,7 @@
 are in [DIALOG.md](../../DIALOG.md) ("KB-25", "KB-26"), the [KB-25 record](../probes/kb-25-dialogs-macos-2.5.1.md) and
 the [SU-03 record](../probes/su-03-import-macos-2.5.1.md). `gma3_patch_library_add` (a file into the user library,
 SU-22): bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md). `gma3_patch_move` (fixtures under a
-grouping fixture) and `gma3_patch_retype` (fixtures to another type of the same mode): bridge 0.39.0 and 0.29.0.
+grouping fixture) and `gma3_patch_retype` (fixtures to another type of the same mode): bridge 0.40.0 and 0.29.0.
 
 ## Common behaviour
 
@@ -204,7 +204,7 @@ still open, the tool clicks Cancel (`cancel_dialog`), which moves nothing, so th
 console pastes without asking, the result says `dialog: "not_shown"` and the read-back still checks the pose.
 
 The isolation check leaves out the moved FIDs and compares fixtures without their number in their list
-(`fixturePositions: false`, bridge 0.39.0): taking fixtures out of a list renumbers the ones after them. The order of
+(`fixturePositions: false`, bridge 0.40.0): taking fixtures out of a list renumbers the ones after them. The order of
 every other fixture is still compared.
 
 Read-back, against the state before the session: each fixture's parent, address and name (`patch.list`), its groups

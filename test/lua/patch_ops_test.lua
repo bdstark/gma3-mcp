@@ -172,12 +172,12 @@ reset()
 
 ShowData = function() return { LivePatch = console.live, Patch = console.copy } end
 Patch = function() return console.copyOpen and console.copy or console.live end
--- The destination raw is the object (0.39.0 compares its address); in the display role, its path text.
+-- The destination raw is the object (0.40.0 compares its address); in the display role, its path text.
 CmdObj = function() return { Get = function(_, k, role) if k == "Destination" then if role == nil and console.destObj then return console.destObj end return console.dest elseif k == "LastCommand" then return console.last end end } end
 GetTopModal = function() return console.modal or nil end
 CmdIndirect = function(cmd) console.queue[#console.queue + 1] = cmd end
 
--- 0.39.0: a console UI object and a MessageBox (KB-25: Title, Text and buttons known by their text), and Mouse
+-- 0.40.0: a console UI object and a MessageBox (KB-25: Title, Text and buttons known by their text), and Mouse
 -- clicks on its buttons.
 local function ui(class, name, text, rect)
   return { class = class, name = name, Text = text, rect = rect, kids = {}, GetClass = function(s) return s.class end, UIChildren = function(s) return s.kids end,
@@ -400,7 +400,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.39.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.40.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -730,7 +730,7 @@ local listed = table.concat(names, ",")
 check("after the commit the type is gone and the ones after it renumbered", r.ok and r.result.count == 5 and not listed:find("Spare") and listed:find("5:Mega Hex Par"), listed)
 
 -------------------------------------------------------------------------------
--- 0.39.0: moving fixtures under a grouping fixture, and dialogs
+-- 0.40.0: moving fixtures under a grouping fixture, and dialogs
 -------------------------------------------------------------------------------
 reset()
 r = request("patch.moveCheck", { fids = { 501 }, parent = 4 })

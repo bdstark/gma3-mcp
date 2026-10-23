@@ -89,7 +89,7 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_patch_add` | Add fixtures of one type/mode at consecutive FIDs, patched from an address or the first free block; pre-checked, committed, read back |
 | `gma3_patch_set` | Readdress (swaps and moves across a fixture's own range work), unpatch or rename fixtures |
 | `gma3_patch_remove` | Delete fixtures (not ones with sub-fixtures) |
-| `gma3_patch_move` | Move fixtures under a top-level grouping fixture (the MA Show Start's FID 1-8) or back to the top level: Cut, ChangeDestination, Paste and the console's Move Fixtures dialog (absolute or relative 3D placement) answered by the bridge; read back against the state before: parent, address, groups, 3D pose (bridge 0.39.0) |
+| `gma3_patch_move` | Move fixtures under a top-level grouping fixture (the MA Show Start's FID 1-8) or back to the top level: Cut, ChangeDestination, Paste and the console's Move Fixtures dialog (absolute or relative 3D placement) answered by the bridge; read back against the state before: parent, address, groups, 3D pose (bridge 0.40.0) |
 | `gma3_patch_retype` | Move fixtures to another fixture type with the same DMX mode, e.g. from an old GDTF import to a fixed one (the session of `gma3_assign_cell_layout`; bridge 0.29.0) |
 | `gma3_patch_library` | Read-only: search the fixture-type library (grandMA3, grandMA2, user, WorldServer) by manufacturer and model; modes when readable; which show types match (bridge 0.26.0) |
 | `gma3_patch_import` | Import one library file into the show: duplicate check, wait for exactly one new type, committed, read back with its modes (bridge 0.26.0) |
@@ -103,7 +103,7 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_place_fixtures` | Place fixtures in 3D: positions, rotations (written as one quaternion), mesh mirroring; line, arc and mirror-pair layouts; preview; read back by quaternion; returns a restore list (no undo) |
 | `gma3_layout_cells` | Lay out a fixture's cells (string lights, pixel strands) along a line, square wave, zigzag or points, in explicit units: shared (the type's layout; `affects` must name every fixture that moves) or own (a copy of the type for some fixtures); read back per cell; returns the previous positions (bridge 0.29.0) |
 | `gma3_assign_cell_layout` | Move fixtures to another layout type of their fixture (a copy, or back to the original) in an isolated patch session (bridge 0.29.0) |
-| `gma3_dialog` | Read the console's top dialog (title, message, buttons) or press one button by its text, only while the dialog still shows what was read; reports whether it closed (bridge 0.39.0) |
+| `gma3_dialog` | Read the console's top dialog (title, message, buttons) or press one button by its text, only while the dialog still shows what was read; reports whether it closed (bridge 0.40.0) |
 
 Console feedback (KB-06; needs plugin v0.8.0; read-only, works with Lua and input disabled and while another client
 owns input; details in [`tools/feedback.md`](tools/feedback.md)):

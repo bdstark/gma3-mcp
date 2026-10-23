@@ -1,6 +1,6 @@
 # Console dialogs (KB-27, in part)
 
-`gma3_dialog`: bridge 0.39.0 (`dialog.read`, `dialog.press`). The design is [DIALOG.md](../../DIALOG.md) "KB-27"; the
+`gma3_dialog`: bridge 0.40.0 (`dialog.read`, `dialog.press`). The design is [DIALOG.md](../../DIALOG.md) "KB-27"; the
 evidence is the [KB-25 record](../probes/kb-25-dialogs-macos-2.5.1.md).
 
 For a dialog no structured tool answers. The case it was built for: the MA Show Start's Position Wizard (macro 5002)

@@ -255,7 +255,7 @@ hooks. Live patch fixtures also accept `Set()` outside patch mode.
   returns its inspection.
 - Respect the input ownership / busy model: a dialog action is an input action.
 
-### KB-27 results (in part, bridge 0.39.0, 2026-10-23)
+### KB-27 results (in part, bridge 0.40.0, 2026-10-23)
 
 The Halloween 2026 show build needed two dialogs answered and had no tool for either: Show Start's Position Wizard
 (macro 5002) opens a Lua `Confirm()`, and moving fixtures under a grouping fixture opens "Move Fixtures". The agent
