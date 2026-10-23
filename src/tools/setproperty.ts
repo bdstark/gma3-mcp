@@ -100,7 +100,8 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   const res = (await bridge.request("set", { ref, property, value })) as Record<string, unknown>;
   // A lock reads "" when unlocked and "UL" when locked (onPC 2.5.1, docs/probes/sb-01-playback-macos-2.5.1.md), so
   // a lock field's read-back counts as No or Yes.
-  const lockState = (v: unknown) => (isLocked(v) ? "Yes" : "No");
+  // No value at all stays unknown: the set op sends none when the read-back fails.
+  const lockState = (v: unknown) => (v === undefined || v === null ? undefined : isLocked(v) ? "Yes" : "No");
   // Clearing a reference ("") can read back as nothing at all: the bridge sends no value for a nil property.
   const got = lockField ? lockState(res.value) : value === "" && (res.value === undefined || res.value === null) ? "" : res.value;
   const old = lockField ? (before ? lockState(before[lockField]) : undefined) : before?.[property];
@@ -116,7 +117,9 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
     return { result: { ...res, requested: value, verified: true, ...note }, failed: false };
   }
   const lockText = locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ");
-  const error = locks.length
+  const error = got === undefined || got === null
+    ? `${property} of ${ref} could not be read back after the write; whether the console applied ${JSON.stringify(value)} is unknown`
+    : locks.length
     ? `${ref} is locked (${lockText}): the console kept ${property} = ${JSON.stringify(got)} and did not apply ${JSON.stringify(value)}. Unlock it first (Unlock ${ref}), set the property, and lock it again`
     : unchanged
       ? `the console did not apply ${property} = ${JSON.stringify(value)} on ${ref}: it still reads ${JSON.stringify(got)} (the console silently keeps the previous value when it does not accept one)`

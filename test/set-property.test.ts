@@ -191,6 +191,22 @@ test("set_property: locking an unlocked object verifies although Lock reads \"UL
   }
 });
 
+test("set_property: a write whose read-back has no value is not verified, an unlock included (review of PR #87)", async () => {
+  const { h, o } = await setup();
+  o.props.Lock = "UL";
+  // The set op sends no value when its read-back fails.
+  h.fake.on("set", (args) => ({ ref: args.ref, property: args.property }));
+  try {
+    for (const [property, value] of [["Lock", false], ["SystemLocked", "No"], ["HazeEnabled", "Yes"]] as const) {
+      const r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property, value });
+      assert.equal(r.failed, true, `${property}: ${JSON.stringify(r.result)}`);
+      assert.match(String(r.result.error), /could not be read back after the write/);
+    }
+  } finally {
+    await h.close();
+  }
+});
+
 test("sameValue ignores case, spacing, number format and Yes/No spellings, not the value", () => {
   assert.ok(sameValue("Yes", true));
   assert.ok(sameValue("Off", "no"));
