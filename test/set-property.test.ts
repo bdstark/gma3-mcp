@@ -20,6 +20,8 @@ const waitText = (s: number) => {
 class Obj {
   props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000", Appearance: "1", Command: "" };
   install(h: Harness) {
+    // The object's property list (object op with schema).
+    h.fake.on("object", () => ({ name: this.props.Name, schema: Object.keys(this.props).map((name, index) => ({ name, index })) }));
     h.fake.on("objects", (args) => {
       // An appearance resolves to itself, as a reference property's target (asText false: summaries).
       // Appearances 3 and 5 share the name "Red" (review of PR #87): only the address tells them apart.
@@ -57,7 +59,7 @@ class Obj {
       // A macro line's Command is stored in the console's form (SB-07).
       else if (this.props.Lock === "" && p === "Command") this.props[p] = CONSOLE_FORM[v] ?? v;
       else if (this.props.Lock === "" && p === "AddToCmdline") this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
-      else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) ? waitText(Number(v)) : "Follow") : v;
+      else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) && Number(v) > 0 ? waitText(Number(v)) : "Follow") : v;
       // Clearing a reference: the property reads nil, and the set op sends no value.
       if (p === "Appearance" && this.props.Appearance === "") return { ref: args.ref, property: p, readOk: true };
       return { ref: args.ref, property: p, value: p === "Appearance" ? this.appName(this.props[p]) : this.props[p] };
@@ -259,6 +261,27 @@ test("set_property: the console's form of a command and a duration's display tex
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: 'Appearance "Blue"' });
     assert.equal(r.failed, false, JSON.stringify(r.result));
     assert.equal(o.props.Appearance, "8");
+    // A repeated clear: empty before and after, on a property the object has.
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    // Wait 0 reads Follow; "abc" also reads Follow and is still not applied.
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 0 });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: "0" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    // A kept command on a locked line: a literal argument is never taken for an abbreviation.
+    o.props.Command = "Echo xyzzy";
+    o.props.Lock = "UL";
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "Echo xyz" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    // ... nor a capitalised word that did not change.
+    o.props.Command = "Echo Xyzzy";
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "Echo xyz" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    o.props.Lock = "";
+    o.props.Appearance = "8";
     // A bridge failure while resolving the requested object leaves the result unknown, never a match.
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 66" });
     assert.equal(r.failed, true, JSON.stringify(r.result));
@@ -289,5 +312,7 @@ test("sameValue ignores case, spacing, number format and Yes/No spellings, not t
   assert.ok(!consoleForm("Go+ Sequence 1", "go+ seq 2"), "a different number is not the console's form");
   assert.ok(!consoleForm('Echo "a b"', 'echo "A b"'), "quoted text compares exactly");
   assert.ok(!consoleForm("Go+ Sequence 1", "go+ macro 1"), "another keyword is not an abbreviation");
+  assert.ok(!consoleForm("Echo xyzzy", "Echo xyz"), "a literal argument compares exactly");
+  assert.ok(!sameValue("Follow", "abc", "Wait"));
   assert.ok(!sameValue("1h00m00.00", 3599, "Wait"));
 });

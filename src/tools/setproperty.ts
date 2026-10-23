@@ -35,9 +35,11 @@ const TEXTUAL = /^(name|note|label|text|description|comment|title|command|path|f
  * spacing, number format and Yes/No spellings aside: a property set from a boolean or a number, or one whose name is
  * not a text field (HazeEnabled "Yes" for true, FadeTime "2.500" for 2.5, Trigger "Follow" for "follow").
  */
-export function sameValue(got: unknown, want: unknown, property = ""): boolean {
+export function sameValue(got: unknown, want: unknown, property = "", opts: { consoleForm?: boolean } = {}): boolean {
   const exactA = text(got);
-  if (/^command$/i.test(property)) return exactA !== undefined && (exactA === String(want) || consoleForm(exactA, String(want)));
+  if (/^command$/i.test(property)) return exactA !== undefined && (exactA === String(want) || (opts.consoleForm !== false && consoleForm(exactA, String(want))));
+  // A macro line's Wait 0 is Follow (SB-07); any other text still has to match.
+  if (/^wait$/i.test(property) && /^follow$/i.test(exactA ?? "") && (want === 0 || String(want).trim() === "0")) return true;
   if (TEXTUAL.test(property)) return exactA !== undefined && exactA === String(want);
   const exactB = typeof want === "boolean" || typeof want === "number" ? undefined : text(want);
   if (exactA !== undefined && exactA === exactB) return true;
@@ -64,8 +66,10 @@ export function sameValue(got: unknown, want: unknown, property = ""): boolean {
 
 /**
  * The console's form of a command line (SB-07: "go+ seq 1" is stored as "Go+ Sequence 1", "store cue 5 /merge /nc" as
- * "Store Cue 5 /Merge /NoConfirmation"): the same statements and tokens, quoted text and numbers exactly, and each
- * other word an abbreviation of the stored one (its letters in order, from the first).
+ * "Store Cue 5 /Merge /NoConfirmation"): the same statements and tokens, quoted text and numbers exactly. A word may
+ * differ only where the console wrote a keyword or option (capitalised: "Sequence", "/NoConfirmation") that the sent
+ * word abbreviates (its letters in order, from the first); other words are literal arguments ("Echo xyzzy") and compare
+ * exactly.
  */
 export function consoleForm(stored: string, sent: string): boolean {
   const a = tokenize(stored);
@@ -81,8 +85,9 @@ export function consoleForm(stored: string, sent: string): boolean {
   };
   return a.every((st, i) => st.length === b[i].length && st.every((tok, j) => {
     const want = b[i][j];
-    if (/^["']/.test(tok) || /^["']/.test(want) || /^[\d.]+$/.test(tok) || /^[\d.]+$/.test(want)) return tok === want;
-    return abbreviates(tok, want);
+    if (tok === want) return true;
+    if (/^["']/.test(tok) || /^["']/.test(want) || /^[\d.]+$/.test(tok) || /^[\d.]+$/.test(want)) return false;
+    return /^\/?[A-Z]/.test(tok) && abbreviates(tok, want);
   }));
 }
 
@@ -107,6 +112,15 @@ async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: u
   const target = items[0] as { addr?: string };
   // By address, never by name: two objects can share a name (Appearance 3 and 4 both "Red").
   return typeof target.addr === "string" && (current as { addr: string }).addr === target.addr;
+}
+
+async function hasProperty(bridge: Gma3Bridge, ref: string, property: string): Promise<boolean> {
+  try {
+    const o = (await bridge.request("object", { ref, properties: false, schema: true })) as { schema?: Array<{ name?: unknown }> };
+    return (o.schema ?? []).some((p) => typeof p.name === "string" && p.name.toLowerCase() === property.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 const isLocked = (v: unknown): boolean => typeof v === "string" ? v.trim() !== "" && !/^(no|off|false|0)$/i.test(v.trim()) : v === true;
@@ -134,7 +148,10 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   // read, or a misspelled property, sends none either, so a clear counts only when the bridge says the read worked
   // (readOk, 0.42.0) and the property held a value before.
   const absent = res.value === undefined || res.value === null;
-  const cleared = value === "" && absent && res.readOk === true && old !== undefined && old !== null && text(old) !== "";
+  let cleared = value === "" && absent && res.readOk === true && old !== undefined && old !== null && text(old) !== "";
+  // Empty before and after (a repeated clear): the property must exist, which the object's property list shows; a
+  // misspelled one reads empty too.
+  if (value === "" && absent && res.readOk === true && !cleared && !lockField) cleared = await hasProperty(bridge, ref, property);
   const got = lockField ? lockState(res.value) : cleared ? "" : res.value;
   // Unchanged means the very same text: any other read-back is a change the console made.
   const unchanged = old !== undefined && old !== null && text(got) === text(old);
@@ -148,7 +165,9 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
     const why = err instanceof Error ? err.message : String(err);
     return { result: { ...res, requested: value, before: old ?? null, verified: false, error: `the write was sent, but the read to verify ${property} of ${ref} by its object failed (${why}); whether the console applied ${JSON.stringify(value)} is unknown` }, failed: true };
   }
-  if (byObject ?? sameValue(got, value, property)) {
+  // The console's form of a command counts only when the line changed: a kept line ("Echo xyzzy", locked) is never taken
+  // for the spelling of another request.
+  if (byObject ?? sameValue(got, value, property, { consoleForm: !unchanged })) {
     // Already the requested value: the end state is right, but on a locked object the write itself was refused.
     const note = unchanged && locks.length ? { note: `${property} already read ${JSON.stringify(old)}; ${ref} is locked (${locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ")}), so the console did not take the write itself`, locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {};
     return { result: { ...res, requested: value, verified: true, ...note }, failed: false };
