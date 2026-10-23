@@ -1,6 +1,6 @@
 ---
 name: gma3-show-build
-description: Build a grandMA3 show on the MA Show Start (onPC) through gma3-mcp, in the order that worked. Covers the preflight (server build, bridge version, universe budget, Art-Net network card), plan files run by subagents, fixture types and the GDTF beam check, patch, Show Start parenting, 3D placement, slot groups, the Position Wizard, a hazed 3D beam check and Art-Net output. Use when asked to build or set up a whole show on grandMA3, especially from the MA Show Start, or to patch and lay out a full rig in a new show. Not for a single import or a one-off patch change.
+description: Build a grandMA3 show on the MA Show Start (onPC) through gma3-mcp, in the order that worked. Covers the preflight (server build, bridge version, parameter and universe budget, Art-Net network card), plan files run by subagents, fixture types and the GDTF beam check, patch, Show Start parenting, 3D placement, slot groups, the Position Wizard, a hazed 3D beam check and Art-Net output. Use when asked to build or set up a whole show on grandMA3, especially from the MA Show Start, or to patch and lay out a full rig in a new show. Not for a single import or a one-off patch change.
 ---
 
 # Build a show on the MA Show Start through gma3-mcp
@@ -25,8 +25,9 @@ ask for 3D placement, for haze in the beam check, for the universe budget and fo
 - **Save after every step.** Use `gma3_save_show {exclusive: true}` under the show's name. The Halloween build saved 12
   times, and each save checked that the file was newer.
 - **Keep raw Lua out of the patch copy while the user may be in the Patch menu.** The structured patch tools check
-  that no copy is open, but a raw `ChangeDestination` or `Import` lands in the copy the user has open. In the Halloween build an import went into the user's
-  unsaved copy, next to a type the agent had not added. Before raw patch work, ask the user to close the Patch menu.
+  that no copy is open, but a raw `ChangeDestination` or `Import` lands in the copy the user has open. In the
+  Halloween build an import went into the user's unsaved copy, next to a type the agent had not added. Before raw
+  patch work, ask the user to close the Patch menu.
   Then check that the command line's destination is Root and that no modal is open. Leaving the copy with
   `ChangeDestination Root` commits it. There is no discard without the menu.
 - **Ask before Art-Net output goes on.** Output drives real fixtures. Configure it with output off, and turn output on
@@ -40,8 +41,9 @@ ask for 3D placement, for haze in the beam check, for the universe budget and fo
 Do this before any change. It takes about five minutes.
 
 1. **Server build and bridge version.** From `gma3_status`, read `server.build.state`, the commit in
-   `server.build.stamp.commit` and `bridge.version`. The state `current` only means that the build matches the checkout it was built from. It does not
-   mean that the checkout is up to date. Compare both with gma3-mcp main:
+   `server.build.stamp.commit` and the bridge's `bridge.bridgeVersion`. The state `current` only means that the build
+   matches the checkout it was built from. It does not mean that the checkout is up to date. Compare both with
+   gma3-mcp main:
 
    ```bash
    git ls-remote https://github.com/bdstark/gma3-mcp.git refs/heads/main
@@ -58,10 +60,16 @@ Do this before any change. It takes about five minutes.
    the user. It needed raw Lua in the patch copy and an import by hand.
 2. **The show.** Confirm that the loaded show is the Show Start show meant for this rig. Save it under the new name
    before the first change.
-3. **The universe budget.** Count the channels from the plan, and fit the universes to the onPC limit before
-   patching. In the Halloween build the user gave the limit as 4096 channels, which is 8 universes. Confirm the figure
-   for the user's licence and hardware. The Show Start show began with 6 universes granted. `gma3_dmx_output` shows
-   used, wanting output and granted universes. On onPC the grant comes from connected MA hardware, such as the dongle.
+3. **The budget: parameters and universes.** These are two limits, and the plan must fit both before patching.
+   - **Parameters.** grandMA3 licenses parameters, not DMX channels. An attribute with a fine channel is one
+     parameter on two channels. Count the parameters per fixture mode, and check the show's use in the console's
+     System Information (see MA's [parameter page](https://help.malighting.com/grandMA3/2.5/HTML/system_parameter.html)).
+   - **Universes.** Every universe that wants output needs a grant. `gma3_dmx_output` shows used, wanting output and
+     granted universes. On onPC the grant comes from connected MA hardware, such as the dongle. The Show Start show
+     began with 6 universes granted.
+
+   Ask the user for the figures that apply to their licence and hardware. In the Halloween build the user gave the
+   onPC limit as 4096 channels.
 
    *Halloween:* the first patch used one universe per data line. That made 11 universes for about 1,050 channels, so
    84 fixtures had to be re-addressed into 6 universes afterwards.
@@ -91,8 +99,8 @@ minutes, stored 68 groups in 5 and placed 93 fixtures in 76 seconds.
 | 3D placements (JSON) | `[{fid, position: {x, y, z}, rotation: {x, y, z}}]` | one `gma3_place_fixtures` call; save the returned `restore` list next to the plan |
 
 - **FIDs.** Show Start owns FIDs 1 to 8. Start the rig at 101. Use the hundreds for areas and the tens for fixture
-  kinds. In the Halloween build, 1xx was the main floor, 2xx the basement, 3xx the Hue lights (300 plus the unit number, so H04
-  was 304) and 4xx the deck.
+  kinds. In the Halloween build, 1xx was the main floor, 2xx the basement, 3xx the Hue lights (300 plus the
+  unit number, so H04 was 304) and 4xx the deck.
 - **Universes.** Put the patch inside the budget from the preflight. Lines may share a universe. In the Halloween
   build, lines L1, L3 and L4 shared one universe, and so did L5 with L7 and L6 with L8.
 - **The subagent brief.** One subagent per file, using only the named structured tools, with `exclusive: true`. Make
@@ -123,10 +131,17 @@ minutes, stored 68 groups in 5 and placed 93 fixtures in 76 seconds.
   never showed in 3D. The check also flags the Sentinel Spot Q60. Its default, DMX 4, is open, so its beam showed.
   Its second "Open" function at DMX 216 would draw closed.
 - **A fixed GDTF after the first import costs time.** Re-import it with `allow_duplicate`, then move the fixtures
-  across with `gma3_assign_cell_layout {fixtures, type}`, used as a retype. It keeps FIDs, groups and presets. On
-  builds before gma3-mcp #87, the import read-back can pick the older type because both share a GUID, and
-  `gma3_patch_remove_type` refuses to remove the unused old type. The Halloween build had to delete it in the Patch
-  menu. The beam check avoids all of this.
+  across with `gma3_assign_cell_layout {fixtures, type}`, used as a retype. It keeps FIDs, groups and presets.
+  - Both types now have the same name, so pass the new type's number, never the name. List the types with
+    `gma3_patch_types` before and after the import. The new type is the number that was not there before. Do not take
+    the number from the import result: on builds before gma3-mcp #87, the read-back can name the older type, because
+    both share a GUID.
+  - After the retype, check with `gma3_patch_list` that the fixtures show the new type number. A retype to the old
+    type changes nothing, and its read-back compares names, so it can still report `matched`.
+  - On builds before #87, `gma3_patch_remove_type` refuses to remove the unused old type. The Halloween build had to
+    delete it in the Patch menu.
+
+  The beam check avoids all of this.
 - **Removing a type renumbers the types after it.** After a re-import both types have the same name, so use the
   type number and list the types again after each removal.
 
