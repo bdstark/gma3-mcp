@@ -99,7 +99,12 @@ destination `Plugin`). Then, through `gma3_patch_import` with server build a926d
 | 3 | `SHEHDS@180W_Beam@2026-10-22.gdtf` (user, `allow_duplicate`) | `Import 9 …` | type 9 "180W Beam", committed; the read-back reported a mismatch because it matched type 8 by the shared GUID (the server's read-back by GUID, fixed by #87, not in this build) |
 | 4 | `generic@fan.pxml` (`allow_duplicate`) | `Import 10 …` | type 10 "Fan", committed, read-back matched |
 
-So a user-library `.gdtf` imports after a grandMA2 `.pxml`, and the reverse. The show was not saved.
+So a user-library `.gdtf` imports after a grandMA2 `.pxml`, and the reverse. The four types were then removed again.
+
+`test/live/patch-import.live.ts` (this branch's server, bridge 0.41.0, the listing still holding the plugin library):
+the SU-03 test 1/1 (52 s), and the new order test with `GMA3_LIVE_IMPORT_GDTF=SHEHDS@180W_Beam@2026-10-20.gdtf` 1/1
+(53 s; Fan, the GDTF, Fog, each committed and read back, then removed). The show was not saved, and the console was put
+back on "Newtonhaus Halloween 2026" with the bridge saved in that show (0.38.2).
 
 ## Left open
 

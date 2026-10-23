@@ -16,6 +16,10 @@
  *   - The attributes the two types bring stay in the show (the console keeps them).
  *   - The cleanup is armed only after the guard passed and FID 994 was proved free; it removes only FID 994
  *     named "MCP live import" and only the types this run imported (by GUID).
+ *   - Second test (bridge 0.41.0, docs/probes/import-library-listing-macos-2.5.1.md): Fan from the grandMA2 library,
+ *     then the user-library .gdtf named by GMA3_LIVE_IMPORT_GDTF (skipped without it), then Fog, in one run: the
+ *     Halloween order, a user GDTF right after a grandMA2 import, and the reverse. No show type may match any of
+ *     the three; all three are removed again by GUID (their attributes stay).
  */
 import assert from "node:assert/strict";
 import { after } from "node:test";
@@ -61,6 +65,8 @@ async function typeNoByGuid(guid: string): Promise<number | undefined> {
   const t = await call("gma3_patch_types", {});
   return t.result.types.find((x: any) => x.guid === guid)?.no;
 }
+
+const escapeRe = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const cleanup = { armed: false, guids: [] as string[] };
 
@@ -130,4 +136,46 @@ liveTest("SU-03 fixture-type tools: search, import, refuse a duplicate, remove w
   assert.ok(!types.result.types.some((x: any) => x.guid === fog.type.guid || x.guid === fan.type.guid), "both types are gone");
   const state = (await bridge.request("patch.state", {})) as { atRoot: boolean };
   assert.equal(state.atRoot, true, "the command line is back at Root and the copy is closed");
+});
+
+liveTest("bridge 0.41.0: a user-library GDTF imports right after a grandMA2 import, and a grandMA2 import right after it", async (t) => {
+  if (!exclusive) {
+    t.skip("set GMA3_LIVE_EXCLUSIVE=1 to confirm exclusive console use: patch changes are committed with no undo");
+    return;
+  }
+  const gdtf = process.env.GMA3_LIVE_IMPORT_GDTF;
+  if (!gdtf) {
+    t.skip("set GMA3_LIVE_IMPORT_GDTF to a .gdtf file in the user library");
+    return;
+  }
+  const ping = (await bridge.request("ping", {})) as { bridgeVersion?: string };
+  const [maj, min] = String(ping.bridgeVersion ?? "0.0").split(".").map(Number);
+  assert.ok(maj > 0 || min >= 41, `needs bridge 0.41.0 (Import <no> /File /Path); the console runs ${ping.bridgeVersion}`);
+  const entry = async (file: string, source: string) => (await call("gma3_patch_library", { query: file, sources: [source] })).result.entries.find((e: any) => e.file === file);
+  const user = await entry(gdtf, "user");
+  assert.ok(user, `${gdtf} is in the user library`);
+  const fan = await entry(FAN, "grandma2");
+  const fog = await entry(FOG, "grandma2");
+  assert.deepEqual([fan.inShow, user.inShow, fog.inShow], [[], [], []], "the disposable show must not have Generic Fan, Generic Fog or the GDTF's type yet");
+  cleanup.armed = true;
+
+  const sequence: Array<[string, string]> = [[FAN, "grandma2"], [gdtf, "user"], [FOG, "grandma2"]];
+  const imported: any[] = [];
+  for (const [file, source] of sequence) {
+    const r = ok(await call("gma3_patch_import", { file, source, exclusive: true }), `import ${file}`);
+    cleanup.guids.push(r.type.guid);
+    const step = r.steps.find((x: any) => x.name === "import");
+    assert.match(step.detail.command, new RegExp(`^Import ${r.type.no} /File "${escapeRe(file)}" /Path "`), "the import names the number and the library folder");
+    imported.push(r.type);
+  }
+  assert.equal(imported[1].no, imported[0].no + 1, "the GDTF is appended after Fan");
+  assert.equal(imported[2].no, imported[1].no + 1, "Fog is appended after the GDTF");
+
+  for (const ty of [...imported].reverse()) {
+    const no = await typeNoByGuid(ty.guid);
+    ok(await call("gma3_patch_remove_type", { type: no, exclusive: true }), `remove ${ty.name}`);
+    cleanup.guids = cleanup.guids.filter((g) => g !== ty.guid);
+  }
+  const types = await call("gma3_patch_types", {});
+  assert.ok(!types.result.types.some((x: any) => imported.some((ty) => ty.guid === x.guid)), "the three types are gone");
 });

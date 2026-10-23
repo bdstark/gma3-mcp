@@ -342,8 +342,11 @@ Fan, and FID 994 free. It finds both in the grandMA2 library, imports Fog, check
 before anything is sent, imports Fan, patches FID 994 as a Fan, removes Fog (Fan, after it, is renumbered while 994
 uses it), checks removing Fan is refused while 994 uses it, then removes 994 and Fan. The cleanup removes only FID 994
 named "MCP live import" and only the types the run imported, by GUID. 1/1 on macOS onPC 2.5.1 (2026-10-15), about
-100 s.
+100 s. Its second test (bridge 0.41.0, `GMA3_LIVE_IMPORT_GDTF` set to a user-library `.gdtf`) imports Fan, the GDTF,
+then Fog in one run (a user GDTF right after a grandMA2 import, as in the Halloween build, and the reverse), checks each
+command names its number and library folder, and removes the three again. Both 1/1 on macOS onPC 2.5.1 (2026-10-23,
+mcp-test-disposable, `SHEHDS@180W_Beam@2026-10-20.gdtf`), about 53 s each.
 
 ```bash
-GMA3_LIVE=1 GMA3_LIVE_EXCLUSIVE=1 node --import tsx --test test/live/patch-import.live.ts
+GMA3_LIVE=1 GMA3_LIVE_EXCLUSIVE=1 GMA3_LIVE_IMPORT_GDTF='SHEHDS@180W_Beam@2026-10-20.gdtf' node --import tsx --test test/live/patch-import.live.ts
 ```
