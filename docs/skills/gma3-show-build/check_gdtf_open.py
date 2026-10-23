@@ -5,6 +5,12 @@ The 3D view draws a beam from the physical value, not the DMX value. A shutter o
 "Open" (or "On", "Full") that starts at physical 0 renders closed, so the fixture shows no beam even
 though real output is fine (NO BEAM). A "Closed" set above physical 0 renders a faint beam (FAINT).
 
+A set that gives no PhysicalFrom/PhysicalTo of its own is read the way the grandMA3 onPC 2.5 3D view drew it:
+interpolated linearly over its channel function's range at the set's DMX values. The GDTF spec says such a set
+inherits the function's PhysicalFrom/PhysicalTo, but that reading does not match the console: it would put every
+dimmer "Open" set at DMX 255 of a 0-1 function at physical 0, and the Sentinel Spot Q60's shutter "Open" set at
+DMX 4 of a 0-7 function at 0, yet both draw a beam (the Q60's interpolates to 0.57).
+
 Usage: check_gdtf_open.py FILE.gdtf [FILE.gdtf ...]
 Exit status 1 when any NO BEAM set is found; FAINT alone exits 0.
 """
@@ -19,9 +25,18 @@ CHECKED = re.compile(r"^(Shutter\d*|Dimmer)$")
 
 
 def dmx(value, size):
-    """'128/1' on a 2-byte channel -> 32768: GDTF values shift to the channel's resolution."""
+    """A GDTF DMXValue at the channel's resolution. 'v/n' mirrors its bytes ('255/1' on 2 bytes -> 65535,
+    '128/1' -> 32896); 'v/ns' shifts them ('255/1s' -> 65280). A value finer than the channel drops low bytes."""
     raw, _, own = value.partition("/")
-    return int(raw) * 256 ** (size - int(own or 1))
+    shift = own.endswith("s")
+    own = int(own.rstrip("s") or 1)
+    v = int(raw)
+    if own >= size:
+        return v >> 8 * (own - size)
+    if shift:
+        return v << 8 * (size - own)
+    pattern = v.to_bytes(own, "big")
+    return int.from_bytes((pattern * size)[:size], "big")
 
 
 def physical_at(func, start, end, value):
