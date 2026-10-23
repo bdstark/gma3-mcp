@@ -18,7 +18,7 @@ import { crc32, inflateRawSync } from "node:zlib";
 import { z } from "zod";
 import { asRead, buildResult, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
-import type { LibraryEntry } from "./patch.js";
+import { sameName, type LibraryEntry } from "./patch.js";
 
 export const LIBRARY_ADD_MAX_BYTES = 8 * 1024 * 1024;
 /** Raw bytes per bridge request (64 KiB of base64, one JSON line). */
@@ -415,9 +415,8 @@ export async function patchLibraryAdd(ctx: ToolContext, raw: AddArgs): Promise<O
       const actual = { size: after.size ?? null, crc32: after.crc32 ?? null, source: entry?.source ?? null };
       verification = after.size === bytes.length && after.crc32 === sum && entry?.source === "user" ? { status: "matched", checked, expected, actual } : { status: "mismatched", checked, expected, actual, detail: !after.exists ? `${file} is not in the user library` : !entry ? `${file} is on disk but patch.library does not list it` : "the file on the console differs from the bytes sent" };
     }
-    const fileMan = name.manufacturer.toLowerCase();
-    const fileModel = name.model.toLowerCase();
-    const claimable = header.manufacturer?.toLowerCase() === fileMan || header.name?.toLowerCase() === fileModel;
+    // gma3_patch_import's claim compares with sameName, so underscores in the file name count as spaces here too.
+    const claimable = sameName(header.manufacturer, name.manufacturer) || sameName(header.name, name.model);
     return buildResult({
       operation: op,
       target,
