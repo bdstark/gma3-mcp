@@ -60,19 +60,26 @@ export function sameValue(got: unknown, want: unknown, property = ""): boolean {
 async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: unknown, property: string): Promise<boolean | undefined> {
   // undefined: the request is not a reference to exactly one object, so the text comparison decides.
   if (typeof want !== "string" || TEXTUAL.test(property) || got === null || got === undefined || !/^[A-Za-z][A-Za-z ]*\s+\d+(\.\d+)*$/.test(want.trim())) return undefined;
+  // The property's current object, as a handle summary (the read-back text is only a name).
+  const handle = async (): Promise<unknown> => {
+    if (typeof got === "object" && (got as { addr?: unknown }).addr !== undefined) return got;
+    const fields = await readFields(bridge, ref, [property], { asText: false }).catch(() => null);
+    return fields?.[property];
+  };
+  const isHandle = (v: unknown) => typeof v === "object" && v !== null && typeof (v as { addr?: unknown }).addr === "string";
   const res = await readObjects(bridge, want.trim(), [], 2, { asText: false }).catch(() => null);
   const items = res?.items ?? [];
-  if (items.length !== 1) return undefined;
+  if (items.length !== 1) {
+    // A request that names no single object, on a property that holds an object, is not applied, even when the
+    // current object happens to be named like it.
+    return isHandle(await handle()) ? false : undefined;
+  }
   const target = items[0] as { addr?: string };
   if (typeof target.addr !== "string") return false;
   // By address, never by name: two objects can share a name (Appearance 3 and 4 both "Red"), so a refused write
-  // would read back as the requested one. The read-back text is a name, so the property is read again as a handle.
-  let current: unknown = got;
-  if (typeof got !== "object" || (got as { addr?: unknown }).addr === undefined) {
-    const fields = await readFields(bridge, ref, [property], { asText: false }).catch(() => null);
-    current = fields?.[property];
-  }
-  return typeof current === "object" && current !== null && (current as { addr?: unknown }).addr === target.addr;
+  // would read back as the requested one.
+  const current = await handle();
+  return isHandle(current) && (current as { addr: string }).addr === target.addr;
 }
 
 const isLocked = (v: unknown): boolean => typeof v === "string" ? v.trim() !== "" && !/^(no|off|false|0)$/i.test(v.trim()) : v === true;
@@ -94,7 +101,8 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   // A lock reads "" when unlocked and "UL" when locked (onPC 2.5.1, docs/probes/sb-01-playback-macos-2.5.1.md), so
   // a lock field's read-back counts as No or Yes.
   const lockState = (v: unknown) => (isLocked(v) ? "Yes" : "No");
-  const got = lockField ? lockState(res.value) : res.value;
+  // Clearing a reference ("") can read back as nothing at all: the bridge sends no value for a nil property.
+  const got = lockField ? lockState(res.value) : value === "" && (res.value === undefined || res.value === null) ? "" : res.value;
   const old = lockField ? (before ? lockState(before[lockField]) : undefined) : before?.[property];
   // Unchanged means the very same text: any other read-back is a change the console made.
   const unchanged = old !== undefined && old !== null && text(got) === text(old);

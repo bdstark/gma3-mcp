@@ -15,11 +15,13 @@ class Obj {
       // An appearance resolves to itself, as a reference property's target (asText false: summaries).
       // Appearances 3 and 5 share the name "Red" (review of PR #87): only the address tells them apart.
       const app = String(args.ref).match(/^Appearance (\d+)$/);
+      if (app && Number(app[1]) > 50) throw new Error(`no objects found for '${args.ref}'`);
       if (app) return { total: 1, offset: 0, count: 1, items: [{ name: this.appName(app[1]), class: "Appearance", addr: `addr:app${app[1]}` }] };
       const fields: Record<string, unknown> = {};
       for (const f of (args.fields as string[]) ?? []) {
         if (!(f in this.props)) continue;
         // asText false: a reference property comes back as the referenced object's summary.
+        if (f === "Appearance" && this.props.Appearance === "") continue;
         fields[f] = f === "Appearance" && args.asText === false ? { name: this.appName(this.props.Appearance), class: "Appearance", addr: `addr:app${this.props.Appearance}` } : f === "Appearance" ? this.appName(this.props.Appearance) : this.props[f];
       }
       return { total: 1, offset: 0, count: 1, items: [{ name: this.props.Name, class: "RenderQuality", fields }] };
@@ -30,15 +32,19 @@ class Obj {
       // As on onPC 2.5.1: a lock reads "UL" when locked and "" when not.
       if (p === "Lock") this.props.Lock = /^(yes|on|true)$/i.test(v) ? "UL" : "";
       // A macro line's Wait coerces a value it does not take to Follow (review of PR #87).
-      else if (this.props.Lock === "" && p === "Appearance") this.props[p] = v.replace(/^Appearance /, "");
+      // An appearance that does not exist (above 50) is not taken: the old one stays.
+      else if (this.props.Lock === "" && p === "Appearance") { if (!(Number(v.replace(/^Appearance /, "")) > 50)) this.props[p] = v.replace(/^Appearance /, ""); }
       else if (this.props.Lock === "" && p === "AddToCmdline") this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
       else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) ? Number(v).toFixed(3) : "Follow") : v;
+      // Clearing a reference: the property reads nil, and the set op sends no value.
+      if (p === "Appearance" && this.props.Appearance === "") return { ref: args.ref, property: p };
       return { ref: args.ref, property: p, value: p === "Appearance" ? this.appName(this.props[p]) : this.props[p] };
     });
   }
   /** The set op reads a reference back as the referenced object's name. */
+  appNames: Record<string, string> = { "3": "Red", "5": "Red", "6": "Appearance 7" };
   appName(no: string) {
-    return no === "3" || no === "5" ? "Red" : no === "6" ? "Appearance 7" : `App ${no}`;
+    return this.appNames[no] ?? `App ${no}`;
   }
 }
 
@@ -156,6 +162,15 @@ test("set_property: a Yes/No field named with Command or Cmd, a reference proper
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 7" });
     assert.equal(r.failed, true, JSON.stringify(r.result));
     assert.equal(r.result.value, "Appearance 7");
+    // A reference that names no object is not applied, even when the kept object is named like it (unlocked too).
+    o.props.Lock = "";
+    o.appNames["6"] = "Appearance 99";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 99" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.equal(r.result.value, "Appearance 99", "the kept appearance is named like the request");
+    // Clearing the reference reads back as nothing: that is the requested empty state.
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
   } finally {
     await h.close();
   }
