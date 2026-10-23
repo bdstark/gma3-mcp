@@ -180,6 +180,25 @@ r = request("selection.grid")
 check("selection.grid: a failing SelectionFirst is an error, never an empty selection", r.ok == false and r.code == "unreadable", J(r))
 SelectionFirst = realFirst
 
+-- ops.set says whether its read-back worked: a cleared property and a failed read both send no value (bridge 0.42.0,
+-- review of PR #87).
+do
+  local obj = H({ name = "Settable", class = "Appearance", no = 5, props = { Note = "old", Broken = function() error("read failed") end } })
+  objects["Appearance 5"] = obj
+  local savedSet = methods.Set
+  methods.Set = function(u, k, v)
+    local key = tostring(k):lower()
+    if key ~= "broken" then registry[u].props[key] = (v ~= "" and v or nil) end
+  end
+  r = request("set", { ref = "Appearance 5", property = "Note", value = "" })
+  check("set: a property that reads empty after the write is readOk with no value", r.ok and r.result.value == nil and r.result.readOk == true and r.result.readError == nil, J(r))
+  r = request("set", { ref = "Appearance 5", property = "Note", value = "new" })
+  check("set: a read-back value is readOk", r.ok and r.result.value == "new" and r.result.readOk == true, J(r))
+  r = request("set", { ref = "Appearance 5", property = "Broken", value = "" })
+  check("set: a read-back that raises is not readOk and names the error", r.ok and r.result.value == nil and r.result.readOk == false and tostring(r.result.readError):find("read failed") ~= nil, J(r))
+  methods.Set = savedSet
+end
+
 print(string.format("%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) end
 print("ALL PASSED")

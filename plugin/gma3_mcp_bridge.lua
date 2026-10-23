@@ -2836,8 +2836,10 @@ ops.set = function(args)
   if type(value) ~= "string" then value = tostring(value) end
   local ok, err = pcall(h.Set, h, args.property, value)
   if not ok then error("Set failed: " .. tostring(err)) end
-  local newValue = getProp(h, args.property, true)
-  return { ref = args.ref, property = args.property, value = newValue }
+  -- readOk tells an empty property (a cleared reference reads nil) from a read-back that failed: both send no value
+  -- (bridge 0.42.0, review of PR #87).
+  local newValue, readError = getProp(h, args.property, true)
+  return { ref = args.ref, property = args.property, value = newValue, readOk = readError == nil, readError = readError }
 end
 
 ops.setfader = function(args)

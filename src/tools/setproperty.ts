@@ -102,8 +102,9 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   // a lock field's read-back counts as No or Yes.
   // No value at all stays unknown: the set op sends none when the read-back fails.
   const lockState = (v: unknown) => (v === undefined || v === null ? undefined : isLocked(v) ? "Yes" : "No");
-  // Clearing a reference ("") can read back as nothing at all: the bridge sends no value for a nil property.
-  const got = lockField ? lockState(res.value) : value === "" && (res.value === undefined || res.value === null) ? "" : res.value;
+  // Clearing a reference ("") can read back as nothing at all: the bridge sends no value for a nil property. A failed
+  // read sends none either, so only a bridge that says the read worked (readOk, 0.42.0) proves the clear.
+  const got = lockField ? lockState(res.value) : value === "" && (res.value === undefined || res.value === null) && res.readOk === true ? "" : res.value;
   const old = lockField ? (before ? lockState(before[lockField]) : undefined) : before?.[property];
   // Unchanged means the very same text: any other read-back is a change the console made.
   const unchanged = old !== undefined && old !== null && text(got) === text(old);
@@ -118,7 +119,7 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   }
   const lockText = locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ");
   const error = got === undefined || got === null
-    ? `${property} of ${ref} could not be read back after the write; whether the console applied ${JSON.stringify(value)} is unknown`
+    ? `${property} of ${ref} could not be read back after the write${typeof res.readError === "string" ? ` (${res.readError})` : ""}; whether the console applied ${JSON.stringify(value)} is unknown`
     : locks.length
     ? `${ref} is locked (${lockText}): the console kept ${property} = ${JSON.stringify(got)} and did not apply ${JSON.stringify(value)}. Unlock it first (Unlock ${ref}), set the property, and lock it again`
     : unchanged

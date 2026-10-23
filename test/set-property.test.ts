@@ -37,7 +37,7 @@ class Obj {
       else if (this.props.Lock === "" && p === "AddToCmdline") this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
       else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) ? Number(v).toFixed(3) : "Follow") : v;
       // Clearing a reference: the property reads nil, and the set op sends no value.
-      if (p === "Appearance" && this.props.Appearance === "") return { ref: args.ref, property: p };
+      if (p === "Appearance" && this.props.Appearance === "") return { ref: args.ref, property: p, readOk: true };
       return { ref: args.ref, property: p, value: p === "Appearance" ? this.appName(this.props[p]) : this.props[p] };
     });
   }
@@ -168,9 +168,17 @@ test("set_property: a Yes/No field named with Command or Cmd, a reference proper
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 99" });
     assert.equal(r.failed, true, JSON.stringify(r.result));
     assert.equal(r.result.value, "Appearance 99", "the kept appearance is named like the request");
-    // Clearing the reference reads back as nothing: that is the requested empty state.
+    // Clearing the reference reads back as nothing: that is the requested empty state, when the bridge says the read
+    // worked (readOk). With a failed read (or an older bridge, which sends no readOk) it is unknown.
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "" });
     assert.equal(r.failed, false, JSON.stringify(r.result));
+    h.fake.on("set", (args) => ({ ref: args.ref, property: args.property, readOk: false, readError: "read failed" }));
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.match(String(r.result.error), /could not be read back after the write \(read failed\)/);
+    h.fake.on("set", (args) => ({ ref: args.ref, property: args.property }));
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
   } finally {
     await h.close();
   }
