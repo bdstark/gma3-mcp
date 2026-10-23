@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
 import { BridgeReplyError } from "./helpers/fake-bridge.js";
-import { registerPatchTools } from "../src/tools/patch.js";
+import { LIBRARY_MAX_CHARS, registerPatchTools } from "../src/tools/patch.js";
 
 /**
  * SU-03 tools (gma3_patch_library, gma3_patch_import, gma3_patch_remove_type) against a fake bridge: the copy
@@ -26,6 +26,8 @@ class LibraryWorld {
   dest = "Root";
   pending: string[] = [];
   usedBy: Record<string, number[]> = { "G-1": [101, 102] };
+  /** Fixtures per type number, as a bridge from 0.43.0 counts them (by type object); overrides usedBy when set. */
+  usedByNo: Record<number, number[]> | null = null;
   /** What an import of a file creates: [manufacturer, name], or "error" (the console answers with an error). */
   creates: Record<string, Array<[string, string]> | "error"> = {
     "oppsk@36pcs 4in1 led wall washer.pxml": [["Oppsk", "36PCS 4in1 LED Wall Washer"]],
@@ -133,7 +135,8 @@ class LibraryWorld {
     f.on("patch.typeInfo", (args) => {
       const t = this.live.find((x) => x.no === args.type || x.name === args.type);
       if (!t) throw new BridgeReplyError(`[no-type] no fixture type ${args.type}`, "no-type");
-      return { type: { ...t, usedBy: this.usedBy[t.guid] ?? [], realUsed: (this.usedBy[t.guid] ?? []).length } };
+      const users = this.usedByNo ? this.usedByNo[t.no] ?? [] : this.usedBy[t.guid] ?? [];
+      return { type: { ...t, usedBy: users, realUsed: users.length, index: this.live.indexOf(t) + 1 } };
     });
     f.on("patch.removeType", (args) => {
       if (!this.copy) throw new BridgeReplyError("[copy-closed] not open", "copy-closed");
@@ -149,8 +152,10 @@ class LibraryWorld {
       // FixtureTypes hashed by identity (GUIDs) in order; prefixOfLive limits the copy to the live count,
       // excludeGuids leaves types out of the live side; AttributeDefinitions by count, prefix-limited the same way.
       const side = args.side === "copy" ? this.copy ?? [] : this.live;
+      // excludeTypes (bridge 0.43.0) leaves out only the type at that position with that GUID, and replaces excludeGuids.
       const excl = new Set((args.excludeGuids as string[]) ?? []);
-      let list = side.filter((x) => !excl.has(x.guid));
+      const byPos = args.excludeTypes as Array<{ index: number; guid: string }> | undefined;
+      let list = side.filter((x, i) => (byPos ? !byPos.some((e) => e.index === i + 1 && e.guid === x.guid) : !excl.has(x.guid)));
       if (args.prefixOfLive) list = list.slice(0, this.live.length);
       if (args.collection === "FixtureTypes") return { objects: list.length, hash: list.map((x) => x.guid).join(","), complete: true };
       const attrs = args.side === "copy" && !args.prefixOfLive && this.copy ? this.attributes : this.attributesBefore;
@@ -182,6 +187,80 @@ test("gma3_patch_library passes the search through, include_sets as includeSets"
     assert.equal(result.entries[0].file, "oppsk@36pcs 4in1 led wall washer.pxml");
     const req = h.fake.requests.find((r) => r.op === "patch.library")!;
     assert.deepEqual(req.args, { query: "oppsk wall", sources: ["grandma2"], includeSets: true, limit: 5 });
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_library compact: file names per library, inShow and notVerified only where they apply, 500 by default", async () => {
+  const { h } = await setup();
+  try {
+    const { result } = await h.callJson("gma3_patch_library", { query: "acme", compact: true });
+    assert.equal(result.compact, true);
+    assert.deepEqual(result.files, { grandma3: ["acme@spot.xml"], user: ["acme@spot.xml"] });
+    assert.deepEqual(result.notVerified, { user: ["acme@spot.xml"] }, "per library: the grandMA3 copy of the same name is verified");
+    assert.equal(result.entries, undefined);
+    assert.equal(h.fake.requests.find((r) => r.op === "patch.library")!.args.limit, 500);
+    assert.equal(h.fake.requests.find((r) => r.op === "patch.library")!.args.headers, false, "compact asks the bridge for no .xml header data");
+    const adj = await h.callJson("gma3_patch_library", { query: "mega hex", compact: true });
+    assert.deepEqual(adj.result.inShow, { grandma2: { "adj@mega hex par.pxml": [{ no: 1, name: "Mega Hex Par" }] } });
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_library: a broad page is cut to fit the client, with the offset to ask for next (live 2026-10-22: 95-145 KB)", async () => {
+  const { h, w } = await setup();
+  for (let i = 0; i < 500; i++) w.library.push({ source: "grandma2", file: `adj@fixture model number ${i}.pxml`, format: "pxml", manufacturer: "adj", model: `fixture model number ${i}`, modesKnown: false, verified: true, set: false });
+  try {
+    const full = await h.callJson("gma3_patch_library", { query: "adj", limit: 500 });
+    assert.ok(full.text.length <= LIBRARY_MAX_CHARS, `${full.text.length} characters`);
+    assert.ok(full.result.count < 501 && full.result.count > 50, String(full.result.count));
+    assert.equal(full.result.nextOffset, full.result.count);
+    assert.match(full.result.truncated, /compact: true/);
+    const compact = await h.callJson("gma3_patch_library", { query: "adj", compact: true });
+    assert.ok(compact.text.length <= LIBRARY_MAX_CHARS);
+    assert.equal(compact.result.count, 501, "file names alone fit");
+    assert.equal(compact.result.truncated, undefined);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_library: an entry over the budget on its own is listed without its modes and description, and the next page moves on (review of PR #87)", async () => {
+  const { h, w } = await setup();
+  const modes = Array.from({ length: 3000 }, (_, i) => `Mode number ${i} with a long name`);
+  w.library = [
+    { source: "user", file: "huge@header.xml", format: "xml", manufacturer: "Huge", model: "header", name: "Header", modes, description: "x".repeat(5000), modesKnown: true, verified: false, set: false } as any,
+    { source: "user", file: "huge@second.xml", format: "xml", manufacturer: "Huge", model: "second", name: "Second", modes: ["A"], modesKnown: true, verified: false, set: false },
+  ];
+  try {
+    const { result, text } = await h.callJson("gma3_patch_library", { query: "huge" });
+    assert.ok(text.length <= LIBRARY_MAX_CHARS, `${text.length} characters`);
+    assert.equal(result.count, 1);
+    assert.equal(result.entries[0].file, "huge@header.xml");
+    assert.equal(result.entries[0].modes, undefined);
+    assert.equal(result.entries[0].description, undefined);
+    assert.match(result.entries[0].oversized, /3000/);
+    assert.equal(result.nextOffset, 1, "the next page starts after the oversized entry");
+    // Still too large without its modes (a long inShow list): a bounded form, with the count of the types left out.
+    w.live = Array.from({ length: 400 }, (_, i) => ty(i + 1, `Header ${"y".repeat(150)}`, "Huge", `G-h${i}`));
+    w.library[0] = { source: "user", file: "huge@header.xml", format: "xml", manufacturer: "Huge", model: "header", name: `Header ${"y".repeat(150)}`, modes, modesKnown: true, verified: false, set: false };
+    w.inShow = () => w.live.map((t) => ({ no: t.no, name: t.name, guid: t.guid }));
+    const big = await h.callJson("gma3_patch_library", { query: "huge" });
+    assert.ok(big.text.length <= LIBRARY_MAX_CHARS, `${big.text.length} characters`);
+    assert.equal(big.result.count, 1);
+    assert.equal(big.result.entries[0].inShow.length, 5);
+    assert.equal(big.result.entries[0].inShowCount, 400);
+    assert.equal(big.result.nextOffset, 1);
+    assert.match(big.result.truncated, /offset 1/);
+    // Compact keeps the same warning: five of 400 matching types, and why (review of PR #87).
+    w.library = [w.library[0]];
+    const compact = await h.callJson("gma3_patch_library", { query: "huge", compact: true });
+    assert.ok(compact.text.length <= LIBRARY_MAX_CHARS, `${compact.text.length} characters`);
+    assert.equal(compact.result.inShow.user["huge@header.xml"].length, 5);
+    assert.equal(compact.result.inShowCount.user["huge@header.xml"], 400);
+    assert.match(compact.result.oversized.user["huge@header.xml"], /over 40000 characters/);
   } finally {
     await h.close();
   }
@@ -364,6 +443,52 @@ test("gma3_patch_remove_type: removes an unused type by GUID, reports the renumb
     const fps = h.fake.requests.filter((r) => r.op === "patch.fingerprint" && r.args.side === "live");
     assert.ok(fps.every((r) => JSON.stringify(r.args.excludeGuids) === '["G-2"]'));
     assert.deepEqual(w.live.map((t) => `${t.no}:${t.name}`), ["1:Mega Hex Par", "2:Dimmer"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_import: a rebuilt GDTF imported again (same GUID) is read back by its number, not the older type's GUID (live 2026-10-22)", async () => {
+  const { h, w } = await setup();
+  // The older import of the same file: the console gives the new one the same GUID.
+  w.live.push(ty(4, "Sentinel Spot Q60 ILS", "Chauvet DJ", "G-new-Sentinel Spot Q60 ILS"));
+  try {
+    const { result, isError } = await h.callJson("gma3_patch_import", { file: "Chauvet_DJ@Sentinel_Spot_Q60_ILS@2026-10-21.gdtf", allow_duplicate: true, exclusive: true });
+    assert.equal(isError, false, JSON.stringify(result, null, 2));
+    assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+    assert.equal(result.type.no, 5);
+    assert.deepEqual(w.live.filter((t) => t.guid === "G-new-Sentinel Spot Q60 ILS").map((t) => t.no), [4, 5]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_import: a type a GDTF already imported is a duplicate even when the bridge's inShow misses the underscores (bridge before 0.38.1)", async () => {
+  const { h, w, ops } = await setup();
+  // The fake's inShow compares names exactly, like bridge 0.38.0: "180W_Beam" never equals "180W Beam".
+  w.library.push({ source: "user", file: "SHEHDS@180W_Beam@2026-10-22.gdtf", format: "gdtf", manufacturer: "SHEHDS", model: "180W_Beam", revision: "2026-10-22", modesKnown: false, verified: true, set: false });
+  w.live.push(ty(4, "180W Beam", "SHEHDS", "G-beam"));
+  try {
+    const { result } = await h.callJson("gma3_patch_import", { file: "SHEHDS@180W_Beam@2026-10-22.gdtf", exclusive: true });
+    assert.equal(result.outcome, "failed");
+    assert.match(result.summary, /already has type 4 "180W Beam".*allow_duplicate/);
+    assert.ok(!ops().includes("patch.enter"));
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_remove_type: an unused import is removed although a newer import of the same GDTF (same GUID) is in use (live 2026-10-22)", async () => {
+  const { h, w } = await setup();
+  w.live.push(ty(4, "Spare", "Test", "G-2"));
+  w.usedByNo = { 1: [101, 102], 4: [201, 202] };
+  try {
+    const { result, isError } = await h.callJson("gma3_patch_remove_type", { type: 2, exclusive: true });
+    assert.equal(isError, false, JSON.stringify(result, null, 2));
+    assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+    const fps = h.fake.requests.filter((r) => r.op === "patch.fingerprint" && r.args.side === "live");
+    assert.ok(fps.every((r) => JSON.stringify(r.args.excludeTypes) === '[{"index":2,"guid":"G-2"}]'));
+    assert.deepEqual(w.live.map((t) => `${t.no}:${t.name}:${t.guid}`), ["1:Mega Hex Par:G-1", "2:Dimmer:G-3", "3:Spare:G-2"]);
   } finally {
     await h.close();
   }

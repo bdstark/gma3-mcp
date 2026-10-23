@@ -26,7 +26,9 @@
  *     (501) and its cells (501.1) are separate selection items.
  *   - The group stores its selection in SelectionData; the bridge's group.read op (0.21.0) reads it. Recalling a
  *     group adds the grid cursor to the stored positions, so the recall check recalls at Grid 0/0/0. With
- *     PreserveGridPositions No, a recall at the origin removes gaps and offsets.
+ *     PreserveGridPositions No, a recall at the origin removes gaps and offsets. A group of ONE fixture is recalled
+ *     at the cursor whatever its stored cell (live 2026-10-22, groups 38, 91, 92, 109 and 990 of the Halloween show:
+ *     stored 3/2/0, recalled 0/0/0), so its recall checks the fixture only; read-back checks the stored cell.
  *   - Store Group on an existing group overwrites it (with or without /Overwrite) and keeps its name; /Merge shifts
  *     and reorders, so the tools always store a complete list. A locked group answers "Object locked" and silently
  *     ignores Name writes. Active selection MAtricks were not stored into the group.
@@ -665,19 +667,22 @@ async function storeGroupResolved(ctx: ToolContext, raw: StoreGroupArgs): Promis
       } catch (err) {
         steps.push(readFailure("read_back", "group.read", err));
       }
-      // Recall at the grid origin: the same fixtures must come back (on the same cells, when preserved).
+      // Recall at the grid origin: the same fixtures must come back (on the same cells, when preserved; a lone
+      // fixture comes back at the cursor, so only the fixture is compared).
+      const single = items.length === 1;
+      const recallCells = preserve && !single;
       const recall = await runSteps([
         { name: "recall_clear", run: () => commandStep(bridge, "recall_clear", "ClearSelection", t) },
         { name: "recall_cursor", run: () => commandStep(bridge, "recall_cursor", "Grid 0/0/0", t) },
         { name: "recall_group", run: () => commandStep(bridge, "recall_group", `Group ${group}`, t) },
-        { name: "recall_check", run: selectionCheck("recall_check", bridge, items, preserve, t, addrs) },
+        { name: "recall_check", run: selectionCheck("recall_check", bridge, items, recallCells, t, addrs) },
       ]);
       steps.push(...recall.steps);
       const rc = recall.steps.find((s) => s.name === "recall_check");
       if (rc?.status === "failed" && rc.op === "selection.grid" && rc.error?.startsWith("the selection")) checks.push(`recalled: ${rc.error}`);
       const recallOk = rc?.status === "succeeded";
       if (checks.length) verification = { status: "mismatched", checked: `fixtures and grid cells of ${ref}, stored and recalled at 0/0/0`, detail: checks.join("; ") };
-      else if (readOk && recallOk) verification = { status: "matched", checked: `fixtures and grid cells of ${ref} (stored SelectionData${name !== undefined ? ", name" : ""}, PreserveGridPositions) and the selection after recalling it at Grid 0/0/0${preserve ? "" : " (fixtures only: positions are not preserved)"}` };
+      else if (readOk && recallOk) verification = { status: "matched", checked: `fixtures and grid cells of ${ref} (stored SelectionData${name !== undefined ? ", name" : ""}, PreserveGridPositions) and the selection after recalling it at Grid 0/0/0${!preserve ? " (fixtures only: positions are not preserved)" : single ? " (the fixture only: the console recalls a lone fixture at the grid cursor)" : ""}` };
       else verification = unavailable(`the stored group or its recall could not be read: ${[...steps].reverse().find((s) => s.status !== "succeeded")?.error ?? "unknown"}`, ref);
     }
     // Leave no selection behind and the cursor at the origin, after a failure too (once anything was sent).
@@ -1152,7 +1157,7 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
         "row (along one axis), rectangle (row by row, optional serpentine), mirror (left and right halves listed outside-in, right[i] mirrors left[i], optional centre gap), rows (one row per list, each spread over width cells). preview: true returns the expanded list, bounds, gaps and shared cells without sending anything. " +
         "Rules: duplicate fixtures are refused (the console silently ignores a second selection); shared cells are refused unless allow_shared_cells: true; gaps and offsets are kept (preserve_grid_positions, default true; false lets a recall at the origin compact them); a fixture and its own cells (501, 501.1) are separate items; missing fixtures are refused. An existing group needs overwrite: true (its name is kept unless name is given); a locked group is refused. " +
         "Requires exclusive: true (not for preview): the tool clears the console's fixture selection (programmer values are kept), selects each fixture after its own 'Grid x/y/z' command, checks that the selection is exactly the plan before 'Store Group', sets PreserveGridPositions and the name, " +
-        "then (verify, default true) reads the stored group back and recalls it at Grid 0/0/0 to check order and cells, and finally clears the selection and returns the cursor to 0/0/0. Grid cells are not physical stage positions. Needs bridge 0.21.0. " +
+        "then (verify, default true) reads the stored group back and recalls it at Grid 0/0/0 to check order and cells (a one-fixture group is recalled at the cursor, so its recall checks the fixture and the read-back its cell), and finally clears the selection and returns the cursor to 0/0/0. Grid cells are not physical stage positions. Needs bridge 0.21.0. " +
         "rows: rows of different lengths spread over one width (align spread, start or center); ranges run in their own direction (\"402.36 Thru 402.1\"). " +
         BATCH_NOTE,
       inputSchema: {

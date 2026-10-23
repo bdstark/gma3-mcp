@@ -158,6 +158,11 @@ class Console {
       if ((m = c.match(/^Group (\d+)$/))) {
         const g = this.groups.get(Number(m[1]));
         if (!g) return { feedback: "Object not found" };
+        // A lone fixture is recalled at the cursor, whatever its stored cell (live 2026-10-22).
+        if (g.cells.length === 1) {
+          if (!this.selection.some((x) => x.id === g.cells[0].id)) this.selection.push({ id: g.cells[0].id, ...this.cursor });
+          return { feedback: "OK" };
+        }
         for (const s of g.cells) if (!this.selection.some((x) => x.id === s.id)) this.selection.push({ id: s.id, x: s.x + this.cursor.x, y: s.y + this.cursor.y, z: s.z + this.cursor.z });
         return { feedback: "OK" };
       }
@@ -370,6 +375,21 @@ test("store_group keeps shared cells when allowed and preserve_grid_positions fa
   assert.equal(con.groups.get(906)!.preserve, "No");
   assert.match(np.result.verification.checked, /fixtures only/);
   assert.ok(np.result.warnings.some((w: string) => /removes the gaps/.test(w)));
+});
+
+test("store_group: a one-fixture group off the origin matches; the recall (at the cursor) checks the fixture, read-back its cell (live 2026-10-22)", async () => {
+  const { result, isError } = await h.callJson("gma3_store_group", { group: 990, items: [{ fixture: 401, x: 3, y: 2 }], exclusive: true });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  assert.match(result.verification.checked, /lone fixture at the grid cursor/);
+  assert.deepEqual(con.groups.get(990)!.cells.map((c) => `${c.id}@${c.x}/${c.y}/${c.z}`), ["401@3/2/0"]);
+  // The stored cell is still checked: a store that lands elsewhere is a mismatch.
+  h.fake.reset();
+  con.install(h);
+  con.corruptStore = true;
+  const off = await h.callJson("gma3_store_group", { group: 991, items: [{ fixture: 401, x: 3, y: 2 }], exclusive: true });
+  assert.equal(off.result.verification.status, "mismatched", JSON.stringify(off.result.verification));
+  assert.match(off.result.verification.detail, /stored: /);
 });
 
 test("store_group refuses an existing group without overwrite, overwrites with /Overwrite and keeps the name, and refuses a locked group", async () => {
