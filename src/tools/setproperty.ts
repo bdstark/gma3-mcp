@@ -57,17 +57,21 @@ export function sameValue(got: unknown, want: unknown, property = ""): boolean {
  * A reference property (Appearance, Object, ...) reads back as the referenced object's name or a handle summary, not
  * the reference that was sent ("Appearance 3"): the request is resolved to its object and compared by address or name.
  */
-async function sameObject(bridge: Gma3Bridge, got: unknown, want: unknown, property: string): Promise<boolean> {
+async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: unknown, property: string): Promise<boolean> {
   if (typeof want !== "string" || TEXTUAL.test(property) || got === null || got === undefined || !/^[A-Za-z][A-Za-z ]*\s+\d+(\.\d+)*$/.test(want.trim())) return false;
   const res = await readObjects(bridge, want.trim(), [], 2, { asText: false }).catch(() => null);
   const items = res?.items ?? [];
   if (items.length !== 1) return false;
-  const target = items[0] as { name?: string; addr?: string };
-  if (typeof got === "object") {
-    const g = got as { addr?: unknown; name?: unknown };
-    return (g.addr !== undefined && g.addr === target.addr) || (g.addr === undefined && g.name === target.name);
+  const target = items[0] as { addr?: string };
+  if (typeof target.addr !== "string") return false;
+  // By address, never by name: two objects can share a name (Appearance 3 and 4 both "Red"), so a refused write
+  // would read back as the requested one. The read-back text is a name, so the property is read again as a handle.
+  let current: unknown = got;
+  if (typeof got !== "object" || (got as { addr?: unknown }).addr === undefined) {
+    const fields = await readFields(bridge, ref, [property], { asText: false }).catch(() => null);
+    current = fields?.[property];
   }
-  return typeof target.name === "string" && String(got) === target.name;
+  return typeof current === "object" && current !== null && (current as { addr?: unknown }).addr === target.addr;
 }
 
 const isLocked = (v: unknown): boolean => typeof v === "string" ? v.trim() !== "" && !/^(no|off|false|0)$/i.test(v.trim()) : v === true;
@@ -91,7 +95,7 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   // Unchanged means the very same text: any other read-back is a change the console made.
   const unchanged = old !== undefined && old !== null && text(got) === text(old);
   const locks = LOCK_FIELDS.filter((f) => f !== lockField && isLocked(before?.[f]));
-  if (sameValue(got, value, property) || (await sameObject(bridge, got, value, property))) {
+  if (sameValue(got, value, property) || (await sameObject(bridge, ref, got, value, property))) {
     // Already the requested value: the end state is right, but on a locked object the write itself was refused.
     const note = unchanged && locks.length ? { note: `${property} already read ${JSON.stringify(old)}; ${ref} is locked (${locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ")}), so the console did not take the write itself`, locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {};
     return { result: { ...res, requested: value, verified: true, ...note }, failed: false };

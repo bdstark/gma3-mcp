@@ -9,14 +9,19 @@ import { sameValue, setPropertyChecked } from "../src/tools/setproperty.js";
  */
 
 class Obj {
-  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000" };
+  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000", Appearance: "1" };
   install(h: Harness) {
     h.fake.on("objects", (args) => {
       // An appearance resolves to itself, as a reference property's target (asText false: summaries).
+      // Appearances 3 and 5 share the name "Red" (review of PR #87): only the address tells them apart.
       const app = String(args.ref).match(/^Appearance (\d+)$/);
-      if (app) return { total: 1, offset: 0, count: 1, items: [{ name: `App ${app[1]}`, class: "Appearance", addr: `addr:app${app[1]}` }] };
-      const fields: Record<string, string> = {};
-      for (const f of (args.fields as string[]) ?? []) if (f in this.props) fields[f] = this.props[f];
+      if (app) return { total: 1, offset: 0, count: 1, items: [{ name: this.appName(app[1]), class: "Appearance", addr: `addr:app${app[1]}` }] };
+      const fields: Record<string, unknown> = {};
+      for (const f of (args.fields as string[]) ?? []) {
+        if (!(f in this.props)) continue;
+        // asText false: a reference property comes back as the referenced object's summary.
+        fields[f] = f === "Appearance" && args.asText === false ? { name: this.appName(this.props.Appearance), class: "Appearance", addr: `addr:app${this.props.Appearance}` } : f === "Appearance" ? this.appName(this.props.Appearance) : this.props[f];
+      }
       return { total: 1, offset: 0, count: 1, items: [{ name: this.props.Name, class: "RenderQuality", fields }] };
     });
     h.fake.on("set", (args) => {
@@ -24,11 +29,15 @@ class Obj {
       const v = String(args.value);
       if (p === "Lock") this.props.Lock = /^(yes|on|true)$/i.test(v) ? "Yes" : "";
       // A macro line's Wait coerces a value it does not take to Follow (review of PR #87).
-      else if (this.props.Lock === "" && p === "Appearance") this.props[p] = `App ${v.replace(/^Appearance /, "")}`;
+      else if (this.props.Lock === "" && p === "Appearance") this.props[p] = v.replace(/^Appearance /, "");
       else if (this.props.Lock === "" && p === "AddToCmdline") this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
       else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) ? Number(v).toFixed(3) : "Follow") : v;
-      return { ref: args.ref, property: p, value: this.props[p] };
+      return { ref: args.ref, property: p, value: p === "Appearance" ? this.appName(this.props[p]) : this.props[p] };
     });
+  }
+  /** The set op reads a reference back as the referenced object's name. */
+  appName(no: string) {
+    return no === "3" || no === "5" ? "Red" : `App ${no}`;
   }
 }
 
@@ -124,7 +133,7 @@ test("set_property: a Yes/No field named with Command or Cmd, a reference proper
     // Appearance reads back as the appearance's name: the request is resolved and compared by its object.
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 3" });
     assert.equal(r.failed, false, JSON.stringify(r.result));
-    assert.equal(r.result.value, "App 3");
+    assert.equal(r.result.value, "Red");
     // Already the requested value on a locked object: the state is right, and the result says the write was refused.
     o.props.HazeEnabled = "Yes";
     o.props.Lock = "Yes";
@@ -135,6 +144,10 @@ test("set_property: a Yes/No field named with Command or Cmd, a reference proper
     // A locked object whose appearance is not the requested one is still an error.
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 4" });
     assert.equal(r.failed, true, JSON.stringify(r.result));
+    // ... also when the requested appearance has the same name as the kept one ("Red"): compared by address.
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 5" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.equal(r.result.value, "Red");
   } finally {
     await h.close();
   }
