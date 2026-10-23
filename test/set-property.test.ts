@@ -301,12 +301,22 @@ test("set_property: the console's form of a command and a duration's display tex
       assert.equal(r.failed, false, JSON.stringify(r.result));
       assert.equal(r.result.value, "Go+ Sequence 1");
     }
-    // Locked on that line: the end state is right, and the note names the lock.
+    // Locked on that line, the console did not write it, so its form proves nothing: an error naming the lock
+    // (review of PR #92: a kept "Echo Sequence" is not "Echo Seq").
     o.props.Lock = "UL";
     r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "go+ seq 1" });
-    assert.equal(r.failed, false, JSON.stringify(r.result));
-    assert.match(String(r.result.note), /locked \(Lock = "UL"\)/);
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.match(String(r.result.error), /locked \(Lock = "UL"\)/);
+    o.props.Command = "Echo Sequence";
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "Echo Seq" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    // ... and the same with the macro locked instead of its line.
     o.props.Lock = "";
+    o.owner = { ref: "Macro 1", Lock: "UL" };
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: "Echo Seq" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.deepEqual(r.result.lockedOwner, { ref: "Macro 1", Lock: "UL" });
+    o.owner = null;
     o.props.Appearance = "8";
     // A bridge failure while resolving the requested object leaves the result unknown, never a match.
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 66" });
@@ -370,6 +380,17 @@ test("set_property: StructureLocked, an owner's lock, a repeated clear on a lock
     assert.equal(r.failed, false, JSON.stringify(r.result));
     assert.deepEqual(r.result.locked, { Lock: "UL" });
     assert.match(String(r.result.note), /Appearance already read ""; RenderQuality 2 is locked/);
+    o.props.Lock = "";
+    // A bare number refers to an object of the class the property holds, compared by address (review of PR #92).
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: 3 });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    assert.equal(r.result.value, "Red");
+    // A kept appearance that is named "3" is not Appearance 3.
+    o.appNames["9"] = "3";
+    o.props.Appearance = "9";
+    o.props.Lock = "UL";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: 3 });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
     o.props.Lock = "";
     // A long wait reads in hundredths: 3600.001 reads "1h00m00.00" and is applied.
     r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 3600.001 });

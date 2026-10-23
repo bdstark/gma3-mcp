@@ -40,9 +40,9 @@ const TEXTUAL = /^(name|note|label|text|description|comment|title|command|path|f
  * spacing, number format and Yes/No spellings aside: a property set from a boolean or a number, or one whose name is
  * not a text field (HazeEnabled "Yes" for true, FadeTime "2.500" for 2.5, Trigger "Follow" for "follow").
  */
-export function sameValue(got: unknown, want: unknown, property = ""): boolean {
+export function sameValue(got: unknown, want: unknown, property = "", opts: { consoleForm?: boolean } = {}): boolean {
   const exactA = text(got);
-  if (/^command$/i.test(property)) return exactA !== undefined && (exactA === String(want) || consoleForm(exactA, String(want)));
+  if (/^command$/i.test(property)) return exactA !== undefined && (exactA === String(want) || (opts.consoleForm !== false && consoleForm(exactA, String(want))));
   // A macro line's Wait 0 is Follow (SB-07); any other text still has to match.
   if (/^wait$/i.test(property) && /^follow$/i.test(exactA ?? "") && (want === 0 || String(want).trim() === "0")) return true;
   if (TEXTUAL.test(property)) return exactA !== undefined && exactA === String(want);
@@ -76,8 +76,8 @@ export function sameValue(got: unknown, want: unknown, property = ""): boolean {
  * "Store Cue 5 /Merge /NoConfirmation"): the same statements and tokens, quoted text and numbers exactly. A word may
  * differ only where the console wrote a command keyword (COMMAND_KEYWORDS: "Sequence", not "Xyzzy") or an option
  * ("/NoConfirmation"), capitalised, that the sent word abbreviates (its letters in order, from the first); other words
- * are literal arguments ("Echo xyzzy", "Echo Xyzzy") and compare exactly. So a kept line is never taken for the
- * spelling of another request, and a repeated request finds its own console form again.
+ * are literal arguments ("Echo xyzzy", "Echo Xyzzy") and compare exactly. A literal that spells a keyword ("Echo
+ * Sequence") cannot be told from one here, so setPropertyChecked takes this form only when the console wrote the line.
  */
 export function consoleForm(stored: string, sent: string): boolean {
   const a = tokenize(stored);
@@ -102,19 +102,25 @@ export function consoleForm(stored: string, sent: string): boolean {
 
 /**
  * A reference property (Appearance, Object, ...) reads back as the referenced object's name or a handle summary, not
- * the reference that was sent ("Appearance 3"): the request is resolved to its object and compared by address or name.
+ * the reference that was sent ("Appearance 3", 3): the request is resolved to its object and compared by address.
  */
 async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: unknown, property: string): Promise<boolean | undefined> {
   // undefined: not a reference (by its shape, or the property holds no object), so the text comparison decides.
-  // A reference is a keyword and a number or a quoted name: Appearance 3, Appearance "Red".
-  if (typeof want !== "string" || TEXTUAL.test(property) || got === null || got === undefined || !/^[A-Za-z][A-Za-z ]*\s+(\d+(\.\d+)*|"[^"]+")$/.test(want.trim())) return undefined;
+  // A reference is a keyword and a number or a quoted name (Appearance 3, Appearance "Red"), or the number or quoted
+  // name alone (3, "Red") in the class of the object the property holds.
+  if (typeof want === "boolean" || TEXTUAL.test(property) || got === null || got === undefined) return undefined;
+  const w = String(want).trim();
+  const keyed = /^[A-Za-z][A-Za-z ]*\s+(\d+(\.\d+)*|"[^"]+")$/.test(w);
+  if (!keyed && !/^(\d+(\.\d+)*|"[^"]+")$/.test(w)) return undefined;
   // First, does the property hold an object? Its current one, as a handle summary (the read-back text is a name).
   // Bridge errors propagate: a failed read must not decide either way (readFields / readObjects give null only for
   // "not found").
   const isHandle = (v: unknown) => typeof v === "object" && v !== null && typeof (v as { addr?: unknown }).addr === "string";
   const current = isHandle(got) ? got : (await readFields(bridge, ref, [property], { asText: false }))?.[property];
   if (!isHandle(current)) return undefined;
-  const res = await readObjects(bridge, want.trim(), [], 2, { asText: false });
+  const cls = (current as { class?: unknown }).class;
+  if (!keyed && (typeof cls !== "string" || !/^[A-Za-z]+$/.test(cls))) return undefined;
+  const res = await readObjects(bridge, keyed ? w : `${cls} ${w}`, [], 2, { asText: false });
   const items = res?.items ?? [];
   // A request that names no single object is not applied, even when the current object is named like it.
   if (items.length !== 1) return false;
@@ -148,6 +154,15 @@ export function ownerRefs(ref: string): string[] {
     r = next;
   }
   return owners;
+}
+
+/** The nearest owner whose Lock is set, if any (an unreadable owner counts as not locked). */
+async function lockedOwner(bridge: Gma3Bridge, ref: string): Promise<{ ref: string; lock: unknown } | undefined> {
+  for (const o of ownerRefs(ref)) {
+    const lock = (await readFields(bridge, o, ["Lock"]).catch(() => null))?.Lock;
+    if (isLocked(lock)) return { ref: o, lock };
+  }
+  return undefined;
 }
 
 const isLocked = (v: unknown): boolean => typeof v === "string" ? v.trim() !== "" && !/^(no|off|false|0)$/i.test(v.trim()) : v === true;
@@ -197,23 +212,26 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
     const why = err instanceof Error ? err.message : String(err);
     return { result: { ...res, requested: value, before: old ?? null, verified: false, error: `the write was sent, but the read to verify ${property} of ${ref} by its object failed (${why}); whether the console applied ${JSON.stringify(value)} is unknown` }, failed: true };
   }
-  if (byObject ?? sameValue(got, value, property)) {
+  // A kept value with no lock on the object: an owner's Lock (a page's for its executors, a macro's for its lines) may
+  // be what refused it. Read once, when needed.
+  let owner: { ref: string; lock: unknown } | undefined;
+  let ownerRead = false;
+  const readOwner = async () => {
+    if (!ownerRead && unchanged && !locks.length && !lockField) owner = await lockedOwner(bridge, ref);
+    ownerRead = true;
+    return owner;
+  };
+  let applied = byObject ?? sameValue(got, value, property, { consoleForm: false });
+  // The console's form of a command counts only when the console wrote the line: it changed from the one read before,
+  // or it is unchanged on a line nothing locks (a repeated request). A kept "Echo Sequence" is not "Echo Seq".
+  if (!applied && byObject === undefined && sameValue(got, value, property)) applied = old !== undefined && old !== null && (!unchanged || (!locks.length && !(await readOwner())));
+  if (applied) {
     // Already the requested value: the end state is right, but on a locked object the write itself was refused.
     const note = unchanged && locks.length ? { note: `${property} already read ${JSON.stringify(old ?? "")}; ${ref} is locked (${locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ")}), so the console did not take the write itself`, locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {};
     return { result: { ...res, requested: value, verified: true, ...note }, failed: false };
   }
   const lockText = locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ");
-  // A kept value with no lock on the object: an owner's Lock (a page's, for its executors) may be what refused it.
-  let owner: { ref: string; lock: unknown } | undefined;
-  if (unchanged && !locks.length && !lockField) {
-    for (const o of ownerRefs(ref)) {
-      const lock = (await readFields(bridge, o, ["Lock"]).catch(() => null))?.Lock;
-      if (isLocked(lock)) {
-        owner = { ref: o, lock };
-        break;
-      }
-    }
-  }
+  await readOwner();
   const unlock = locks.some((f) => !READ_ONLY_LOCKS.includes(f));
   const error = got === undefined || got === null
     ? `${property} of ${ref} could not be read back after the write${typeof res.readError === "string" ? ` (${res.readError})` : ""}; whether the console applied ${JSON.stringify(value)} is unknown`
