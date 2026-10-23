@@ -9,7 +9,7 @@ import { sameValue, setPropertyChecked } from "../src/tools/setproperty.js";
  */
 
 class Obj {
-  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", SystemLocked: "No", FadeTime: "0.000" };
+  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000" };
   install(h: Harness) {
     h.fake.on("objects", (args) => {
       const fields: Record<string, string> = {};
@@ -20,7 +20,8 @@ class Obj {
       const p = String(args.property);
       const v = String(args.value);
       if (p === "Lock") this.props.Lock = /^(yes|on|true)$/i.test(v) ? "Yes" : "";
-      else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : v;
+      // A macro line's Wait coerces a value it does not take to Follow (review of PR #87).
+      else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) ? Number(v).toFixed(3) : "Follow") : v;
       return { ref: args.ref, property: p, value: this.props[p] };
     });
   }
@@ -84,6 +85,27 @@ test("set_property: a refused rename of a locked object is not taken for a Yes/N
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Name", value: "Gobo" });
     assert.equal(r.failed, true, JSON.stringify(r.result));
     assert.match(String(r.result.error), /is locked/);
+    // A number or boolean request on a text property is compared as the text the bridge sets ("2.5", "false").
+    o.props.Name = "2.500";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Name", value: 2.5 });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    o.props.Name = "Off";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Name", value: false });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+  } finally {
+    await h.close();
+  }
+});
+
+test("set_property: a value the console replaced with its own (Wait \"abc\" reads Follow) is not applied, although it changed (review of PR #87)", async () => {
+  const { h } = await setup();
+  try {
+    const r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: "abc" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.equal(r.result.value, "Follow");
+    assert.match(String(r.result.error), /reads "Follow" after the write \(it was "2.000"\), not "abc"/);
+    const ok = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 3 });
+    assert.equal(ok.failed, false, JSON.stringify(ok.result));
   } finally {
     await h.close();
   }
@@ -102,4 +124,7 @@ test("sameValue ignores case, spacing, number format and Yes/No spellings, not t
   assert.ok(!sameValue("Off", "No", "Name"));
   assert.ok(!sameValue("gobo", "Gobo", "Name"));
   assert.ok(sameValue("Gobo", "Gobo", "Name"));
+  assert.ok(!sameValue("2.500", 2.5, "Name"));
+  assert.ok(!sameValue("Off", false, "Name"));
+  assert.ok(sameValue("2.5", 2.5, "Name"));
 });

@@ -805,19 +805,27 @@ export const LIBRARY_MAX_CHARS = 40_000;
  * where the next page starts.
  */
 export function shapeLibraryPage(page: LibraryPage, compact: boolean, maxChars = LIBRARY_MAX_CHARS): Record<string, unknown> {
-  // An entry too large on its own (an .xml header's description or mode list) is listed without them, so the page still
-  // holds one entry and nextOffset moves on.
+  // An entry too large on its own (an .xml header's description or mode list) is listed in a bounded form: its
+  // identifying fields cut to 200 characters, at most 5 inShow types, no modes or description. The page still holds
+  // that one entry and nextOffset moves on.
   let oversized = false;
+  const cut = (v: unknown) => (typeof v === "string" && v.length > 200 ? `${v.slice(0, 200)}...` : v);
   const shrink = (e: LibraryEntry): LibraryEntry => {
-    const { modes, ...rest } = e as LibraryEntry & { description?: unknown };
-    delete (rest as { description?: unknown }).description;
-    return { ...rest, modesKnown: false, oversized: `the full entry is over ${maxChars} characters; its modes${modes ? ` (${modes.length})` : ""} and description are left out` } as LibraryEntry;
+    const inShow = (e.inShow ?? []).slice(0, 5).map((x) => ({ no: x.no, name: cut(x.name) as string }));
+    return {
+      source: e.source, file: cut(e.file) as string, format: cut(e.format) as string, manufacturer: cut(e.manufacturer) as string, model: cut(e.model) as string, name: cut(e.name) as string,
+      verified: e.verified, set: e.set, modesKnown: false, inShow,
+      ...((e.inShow?.length ?? 0) > 5 ? { inShowCount: e.inShow.length } : {}),
+      oversized: `the full entry is over ${maxChars} characters; listed without its modes${e.modes ? ` (${e.modes.length})` : ""}, description and other header fields`,
+    } as LibraryEntry;
   };
   const render = (n: number): Record<string, unknown> => {
     const entries = oversized ? [shrink(page.entries[0])] : page.entries.slice(0, n);
     const head = { total: page.total, offset: page.offset, count: entries.length, ...(page.scanned !== undefined ? { scanned: page.scanned } : {}) };
     const nextOffset = page.offset + entries.length < page.total ? { nextOffset: page.offset + entries.length } : {};
-    if (!compact) return { ...head, ...nextOffset, entries, ...(page.paths !== undefined ? { paths: page.paths } : {}) };
+    // The note is part of the page, so it counts towards the size.
+    const truncated = entries.length < page.entries.length ? { truncated: `cut from ${page.entries.length} to ${entries.length} entries to stay under ${maxChars} characters (clients cut off longer results); ask again with offset ${page.offset + entries.length}${compact ? "" : ", or compact: true for file names only"}` } : {};
+    if (!compact) return { ...head, ...nextOffset, ...truncated, entries, ...(page.paths !== undefined ? { paths: page.paths } : {}) };
     const files: Record<string, string[]> = {};
     const inShow: Record<string, Array<{ no: number; name: string }>> = {};
     const notVerified: string[] = [];
@@ -826,20 +834,19 @@ export function shapeLibraryPage(page: LibraryPage, compact: boolean, maxChars =
       if (e.inShow?.length) inShow[e.file] = e.inShow.map((x) => ({ no: x.no, name: x.name }));
       if (e.verified === false) notVerified.push(e.file);
     }
-    return { ...head, ...nextOffset, compact: true, files, ...(Object.keys(inShow).length ? { inShow } : {}), ...(notVerified.length ? { notVerified } : {}) };
+    return { ...head, ...nextOffset, ...truncated, compact: true, files, ...(Object.keys(inShow).length ? { inShow } : {}), ...(notVerified.length ? { notVerified } : {}) };
   };
   const size = (v: unknown) => JSON.stringify(v, null, 2).length;
   let keep = page.entries.length;
   let out = render(keep);
-  for (let len = size(out); keep > 0 && len > maxChars; len = size(out)) {
-    keep = Math.max(0, Math.min(keep - 1, Math.floor((keep * maxChars) / len)));
-    if (keep === 0 && !oversized) {
-      oversized = true;
-      keep = 1;
-    }
+  for (let len = size(out); keep > 1 && len > maxChars; len = size(out)) {
+    keep = Math.max(1, Math.min(keep - 1, Math.floor((keep * maxChars) / len)));
     out = render(keep);
   }
-  if (keep < page.entries.length) out.truncated = `cut from ${page.entries.length} to ${keep} entries to stay under ${maxChars} characters (clients cut off longer results); ask again with offset ${page.offset + keep}${compact ? "" : ", or compact: true for file names only"}`;
+  if (page.entries.length > 0 && size(out) > maxChars) {
+    oversized = true;
+    out = render(1);
+  }
   return out;
 }
 

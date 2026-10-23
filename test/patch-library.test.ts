@@ -231,6 +231,17 @@ test("gma3_patch_library: an entry over the budget on its own is listed without 
     assert.equal(result.entries[0].description, undefined);
     assert.match(result.entries[0].oversized, /3000/);
     assert.equal(result.nextOffset, 1, "the next page starts after the oversized entry");
+    // Still too large without its modes (a long inShow list): a bounded form, with the count of the types left out.
+    w.live = Array.from({ length: 400 }, (_, i) => ty(i + 1, `Header ${"y".repeat(150)}`, "Huge", `G-h${i}`));
+    w.library[0] = { source: "user", file: "huge@header.xml", format: "xml", manufacturer: "Huge", model: "header", name: `Header ${"y".repeat(150)}`, modes, modesKnown: true, verified: false, set: false };
+    w.inShow = () => w.live.map((t) => ({ no: t.no, name: t.name, guid: t.guid }));
+    const big = await h.callJson("gma3_patch_library", { query: "huge" });
+    assert.ok(big.text.length <= LIBRARY_MAX_CHARS, `${big.text.length} characters`);
+    assert.equal(big.result.count, 1);
+    assert.equal(big.result.entries[0].inShow.length, 5);
+    assert.equal(big.result.entries[0].inShowCount, 400);
+    assert.equal(big.result.nextOffset, 1);
+    assert.match(big.result.truncated, /offset 1/);
   } finally {
     await h.close();
   }
