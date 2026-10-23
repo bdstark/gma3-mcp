@@ -408,7 +408,7 @@ server.registerTool(
       "Set a property of a show object via the Lua Set() API, e.g. ref 'Sequence 1', property 'Name' or 'Tracking'; ref 'Sequence 1 Cue 2', property 'TrigTime'. " +
       "Values are passed as text the way they would be typed in the editor (e.g. 'Yes', 'No', '2.5', 'Follow'). This modifies the show file. " +
       "The property (and the object's Lock) is read before the write and compared with the read-back: the console keeps the old value without an error when it does not take a value, " +
-      "so a read-back that is still the old value is an error that names the lock when the object is locked (Unlock, set, Lock again). A value the console spells differently (2.5 as 2.500, true as Yes) counts as applied; any other read-back, even a changed one (the console coerces values it does not take), is an error. Text properties (Name, Note, ...) compare exactly.",
+      "so a read-back that is still the old value is an error that names the lock when the object is locked (Unlock, set, Lock again; StructureLocked and SystemLocked are read-only) or its owner is (a page, for its executors). A value the console spells differently (2.5 as 2.500, true as Yes) counts as applied; any other read-back, even a changed one (the console coerces values it does not take), is an error. Text properties (Name, Note, ...) compare exactly.",
     inputSchema: {
       ref: refSchema,
       property: z.string(),

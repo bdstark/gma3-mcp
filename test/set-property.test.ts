@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
-import { consoleForm, sameValue, setPropertyChecked } from "../src/tools/setproperty.js";
+import { consoleForm, ownerRefs, sameValue, setPropertyChecked } from "../src/tools/setproperty.js";
 
 /**
  * gma3_set_property's read-back check against a fake bridge. A locked object keeps its value and the Set() raises
@@ -18,7 +18,7 @@ const waitText = (s: number) => {
 };
 
 class Obj {
-  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000", Appearance: "1", Command: "" };
+  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", StructureLocked: "No", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000", Appearance: "1", Command: "" };
   install(h: Harness) {
     // The object's property list (object op with schema).
     h.fake.on("object", () => ({ name: this.props.Name, schema: Object.keys(this.props).map((name, index) => ({ name, index })) }));
@@ -32,6 +32,7 @@ class Obj {
         return { total: nos.length, offset: 0, count: nos.length, items: nos.map((n) => ({ name: named[1], class: "Appearance", addr: `addr:app${n}` })) };
       }
       if (String(args.ref) === "Appearance 66") throw new Error("request timed out");
+      if (this.owner && String(args.ref) === this.owner.ref) return { total: 1, offset: 0, count: 1, items: [{ name: "Owner", class: "Page", fields: { Lock: this.owner.Lock } }] };
       const app = String(args.ref).match(/^Appearance (\d+)$/);
       if (app && Number(app[1]) > 50) throw new Error(`no objects found for '${args.ref}'`);
       if (app) return { total: 1, offset: 0, count: 1, items: [{ name: this.appName(app[1]), class: "Appearance", addr: `addr:app${app[1]}` }] };
@@ -51,19 +52,25 @@ class Obj {
       if (p === "Lock") this.props.Lock = /^(yes|on|true)$/i.test(v) ? "UL" : "";
       // A macro line's Wait coerces a value it does not take to Follow (review of PR #87).
       // An appearance that does not exist (above 50) is not taken: the old one stays.
-      else if (this.props.Lock === "" && p === "Appearance") {
+      else if (this.writable && p === "Appearance") {
         const byName = v.match(/^Appearance "(.+)"$/);
         const no = byName ? Object.keys(this.appNames).find((n) => this.appNames[n] === byName[1]) ?? "" : v.replace(/^Appearance /, "");
         if (no !== "" && !(Number(no) > 50) || v === "") this.props[p] = no;
       }
       // A macro line's Command is stored in the console's form (SB-07).
-      else if (this.props.Lock === "" && p === "Command") this.props[p] = CONSOLE_FORM[v] ?? v;
-      else if (this.props.Lock === "" && p === "AddToCmdline") this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
-      else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) && Number(v) > 0 ? waitText(Number(v)) : "Follow") : v;
+      else if (this.writable && p === "Command") this.props[p] = CONSOLE_FORM[v] ?? v;
+      else if (this.writable && p === "AddToCmdline") this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
+      else if (this.writable) this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) && Number(v) > 0 ? waitText(Number(v)) : "Follow") : v;
       // Clearing a reference: the property reads nil, and the set op sends no value.
       if (p === "Appearance" && this.props.Appearance === "") return { ref: args.ref, property: p, readOk: true };
       return { ref: args.ref, property: p, value: p === "Appearance" ? this.appName(this.props[p]) : this.props[p] };
     });
+  }
+  /** An owner (a page, for its executors) whose Lock blocks writes to this object. */
+  owner: { ref: string; Lock: string } | null = null;
+  /** A write is taken only with no lock on the object or its owner (StructureLocked is the console's own). */
+  get writable() {
+    return this.props.Lock === "" && this.props.StructureLocked !== "Yes" && !(this.owner && this.owner.Lock !== "");
   }
   /** The set op reads a reference back as the referenced object's name. */
   appNames: Record<string, string> = { "3": "Red", "5": "Red", "6": "Appearance 7", "8": "Blue" };
@@ -336,4 +343,45 @@ test("sameValue ignores case, spacing, number format and Yes/No spellings, not t
   assert.ok(consoleForm("ClearAll; Label Executor 201 \"Gobo\"", "cleara; lab exec 201 \"Gobo\""), "keywords from the list");
   assert.ok(!sameValue("Follow", "abc", "Wait"));
   assert.ok(!sameValue("1h00m00.00", 3599, "Wait"));
+});
+
+test("set_property: StructureLocked, an owner's lock, a repeated clear on a locked object, a duration's display precision and an OSC Prefix (review of PR #92)", async () => {
+  const { h, o } = await setup();
+  try {
+    // The console's own read-only lock: named, and not something Unlock removes.
+    o.props.StructureLocked = "Yes";
+    let r = await setPropertyChecked(h.bridge, { ref: "Sequence 9", property: "HazeEnabled", value: true });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.deepEqual(r.result.locked, { StructureLocked: "Yes" });
+    assert.match(String(r.result.error), /StructureLocked = "Yes".*read-only locks, which Unlock does not remove/);
+    o.props.StructureLocked = "No";
+    // A locked page keeps its executor's value while the executor's own Lock reads "".
+    o.owner = { ref: "Page 91", Lock: "UL" };
+    r = await setPropertyChecked(h.bridge, { ref: "Page 91.201", property: "HazeEnabled", value: true });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.deepEqual(r.result.lockedOwner, { ref: "Page 91", Lock: "UL" });
+    assert.match(String(r.result.error), /^Page 91 is locked \(Lock = "UL"\), which blocks writes to Page 91\.201.*Unlock Page 91/);
+    o.owner = null;
+    // A repeated clear on a locked object: the end state is right, and the note names the lock.
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    o.props.Lock = "UL";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    assert.deepEqual(r.result.locked, { Lock: "UL" });
+    assert.match(String(r.result.note), /Appearance already read ""; RenderQuality 2 is locked/);
+    o.props.Lock = "";
+    // A long wait reads in hundredths: 3600.001 reads "1h00m00.00" and is applied.
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 3600.001 });
+    assert.equal(r.result.value, "1h00m00.00");
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+  } finally {
+    await h.close();
+  }
+  assert.ok(!sameValue("/foo", "/Foo", "Prefix"), "an OSC Prefix is text");
+  assert.ok(sameValue("1h00m00.00", "3600.004", "Wait") && !sameValue("1h00m00.00", 3600.01, "Wait"), "within half a hundredth");
+  assert.deepEqual(ownerRefs("Page 91.201"), ["Page 91"]);
+  assert.deepEqual(ownerRefs("Sequence 1 Cue 2.5 Part 1"), ["Sequence 1 Cue 2.5", "Sequence 1"]);
+  assert.deepEqual(ownerRefs('Sequence "Gobo" Cue 3'), ['Sequence "Gobo"']);
+  assert.deepEqual(ownerRefs("RenderQuality 2"), []);
 });

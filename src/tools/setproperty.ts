@@ -13,7 +13,9 @@ import { COMMAND_KEYWORDS } from "./commandkeywords.js";
 import { readFields, readObjects } from "./common.js";
 import { displaySeconds, tokenize } from "./macros.js";
 
-const LOCK_FIELDS = ["Lock", "SystemLocked"];
+const LOCK_FIELDS = ["Lock", "StructureLocked", "SystemLocked"];
+/** The console's own locks: read-only, so Unlock does not remove them (docs/probes/sb-01-playback-macos-2.5.1.md). */
+const READ_ONLY_LOCKS = ["StructureLocked", "SystemLocked"];
 
 const text = (v: unknown): string | undefined => {
   if (v === null || v === undefined) return undefined;
@@ -26,9 +28,11 @@ const text = (v: unknown): string | undefined => {
 
 /**
  * Properties holding free text: a name "Off" is not the value No, and a case-only rename is a change. Whole property
- * names only: ForwardCommands and AddToCmdline are Yes/No, and Appearance is an object reference.
+ * names only: ForwardCommands and AddToCmdline are Yes/No, and Appearance is an object reference. The object's property
+ * list cannot say which are text (PropertyType is nil on a handle, docs/probes/kb-10-cmdtext-write-macos-2.5.1.md), so
+ * the text properties the other tools write are listed (an OSC Prefix, src/tools/osc.ts).
  */
-const TEXTUAL = /^(name|note|label|text|description|comment|title|command|path|filename|filepath)$/i;
+const TEXTUAL = /^(name|note|label|text|description|comment|title|command|path|filename|filepath|prefix|destinationip)$/i;
 
 /**
  * Compare a read-back with a requested value. Free-text properties (Name, Note, ...) compare exactly with the text the
@@ -60,7 +64,9 @@ export function sameValue(got: unknown, want: unknown, property = ""): boolean {
   if (/^\d+[dhm]/.test(a)) {
     const sa = displaySeconds(a);
     const sb = typeof want === "number" ? want : displaySeconds(b);
-    if (sa !== null && sb !== null && Math.abs(sa - sb) < 1e-6) return true;
+    // The text rounds to its last digit (1h00m00.00: hundredths), so a request within half of one reads the same.
+    const digits = a.match(/\.(\d+)s?$/)?.[1].length ?? 0;
+    if (sa !== null && sb !== null && Math.abs(sa - sb) <= 0.5 * 10 ** -digits + 1e-9) return true;
   }
   return false;
 }
@@ -126,6 +132,24 @@ async function hasProperty(bridge: Gma3Bridge, ref: string, property: string): P
   }
 }
 
+/**
+ * The objects a child reference belongs to, nearest first (Page 91.201: Page 91; Sequence 1 Cue 2 Part 1: Sequence 1
+ * Cue 2, Sequence 1). A locked page silently ignores writes to its executors, whose own Lock still reads ""
+ * (docs/probes/sb-01-playback-macos-2.5.1.md).
+ */
+export function ownerRefs(ref: string): string[] {
+  const owners: string[] = [];
+  let r = ref.trim();
+  while (owners.length < 4) {
+    // A keyword and its number or name after an owner first: "Cue 2.5" is a cue number, not a child of Cue 2.
+    const next = r.match(/^(.*\S)\s+[A-Za-z]+\s+(\d+(\.\d+)*|"[^"]*")$/)?.[1] ?? r.match(/^([A-Za-z].*\S)\.\d+$/)?.[1];
+    if (!next) break;
+    owners.push(next);
+    r = next;
+  }
+  return owners;
+}
+
 const isLocked = (v: unknown): boolean => typeof v === "string" ? v.trim() !== "" && !/^(no|off|false|0)$/i.test(v.trim()) : v === true;
 
 export interface SetPropertyArgs {
@@ -154,10 +178,15 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   let cleared = value === "" && absent && res.readOk === true && old !== undefined && old !== null && text(old) !== "";
   // Empty before and after (a repeated clear): the property must exist, which the object's property list shows; a
   // misspelled one reads empty too.
-  if (value === "" && absent && res.readOk === true && !cleared && !lockField) cleared = await hasProperty(bridge, ref, property);
+  let repeatedClear = false;
+  if (value === "" && absent && res.readOk === true && !cleared && !lockField) {
+    cleared = await hasProperty(bridge, ref, property);
+    // Empty in a read that worked: unchanged, so a lock still shows in the note.
+    repeatedClear = cleared && before !== null && (old === undefined || old === null || text(old) === "");
+  }
   const got = lockField ? lockState(res.value) : cleared ? "" : res.value;
   // Unchanged means the very same text: any other read-back is a change the console made.
-  const unchanged = old !== undefined && old !== null && text(got) === text(old);
+  const unchanged = repeatedClear || (old !== undefined && old !== null && text(got) === text(old));
   const locks = LOCK_FIELDS.filter((f) => f !== lockField && isLocked(before?.[f]));
   // A reference request is decided by the object it resolves to, before any text: a kept object can be named like the
   // requested reference (Appearance 3 named "Appearance 5").
@@ -170,18 +199,32 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   }
   if (byObject ?? sameValue(got, value, property)) {
     // Already the requested value: the end state is right, but on a locked object the write itself was refused.
-    const note = unchanged && locks.length ? { note: `${property} already read ${JSON.stringify(old)}; ${ref} is locked (${locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ")}), so the console did not take the write itself`, locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {};
+    const note = unchanged && locks.length ? { note: `${property} already read ${JSON.stringify(old ?? "")}; ${ref} is locked (${locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ")}), so the console did not take the write itself`, locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {};
     return { result: { ...res, requested: value, verified: true, ...note }, failed: false };
   }
   const lockText = locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ");
+  // A kept value with no lock on the object: an owner's Lock (a page's, for its executors) may be what refused it.
+  let owner: { ref: string; lock: unknown } | undefined;
+  if (unchanged && !locks.length && !lockField) {
+    for (const o of ownerRefs(ref)) {
+      const lock = (await readFields(bridge, o, ["Lock"]).catch(() => null))?.Lock;
+      if (isLocked(lock)) {
+        owner = { ref: o, lock };
+        break;
+      }
+    }
+  }
+  const unlock = locks.some((f) => !READ_ONLY_LOCKS.includes(f));
   const error = got === undefined || got === null
     ? `${property} of ${ref} could not be read back after the write${typeof res.readError === "string" ? ` (${res.readError})` : ""}; whether the console applied ${JSON.stringify(value)} is unknown`
     : locks.length
-    ? `${ref} is locked (${lockText}): the console kept ${property} = ${JSON.stringify(got)} and did not apply ${JSON.stringify(value)}. Unlock it first (Unlock ${ref}), set the property, and lock it again`
+    ? `${ref} is locked (${lockText}): the console kept ${property} = ${JSON.stringify(got)} and did not apply ${JSON.stringify(value)}. ${unlock ? `Unlock it first (Unlock ${ref}), set the property, and lock it again` : "StructureLocked and SystemLocked are the console's own read-only locks, which Unlock does not remove"}`
+    : owner
+    ? `${owner.ref} is locked (Lock = ${JSON.stringify(owner.lock)}), which blocks writes to ${ref}: the console kept ${property} = ${JSON.stringify(got)} and did not apply ${JSON.stringify(value)}. Unlock it first (Unlock ${owner.ref}), set the property, and lock it again`
     : unchanged
       ? `the console did not apply ${property} = ${JSON.stringify(value)} on ${ref}: it still reads ${JSON.stringify(got)} (the console silently keeps the previous value when it does not accept one)`
       : old !== undefined && old !== null
         ? `${property} of ${ref} reads ${JSON.stringify(got)} after the write (it was ${JSON.stringify(old)}), not ${JSON.stringify(value)}: the console put its own value in place of one it does not accept`
       : `${property} of ${ref} reads ${JSON.stringify(got)} after the write, not ${JSON.stringify(value)}; the value before could not be read, so whether the console applied it is unknown`;
-  return { result: { ...res, requested: value, before: old ?? null, verified: false, ...(locks.length ? { locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {}), error }, failed: true };
+  return { result: { ...res, requested: value, before: old ?? null, verified: false, ...(locks.length ? { locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {}), ...(owner ? { lockedOwner: { ref: owner.ref, Lock: owner.lock } } : {}), error }, failed: true };
 }
