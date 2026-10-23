@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.38.1"
+local VERSION      = "0.38.2"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4219,8 +4219,8 @@ end
 --   patch.library     read-only: the library files (DirList over the console's own library paths), parsed
 --                     from the file name (grandMA2 .pxml, GDTF) or the XML header (grandMA3 / user .xml)
 --   patch.typeInfo    read-only: one show type, its GUID and which fixtures use it
---   patch.import      queues Import Library "<file>" in the copy's FixtureTypes (CmdIndirect: it lands on a
---                     later frame); the client polls patch.importState for the new type
+--   patch.import      queues Import Library "<file>" /Path "" in the copy's FixtureTypes (CmdIndirect: it lands
+--                     on a later frame); the client polls patch.importState for the new type
 --   patch.removeType  deletes an unused type from the copy; the types after it are renumbered
 -------------------------------------------------------------------------------
 do
@@ -5076,7 +5076,10 @@ do
     local e = resolveFile(args.source, args.file)
     local before = p.FixtureTypes:Count()
     local attrs = p.AttributeDefinitions and p.AttributeDefinitions.Attributes and p.AttributeDefinitions.Attributes:Count() or nil
-    local command = 'Import Library "' .. e.file .. '"'
+    -- /Path "": the console keeps the path of an earlier import command and resolves Import Library against it, so
+    -- every user-library import answered "Object not found" until one was sent with /Path "" (bridge 0.38.2, live
+    -- 2026-10-22). An empty path is the library's own folders.
+    local command = 'Import Library "' .. e.file .. '" /Path ""'
     CmdIndirect(command)
     return { queued = true, command = command, source = e.source, file = e.file, verified = e.verified, typesBefore = before, attributesBefore = attrs }
   end

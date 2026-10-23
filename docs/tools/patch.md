@@ -216,7 +216,7 @@ pool:
 | --- | --- |
 | `check_library` | The file is in exactly one library (`Import Library` names the file only, so a name in two libraries is refused); the show has no type matching it unless `allow_duplicate` (the console would silently add a second type with the same name) |
 | `enter` | `patch.enter` with target `fixturetypes`: the copy, then its `FixtureTypes` |
-| `import` | `Import Library "<file>"` with `CmdIndirect` (no dialog) |
+| `import` | `Import Library "<file>" /Path ""` with `CmdIndirect` (no dialog). The console keeps the path of an earlier import command and resolves the next `Import Library` against it, so without `/Path ""` every library import answered "Object not found" (bridge 0.38.2, live 2026-10-22); an empty path is the library's own folders |
 | `wait_import` | Poll until exactly one type is appended. Claimed only when its name or manufacturer matches the file (ignoring case; an underscore matches a space); two new types, or an error answer from the console, fail the step |
 | `isolation_check` | Everything compared in full except the import's appends (the new type; new attributes and features) |
 | `commit`, read-back | The type in the live patch by GUID, with the same modes |
