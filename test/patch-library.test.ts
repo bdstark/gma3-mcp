@@ -26,7 +26,7 @@ class LibraryWorld {
   dest = "Root";
   pending: string[] = [];
   usedBy: Record<string, number[]> = { "G-1": [101, 102] };
-  /** Fixtures per type number, as a bridge from 0.42.0 counts them (by type object); overrides usedBy when set. */
+  /** Fixtures per type number, as a bridge from 0.43.0 counts them (by type object); overrides usedBy when set. */
   usedByNo: Record<number, number[]> | null = null;
   /** What an import of a file creates: [manufacturer, name], or "error" (the console answers with an error). */
   creates: Record<string, Array<[string, string]> | "error"> = {
@@ -152,7 +152,7 @@ class LibraryWorld {
       // FixtureTypes hashed by identity (GUIDs) in order; prefixOfLive limits the copy to the live count,
       // excludeGuids leaves types out of the live side; AttributeDefinitions by count, prefix-limited the same way.
       const side = args.side === "copy" ? this.copy ?? [] : this.live;
-      // excludeTypes (bridge 0.42.0) leaves out only the type at that position with that GUID, and replaces excludeGuids.
+      // excludeTypes (bridge 0.43.0) leaves out only the type at that position with that GUID, and replaces excludeGuids.
       const excl = new Set((args.excludeGuids as string[]) ?? []);
       const byPos = args.excludeTypes as Array<{ index: number; guid: string }> | undefined;
       let list = side.filter((x, i) => (byPos ? !byPos.some((e) => e.index === i + 1 && e.guid === x.guid) : !excl.has(x.guid)));

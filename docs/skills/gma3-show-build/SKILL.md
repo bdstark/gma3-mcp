@@ -17,7 +17,7 @@ ask for 3D placement, for haze in the beam check, for the universe budget and fo
 
 - **Use the structured tools.** Use `gma3_command` and `gma3_lua` only for what no tool covers. Lua is off by default,
   and only the operator turns it on. Before you fall back to Lua, check the server's tool list: newer builds may have
-  a tool for the gap, such as a fixture move or a dialog tool.
+  a tool for the gap: `gma3_patch_move` (a fixture move) and `gma3_dialog` (a dialog tool) need bridge 0.42.0.
 - **Check the show before every write.** The user may load another show mid-session. Read the show file from
   `gma3_status` before each step. If the bridge restarted, a show may have been loaded.
 - **Check the bridge before every step.** onPC can quit without a crash report. In the Halloween build nobody noticed
@@ -131,13 +131,14 @@ minutes, stored 68 groups in 5 and placed 93 fixtures in 76 seconds.
   never showed in 3D. The check also flags the Sentinel Spot Q60. Its default, DMX 4, is open, so its beam showed.
   Its second "Open" function at DMX 216 would draw closed.
 - **A fixed GDTF after the first import costs time.** Re-import it with `allow_duplicate`, then move the fixtures
-  across with `gma3_assign_cell_layout {fixtures, type}`, used as a retype. It keeps FIDs, groups and presets.
+  across with `gma3_patch_retype {fixtures, type}` (on older servers `gma3_assign_cell_layout`, the same session). It
+  keeps FIDs, groups and presets.
   - Both types now have the same name, so pass the new type's number, never the name. List the types with
     `gma3_patch_types` before and after the import. The new type is the number that was not there before. Do not take
     the number from the import result: on builds before gma3-mcp #87, the read-back can name the older type, because
     both share a GUID.
-  - After the retype, check with `gma3_patch_list` that the fixtures show the new type number. A retype to the old
-    type changes nothing, and its read-back compares names, so it can still report `matched`.
+  - After the retype, check with `gma3_patch_list` that the fixtures show the new type number. On servers before
+    gma3-mcp #89 the retype read-back compares names only, so a retype to the old type can still report `matched`.
   - On builds before #87, `gma3_patch_remove_type` refuses to remove the unused old type. The Halloween build had to
     delete it in the Patch menu.
 
@@ -195,8 +196,9 @@ Run it after placement and the slot groups, and ask the user first. It overwrite
 Straight, Fan In and Fan Out, Cross, the four Up versions and Blind for every slot with pan and tilt.
 
 - `gma3_run_macro 5002` stops at a Lua `Confirm()`, "Are you sure you want to overwrite positions?", and reports
-  `paused_at_go`. Use a dialog tool if the server has one. Otherwise ask the user to press OK. The Halloween build
-  pressed it from Lua by walking `GetTopModal()`.
+  `paused_at_go`; newer servers also report the open dialog in `execution.dialog`. Answer it with
+  `gma3_dialog {action: "press", button: "OK", expect_text: <the message>, exclusive: true}` once the user agreed.
+  Without that tool, ask the user to press OK. The Halloween build pressed it from Lua by walking `GetTopModal()`.
 - Audit the result with `gma3_preset`. In the Halloween build, 2.1 Center was empty, the scanners' tilt was clamped to
   0%, Up Cross was a copy of Up Fan In, and Blind was uneven.
 - Fix the presets with `gma3_store_preset` looks. Pan and Tilt activate together, so restate Pan when you fix Tilt.
@@ -233,8 +235,10 @@ the rig through the slot groups, so this orders the patch sheet rather than maki
 expects it. In the Halloween build the grouping fixtures were named Movers, Scanners, Main Wash, Bsmt Wash, Pixel
 Bars, Specials, Nanoleaf and Deck. Fixtures outside any slot stay at the top level.
 
-- If the server has a fixture-move tool, do this without being asked.
-- Without one, it takes Lua inside the patch copy. Put the move in the plan the user reviews, and run it once the
+- If the server has `gma3_patch_move`, do this without being asked: one call per slot,
+  `{fids, parent: <grouping FID>, exclusive: true}`. It answers the Move Fixtures dialog with Absolute (the default)
+  and reads back each fixture's parent, address, groups and world pose against the state before.
+- Without it, it takes Lua inside the patch copy. Put the move in the plan the user reviews, and run it once the
   user has turned Lua on and closed the Patch menu. The Halloween build moved the fixtures one slot at a time:
   `Cut <indices>`, `ChangeDestination <grouping index>`, `Paste 1`. Paste opens a "Move Fixtures" dialog
   (Absolute, Relative, Cancel), which was answered with Absolute. Then `ChangeDestination Root`. Groups, presets,
