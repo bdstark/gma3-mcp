@@ -218,7 +218,7 @@ considered), `relative` the pose relative to the parent, within 1 mm and by quat
 makes the verification `unavailable` and names it; the result's `fixtures` lists each fixture's parent, address,
 groups and poses.
 
-**Live** (onPC 2.5.1, bridge 0.42.0, 2026-10-23, `test/live/patch-move.live.ts` 1/1 in 71 s on a disposable show):
+**Live** (onPC 2.5.1, this bridge as 0.40.0 (bb5afd4), 2026-10-23, `test/live/patch-move.live.ts` 1/1 in 71 s on a disposable show):
 two fixtures moved into a grouping fixture placed at x = 1 m (absolute), then back to the top level (relative), every
 step succeeded and both read-backs matched. What the run established:
 - `ChangeDestination ..` leaves a grouping fixture for the stage's list, and `Paste <count + 1>` appends at the end.

@@ -43,7 +43,7 @@ effect is checked on the object the dialog was about.
 
 ## Live
 
-onPC 2.5.1, bridge 0.42.0, 2026-10-23 (`test/live/patch-move.live.ts`): a macro line `Lua "Confirm(nil, '…', nil, true)"`
+onPC 2.5.1, this bridge as 0.40.0 (bb5afd4), 2026-10-23 (`test/live/patch-move.live.ts`): a macro line `Lua "Confirm(nil, '…', nil, true)"`
 opened a `MessageBox` without a title and with OK and Cancel. `gma3_run_macro` reported it in `execution.dialog`;
 a press with another `expect_text` was refused before anything was clicked; Cancel closed it (`state: "closed"`).
 
