@@ -436,7 +436,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.42.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.43.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -638,6 +638,10 @@ check("patch.library reads a grandMA3 file's header: name, manufacturer, descrip
   r.ok and r.result.total == 2 and spot.source == "grandma3" and spot.name == "Spot One" and spot.manufacturer == "Acme" and spot.description == "Acme & Co spot"
   and spot.modesKnown and spot.modes[1] == "Standard" and spot.modes[2] == "Extended (16 ch)" and #spot.inShow == 0, J(r))
 check("a user-library copy of the same file is listed and marked unverified", r.ok and r.result.entries[2].source == "user" and r.result.entries[2].verified == false, J(r))
+r = request("patch.library", { query = "spot", headers = false })
+spot = r.ok and r.result.entries[1]
+check("patch.library headers = false (compact, bridge 0.43.0) still finds by the header but sends no header fields or modes",
+  r.ok and r.result.total == 2 and spot.file == "acme@spot one.xml" and spot.name == nil and spot.description == nil and spot.modes == nil and spot.modesKnown == false, J(r))
 r = request("patch.library", { file = "solo@user only@rev2.gdtf" })
 check("a user-library .gdtf is marked verified (SU-22)", r.ok and r.result.entries[1].source == "user" and r.result.entries[1].verified == true, J(r))
 r = request("patch.library", {})
@@ -648,6 +652,16 @@ r = request("patch.library", { query = "headeronly" })
 check("an .xml file is found by a manufacturer only its header names", r.ok and r.result.total == 1 and r.result.entries[1].file == "custom.xml" and r.result.entries[1].manufacturer == "HeaderOnly" and r.result.entries[1].name == "Custom Thing" and r.result.entries[1].modes[1] == "Basic", J(r))
 r = request("patch.library", { query = "custom thing" })
 check("an .xml file is found by its header name", r.ok and r.result.total == 1 and r.result.entries[1].file == "custom.xml", J(r))
+-- Compact (headers = false) still matches show types by the header's identity, not the file name (review of PR #87).
+do
+  local types = console.live.FixtureTypes.kids
+  types[#types + 1] = ftype(99, "Custom Thing", { MODE1 }, "HeaderOnly")
+  r = request("patch.library", { query = "headeronly", headers = false })
+  local e = r.ok and r.result.entries[1]
+  check("patch.library headers = false: inShow matches a type only the .xml header names, without sending the header",
+    r.ok and e.file == "custom.xml" and e.name == nil and e.modes == nil and #e.inShow == 1 and e.inShow[1].name == "Custom Thing", J(r))
+  table.remove(types)
+end
 r = request("patch.library", { query = "cthing" })
 check("an .xml file is found by its header short name", r.ok and r.result.total == 1, J(r))
 r = request("patch.library", { includeSets = true, query = "truss" })
@@ -764,6 +778,40 @@ if r.ok then for _, t in ipairs(r.result.types) do names[#names + 1] = t.no .. "
 local listed = table.concat(names, ",")
 check("after the commit the type is gone and the ones after it renumbered", r.ok and r.result.count == 5 and not listed:find("Spare") and listed:find("5:Mega Hex Par"), listed)
 
+-- Two imports of one GDTF share its GUID (a rebuilt file imported with allow_duplicate, live 2026-10-22: the
+-- Halloween build's 180W Beam, types 16 and 19). After the fixtures move to the newer import the older one is
+-- unused, and only it is removed and left out of the check (bridge 0.43.0).
+do
+  local types = console.live.FixtureTypes
+  local old
+  for _, t in ipairs(types.kids) do if t.name == "Two Break" then old = t end end
+  local newer = ftype(old.no + 10, "Two Break", { MODE2B })
+  newer.pv.GUID = old.pv.GUID
+  types.kids[#types.kids + 1] = newer
+  local tb = fixture("TB 1", 601, MODE2B, "2.001"); tb.TypeRef = newer
+  console.live.Stages.kids[1].Fixtures.kids[#console.live.Stages.kids[1].Fixtures.kids + 1] = tb
+  local oldIndex
+  for i, t in ipairs(types.kids) do if t == old then oldIndex = i end end
+  r = request("patch.typeInfo", { type = old.no })
+  check("patch.typeInfo: a fixture on the newer import is not a user of the older one with the same GUID", r.ok and #r.result.type.usedBy == 0 and r.result.type.index == oldIndex, J(r))
+  r = request("patch.typeInfo", { type = newer.no })
+  check("patch.typeInfo: the newer import counts its own fixture", r.ok and #r.result.type.usedBy == 1 and r.result.type.usedBy[1] == 601, J(r))
+  local count = #types.kids
+  enter()
+  r = request("patch.removeType", with({ type = old.no, guid = old.pv.GUID }))
+  local renDup
+  if r.ok then for _, x in ipairs(r.result.renumbered) do if x.name == "Two Break" then renDup = x end end end
+  check("patch.removeType removes the unused import although another type shares its GUID", r.ok and r.result.types == count - 1 and renDup ~= nil and renDup.from == newer.no, J(r))
+  local live = { excludeTypes = { { index = oldIndex, guid = old.pv.GUID } } }
+  check("excludeGuids leaves both imports out, so the copy still differs", fpAll("copy") ~= fpAll("live", { excludeGuids = { old.pv.GUID } }))
+  check("excludeTypes leaves out only the removed one: the fingerprints match", fpAll("copy") == fpAll("live", live), fpAll("copy") .. " | " .. fpAll("live", live))
+  r = request("patch.fingerprint", { side = "live", collection = "FixtureTypes", excludeTypes = { { index = "x" } } })
+  check("excludeTypes without an index and GUID is refused", r.ok == false and r.code == "bad-args", J(r))
+  request("patch.commit", X); frame()
+  local left = 0
+  for _, t in ipairs(console.live.FixtureTypes.kids) do if t.name == "Two Break" then left = left + 1 end end
+  check("after the commit one Two Break is left, the one the fixture uses", left == 1 and #console.live.FixtureTypes.kids == count - 1, tostring(left))
+end
 -- Bridge 0.41.0 (live 2026-10-23, docs/probes/import-library-listing-macos-2.5.1.md): a user-library .gdtf after a
 -- grandMA2 import, and the reverse, in one copy.
 r = request("patch.enter", { exclusive = true, target = "fixturetypes" }); frame()
