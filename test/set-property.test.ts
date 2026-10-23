@@ -339,7 +339,11 @@ test("set_property: the console's form of a command and a duration's display tex
 
 test("sameValue ignores case, spacing, number format and Yes/No spellings, not the value", () => {
   assert.ok(sameValue("Yes", true));
-  assert.ok(sameValue("Off", "no"));
+  assert.ok(sameValue("No", "off"));
+  assert.ok(!sameValue("On", "Yes", "Request"), "an On/Off/Auto enum ignores Yes (SU-09)");
+  assert.ok(!sameValue("Off", false, "Request"));
+  assert.ok(sameValue("On", "on", "Request"));
+  assert.ok(sameValue("0.050", "0:05", "Wait") && !sameValue("5.000", "0:05", "Wait"), "Wait 0:05 is 0.05 s (SB-07)");
   assert.ok(sameValue("2.500", "2.5"));
   assert.ok(sameValue("2.5s", 2.5));
   assert.ok(sameValue({ name: "Seq 1" }, "seq  1"));

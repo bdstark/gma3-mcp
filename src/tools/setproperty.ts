@@ -38,7 +38,9 @@ const TEXTUAL = /^(name|note|label|text|description|comment|title|command|path|f
  * Compare a read-back with a requested value. Free-text properties (Name, Note, ...) compare exactly with the text the
  * bridge sets (Lua tostring: 2.5 is "2.5", false is "false"), whatever the request's type. Otherwise case,
  * spacing, number format and Yes/No spellings aside: a property set from a boolean or a number, or one whose name is
- * not a text field (HazeEnabled "Yes" for true, FadeTime "2.500" for 2.5, Trigger "Follow" for "follow").
+ * not a text field (HazeEnabled "Yes" for true, FadeTime "2.500" for 2.5, Trigger "Follow" for "follow"). Yes/No
+ * spellings count only for a property that reads Yes or No: an On/Off/Auto enum ignores "Yes" (the DMX Request,
+ * docs/probes/su-09-dmx-output-macos-2.5.1.md).
  */
 export function sameValue(got: unknown, want: unknown, property = "", opts: { consoleForm?: boolean } = {}): boolean {
   const exactA = text(got);
@@ -46,6 +48,8 @@ export function sameValue(got: unknown, want: unknown, property = "", opts: { co
   // A macro line's Wait 0 is Follow (SB-07); any other text still has to match.
   if (/^wait$/i.test(property) && /^follow$/i.test(exactA ?? "") && (want === 0 || String(want).trim() === "0")) return true;
   if (TEXTUAL.test(property)) return exactA !== undefined && exactA === String(want);
+  // A macro line's Wait written "0:05" reads 0.05: the colon is not minutes:seconds (SB-07).
+  if (/^wait$/i.test(property) && typeof want === "string" && /^\d+:\d+$/.test(want.trim())) want = want.trim().replace(":", ".");
   const exactB = typeof want === "boolean" || typeof want === "number" ? undefined : text(want);
   if (exactA !== undefined && exactA === exactB) return true;
   const a = exactA?.trim().toLowerCase().replace(/\s+/g, " ");
@@ -54,7 +58,7 @@ export function sameValue(got: unknown, want: unknown, property = "", opts: { co
   if (a === b) return true;
   const yes = /^(yes|on|true|enabled)$/;
   const no = /^(no|off|false|disabled)$/;
-  if ((yes.test(a) && yes.test(b)) || (no.test(a) && no.test(b))) return true;
+  if ((a === "yes" && yes.test(b)) || (a === "no" && no.test(b))) return true;
   // "2.5" against "2.500", "2.5s" or "50%": the number, the unit only when both have one.
   const num = /^(-?\d+(?:\.\d+)?)\s*([a-z%°]*)$/;
   const x = a.match(num);
