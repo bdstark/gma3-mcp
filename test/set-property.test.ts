@@ -18,7 +18,7 @@ const waitText = (s: number) => {
 };
 
 class Obj {
-  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", StructureLocked: "No", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000", Appearance: "1", Command: "" };
+  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", StructureLocked: "No", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000", Appearance: "1", Command: "", CmdText: "Fixture 1" };
   install(h: Harness) {
     // The object's property list (object op with schema).
     h.fake.on("object", () => ({ name: this.props.Name, schema: Object.keys(this.props).map((name, index) => ({ name, index })) }));
@@ -51,6 +51,8 @@ class Obj {
       const v = String(args.value);
       // As on onPC 2.5.1: a lock reads "UL" when locked and "" when not.
       if (p === "Lock") this.props.Lock = /^(yes|on|true)$/i.test(v) ? "UL" : "";
+      // The command line's CmdText silently refuses a write (KB-10).
+      else if (p === "CmdText") {}
       // A macro line's Wait coerces a value it does not take to Follow (review of PR #87).
       // An appearance that does not exist (above 50) is not taken: the old one stays.
       else if (this.writable && p === "Appearance") {
@@ -450,6 +452,12 @@ test("set_property: StructureLocked, an owner's lock, a repeated clear on a lock
     r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Yes" });
     assert.equal(r.failed, true, JSON.stringify(r.result));
     o.props.Lock = "";
+    // CmdText refuses writes silently: a request differing only in case or spacing is not taken for it (review of
+    // PR #92).
+    for (const cmd of ["fixture 1", "Fixture  1"]) {
+      r = await setPropertyChecked(h.bridge, { ref: "CmdLine", property: "CmdText", value: cmd });
+      assert.equal(r.failed, true, JSON.stringify(r.result));
+    }
     // A long wait reads in hundredths: 3600.001 reads "1h00m00.00" and is applied.
     r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 3600.001 });
     assert.equal(r.result.value, "1h00m00.00");

@@ -30,9 +30,10 @@ const text = (v: unknown): string | undefined => {
  * Properties holding free text: a name "Off" is not the value No, and a case-only rename is a change. Whole property
  * names only: ForwardCommands and AddToCmdline are Yes/No, and Appearance is an object reference. The object's property
  * list cannot say which are text (PropertyType is nil on a handle, docs/probes/kb-10-cmdtext-write-macos-2.5.1.md), so
- * the text properties the other tools write are listed (an OSC Prefix, src/tools/osc.ts).
+ * the text properties the other tools write are listed (an OSC Prefix, src/tools/osc.ts), and the command line's CmdText,
+ * which silently refuses writes (docs/probes/kb-10-cmdtext-write-macos-2.5.1.md).
  */
-const TEXTUAL = /^(name|note|label|text|description|comment|title|command|path|filename|filepath|prefix|destinationip)$/i;
+const TEXTUAL = /^(name|note|label|text|description|comment|title|command|cmdtext|path|filename|filepath|prefix|destinationip)$/i;
 
 /**
  * Compare a read-back with a requested value. Free-text properties (Name, Note, ...) compare exactly with the text the
