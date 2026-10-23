@@ -11,9 +11,11 @@ import { comparePlain, setPropertyChecked } from "../src/tools/setproperty.js";
  */
 
 class Obj {
-  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Note: "", Lock: "", SystemLocked: "No", FadeTime: "0.000", Request: "On", AddToCmdline: "No", CmdText: "Fixture 1", SpeedFromX: "1.000000", Appearance: "1", Command: "", Wait: "2.000", Tags: "" };
+  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Note: "", Lock: "", SystemLocked: "No", FadeTime: "0.000", Request: "On", AddToCmdline: "No", CmdText: "Fixture 1", SpeedFromX: "1.000000", Appearance: "1", Command: "", Wait: "2.000", Tags: "", Level: "2.000" };
   /** Raw (asText false) numbers where they differ from the edit text (SB-02: SpeedFromX 60 reads "1.000000"). */
   raw: Record<string, number> = { SpeedFromX: 60, FadeTime: 0 };
+  /** The before-read leaves Lock out (its read raised). */
+  lockUnread = false;
   /** The before-read fails at the bridge. */
   readFails = false;
   /** The raw read leaves the field out (its read raised). */
@@ -23,7 +25,7 @@ class Obj {
       if (this.readFails && args.asText !== false) throw new Error("request timed out");
       const fields: Record<string, unknown> = {};
       for (const f of (args.fields as string[]) ?? []) {
-        if (!(f in this.props)) continue;
+        if (!(f in this.props) || (this.lockUnread && f === "Lock" && args.asText !== false)) continue;
         if (args.asText === false) {
           if (this.rawFails) continue;
           // A reference property's raw value is a handle summary.
@@ -49,6 +51,8 @@ class Obj {
       } else if (writable && (p === "HazeEnabled" || p === "AddToCmdline")) this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
       else if (writable && p === "Command") this.props[p] = v === "go+ seq 1" ? "Go+ Sequence 1" : v;
       else if (writable && p === "Wait") this.props[p] = Number(v) >= 3600 ? "1h00m00.00" : Number(v) > 0 ? Number(v).toFixed(3) : "Follow";
+      // A level the console clamps to 5.
+      else if (writable && p === "Level") this.props[p] = Math.min(Number(v), 5).toFixed(3);
       else if (writable && p === "Appearance") this.props[p] = v.replace(/^Appearance /, "");
       else if (writable) this.props[p] = v;
       // A cleared reference reads nil, and the set op sends no value.
@@ -150,6 +154,17 @@ test("set_property: a kept or replaced plain value is an error, also when it dif
     await fails("Note", "cue", /is locked/);
     // A kept raw number decides, not its display: SpeedFromX raw 60 displays "1.000000", which is not 1.
     await fails("SpeedFromX", 1, /is locked.*kept SpeedFromX = "1.000000"/);
+    // A number the console replaced with another plain number: not a display form, an error.
+    o.props.Lock = "";
+    await fails("Level", 10, /reads "5.000" after the write \(it was "2.000"\), not 10/);
+    // Lock left out of the read, SystemLocked "No": the lock state is unknown, not unlocked.
+    o.props.Lock = "UL";
+    o.lockUnread = true;
+    const lu = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "HazeEnabled", value: true });
+    assert.equal(lu.failed, true, JSON.stringify(lu.result));
+    assert.deepEqual(lu.result.lock, { state: "unknown", SystemLocked: "No" });
+    assert.match(String(lu.result.error), /whether RenderQuality 2 is locked is unknown/);
+    o.lockUnread = false;
     // A lock whose state cannot be read is reported as unknown.
     o.props.Lock = "";
     o.props.Name = "Gobo Animated";
@@ -240,6 +255,8 @@ test("comparePlain: Yes/No only on a Yes/No property, numbers by raw value or nu
   assert.equal(comparePlain("1.000000", 60, "SpeedFromX", 60), "match");
   assert.equal(comparePlain("1.000000", 1, "SpeedFromX", 60), "differs");
   assert.equal(comparePlain("1h00m00.00", 3600), "reformatted");
+  assert.equal(comparePlain("5.000", 10), "differs");
+  assert.equal(comparePlain("5.00 BPM", 10), "reformatted");
   assert.equal(comparePlain("Gobo", "gobo", "Name"), "differs");
   assert.equal(comparePlain("2.5", 2.5, "Name"), "match");
   assert.equal(comparePlain("cue", " cue ", "Note"), "differs");
