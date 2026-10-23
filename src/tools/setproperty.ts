@@ -48,7 +48,7 @@ const isHandle = (v: unknown) => typeof v === "object" && v !== null && typeof (
 
 /**
  * A plain read-back against the request: "match", "differs", or "reformatted" (a number shown in another form: a
- * duration, a unit conversion). raw is the asText false value, which decides a number when it is one (SpeedFromX 60
+ * duration, a unit). A different plain number differs. raw is the asText false value, which decides a number when it is one (SpeedFromX 60
  * reads "1.000000" in the edit role, docs/probes/sb-02-groups-macos-2.5.1.md).
  */
 export function comparePlain(got: unknown, want: string | number | boolean, property = "", raw?: unknown): "match" | "differs" | "reformatted" {
@@ -63,7 +63,8 @@ export function comparePlain(got: unknown, want: string | number | boolean, prop
     // "2.500" for 2.5, "60.00 BPM" for 60.
     const m = a.trim().match(/^(-?\d+(?:\.\d+)?)\s*([a-z%°]*)$/i);
     if (!m) return "reformatted";
-    return Math.abs(Number(m[1]) - n) < 1e-6 ? "match" : "reformatted";
+    if (Math.abs(Number(m[1]) - n) < 1e-6) return "match";
+    return m[2] ? "reformatted" : "differs";
   }
   const x = a.trim().toLowerCase().replace(/\s+/g, " ");
   const y = w.toLowerCase().replace(/\s+/g, " ");
@@ -96,7 +97,8 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   const unchanged = old !== undefined && old !== null && got !== undefined && got !== null && text(got) === text(old);
 
   const locks = LOCK_FIELDS.filter((f) => f !== lockField && isLocked(before?.[f]));
-  const lockRead = before !== null && LOCK_FIELDS.some((f) => f !== lockField && before[f] !== undefined && before[f] !== null);
+  // Unlocked only when every lock field was read: the bridge leaves out a field whose read raised.
+  const lockRead = before !== null && LOCK_FIELDS.every((f) => f === lockField || (before[f] !== undefined && before[f] !== null));
   const lock = {
     state: locks.length ? "locked" : lockRead ? "unlocked" : "unknown",
     ...Object.fromEntries(LOCK_FIELDS.filter((f) => f !== lockField && before?.[f] !== undefined).map((f) => [f, before?.[f]])),
