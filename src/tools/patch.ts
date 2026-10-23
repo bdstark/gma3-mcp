@@ -1236,7 +1236,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
       title: "Remove an unused fixture type from the show",
       description:
         "Delete a fixture type no fixture uses, e.g. one imported by mistake. Pre-check (nothing sent on failure): the type exists and no fixture uses it. " +
-        "Runs one patch session; the type is deleted by its GUID. Every type after it moves down one number (fixtures keep their type; only the number changes), and the result lists the renumbered types. " +
+        "Runs one patch session; the type is deleted by its number, checked against its GUID. A type counts as used only by the fixtures whose type is that object (bridge 0.39.0; an older bridge also counts fixtures on another import of the same GDTF, which shares the GUID). Every type after it moves down one number (fixtures keep their type; only the number changes), and the result lists the renumbered types. " +
         "The attributes the type brought into the show stay, unused: the console keeps them and they cannot be told apart from its own unused attributes. " +
         "Requires exclusive: true. NO UNDO. Needs bridge 0.26.0.",
       inputSchema: {
