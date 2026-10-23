@@ -31,7 +31,7 @@ class MoveWorld {
     { fid: 102, name: "Beam 2", patch: "1.020", parent: null, pos: { x: -2, y: 3, z: 4 } },
     { fid: 201, name: "Spot 1", patch: "1.100", parent: 1, pos: { x: 0, y: 1, z: 0 } },
   ];
-  groups: Record<number, number[]> = { 101: [5, 211], 102: [5, 211], 201: [6] };
+  groups: Record<number, string[]> = { 101: ["1.5", "1.211"], 102: ["1.5", "1.211"], 201: ["1.6"] };
   copy: Fx[] | null = null;
   dest = "Root";
   pending: Array<() => void> = [];
@@ -267,7 +267,7 @@ test("gma3_patch_move: top level into a grouping fixture, every step in order, A
     assert.deepEqual(w.live.filter((x) => x.fid > 100 && x.fid < 200).map((x) => `${x.fid}<${x.parent}`), ["101<1", "102<1"]);
     const fp = h.fake.requests.filter((r) => r.op === "patch.fingerprint");
     assert.ok(fp.length && fp.every((r) => r.args.fixturePositions === false && JSON.stringify(r.args.excludeFids) === "[101,102]"), "the isolation check leaves out the moved FIDs and the list positions");
-    assert.deepEqual(result.fixtures.map((f: any) => `${f.fid}:${f.parentFid}:${f.patch}:${f.groups.join("/")}`), ["101:1:1.001:5/211", "102:1:1.020:5/211"]);
+    assert.deepEqual(result.fixtures.map((f: any) => `${f.fid}:${f.parentFid}:${f.patch}:${f.groups.join("/")}`), ["101:1:1.001:1.5/1.211", "102:1:1.020:1.5/1.211"]);
     assert.ok(ops().indexOf("patch.commit") > ops().lastIndexOf("patch.moveAnswer"));
   } finally {
     await h.close();
@@ -388,7 +388,7 @@ test("gma3_patch_move: a group lost in the move is a read-back mismatch", async 
     const { result } = await h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true });
     assert.equal(result.outcome, "succeeded");
     assert.equal(result.verification.status, "mismatched");
-    assert.match(result.verification.detail, /FID 101: groups \[211\], were \[5,211\]/);
+    assert.match(result.verification.detail, /FID 101: groups \[1\.211\], were \[1\.5,1\.211\]/);
   } finally {
     await h.close();
   }
@@ -404,5 +404,51 @@ test("gma3_patch_retype: runs the retype session under its own operation name", 
     assert.ok(h.tools.get("gma3_patch_retype")!.description!.includes("fixed revision of a GDTF"));
   } finally {
     await h.close();
+  }
+});
+
+test("gma3_patch_retype: the read-back checks the type by number, so the old import of the same name is a mismatch (PR #89 review)", async () => {
+  for (const [applies, expect] of [[true, "matched"], [false, "mismatched"]] as const) {
+    const h = await startHarness(registerPatchMoveTools);
+    try {
+      let copy: string | null = null;
+      let live = "16 180W Beam";
+      let pending: Array<() => void> = [];
+      const frame = () => {
+        const p = pending;
+        pending = [];
+        for (const f of p) f();
+      };
+      const f = h.fake;
+      f.on("patch.state", () => {
+        frame();
+        return { destination: copy === null ? "Root" : "Stage 1.Fixtures", copyOpen: copy !== null, atRoot: copy === null, modal: false, stages: ["Stage 1"] };
+      });
+      f.on("patch.types", () => ({ count: 2, types: [{ no: 16, name: "180W Beam", modes: [] }, { no: 19, name: "180W Beam", modes: [] }] }));
+      f.on("patch.list", () => ({ total: 1, offset: 0, count: 1, fixtures: [{ fid: 101, name: "Beam 1", type: live, mode: "1 Mode", patch: "1.001" }] }));
+      f.on("patch.enter", () => {
+        pending.push(() => (copy = live));
+        return { queued: true, stage: "Stage 1", expectDestination: "Stage 1.Fixtures" };
+      });
+      f.on("patch.retype", () => {
+        if (applies) copy = "19 180W Beam";
+        return { retyped: [{ fid: 101 }] };
+      });
+      f.on("patch.collections", () => ({ copyOpen: copy !== null, live: ["Stages"], copy: copy !== null ? ["Stages"] : false }));
+      f.on("patch.fingerprint", () => ({ objects: 1, hash: 1, complete: true }));
+      f.on("patch.commit", () => {
+        pending.push(() => {
+          live = copy!;
+          copy = null;
+        });
+        return { queued: true };
+      });
+      const { result } = await h.callJson("gma3_patch_retype", { fixtures: [101], type: 19, exclusive: true });
+      assert.equal(result.operation, "patch_retype");
+      assert.equal(result.verification.status, expect, JSON.stringify(result.verification));
+      if (!applies) assert.match(result.verification.detail, /not of type 19 180W Beam/);
+    } finally {
+      await h.close();
+    }
   }
 });

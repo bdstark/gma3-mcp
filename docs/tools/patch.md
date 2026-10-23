@@ -209,7 +209,8 @@ The isolation check leaves out the moved FIDs and compares fixtures without thei
 every other fixture is still compared.
 
 Read-back, against the state before the session: each fixture's parent, address and name (`patch.list`), its groups
-(`patch.groupsOf`: every group whose selection holds the fixture or one of its cells; a group with an entry that
+(`patch.groupsOf`: every group, in every data pool, whose selection holds the fixture or one of its cells, named
+`<data pool>.<group>`; a group with an entry that
 resolves to no (sub)fixture is reported unreadable, never as not holding them), and its 3D pose (`objects`):
 `absolute` compares the world pose (the parent's position and rotation applied; mesh mirroring and scale are not
 considered), `relative` the pose relative to the parent, within 1 mm and by quaternion. A part that cannot be read

@@ -474,6 +474,7 @@ export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unk
   if (!v.ok || type === undefined) return validationFailure(op, target, v.errors);
   const t = ctx.requestTimeoutMs;
   let toName = "";
+  let toNo = 0;
   return runSession(ctx, {
     operation: op,
     target,
@@ -485,6 +486,7 @@ export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unk
         const to = types.types.find((x) => x.no === type || x.name === type);
         if (!to) return asRead({ name: "check_type", status: "failed", op: "patch.types", error: `no fixture type ${JSON.stringify(type)} in the show` });
         toName = to.name;
+        toNo = to.no;
         const rows = await listFids(ctx.bridge, fids, t);
         const missing = fids.filter((f) => !rows.has(f));
         if (missing.length) return asRead({ name: "check_type", status: "failed", op: "patch.list", error: `not in the patch: ${missing.join(", ")}` });
@@ -498,10 +500,12 @@ export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unk
     readBack: async () => {
       try {
         const rows = await listFids(ctx.bridge, fids, t);
-        const wrong = fids.filter((f) => !String(rows.get(f)?.type ?? "").endsWith(toName));
+        // By number and name: after a re-import two types share the name (PR #89 review). patch.list's type reads
+        // "<no> <name>"; the number cannot change within the session (a retype removes no type).
+        const wrong = fids.filter((f) => String(rows.get(f)?.type ?? "") !== `${toNo} ${toName}`);
         return {
           steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.list", detail: [...rows.values()] })],
-          verification: wrong.length ? { status: "mismatched", checked: "the fixtures' type", detail: `FIDs ${wrong.join(", ")} are not of type ${toName}` } : { status: "matched", checked: "the fixtures' type, address and mode (the bridge refuses a change of either)" },
+          verification: wrong.length ? { status: "mismatched", checked: "the fixtures' type", detail: `FIDs ${wrong.join(", ")} are not of type ${toNo} ${toName}` } : { status: "matched", checked: "the fixtures' type, address and mode (the bridge refuses a change of either)" },
         };
       } catch (err) {
         return { steps: [asRead(stepFromError("read_back", err, { op: "patch.list" }))], verification: unavailable("the fixtures could not be read back") };

@@ -155,7 +155,8 @@ Moves fixtures to another layout type of their fixture, so several fixtures shar
 `scope: "own"`, or back to the original. The target type must have a DMX mode of the same name with the same expanded
 DMX addressing, otherwise it is refused. That means every channel (name, coarse, fine, ultra, break, in order) at the
 same address in every cell, with the same cells (names and break offsets). Only the cells' positions may differ. One patch session
-(`patch.retype`), committed with no undo, then a read-back of the fixtures' type. An unused copy is removed with
+(`patch.retype`), committed with no undo, then a read-back of the fixtures' type by number and name (two imports of
+one GDTF share the name). An unused copy is removed with
 `gma3_patch_remove_type`.
 
 The target need not be a layout copy: any type with a matching mode works. The Halloween 2026 build (finding #5) used

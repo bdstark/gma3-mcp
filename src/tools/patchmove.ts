@@ -118,7 +118,7 @@ interface MoveArgs {
 interface Before {
   rows: Map<number, FixtureRow>;
   poses: Map<number, FixturePose>;
-  groups?: Record<string, number[]>;
+  groups?: Record<string, string[]>;
   groupsError?: string;
 }
 
@@ -281,10 +281,10 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
   async function readBefore(): Promise<Before> {
     const rows = new Map(check!.fixtures.filter((r) => typeof r.fid === "number").map((r) => [r.fid as number, r]));
     const poses = await readPoses(bridge, [...fids, ...parentFids()], t);
-    let groups: Record<string, number[]> | undefined;
+    let groups: Record<string, string[]> | undefined;
     let groupsError: string | undefined;
     try {
-      const g = (await bridge.request("patch.groupsOf", { fids }, Math.max(t, 30_000))) as { groups: Record<string, number[]>; truncated: boolean; unreadable: number[] };
+      const g = (await bridge.request("patch.groupsOf", { fids }, Math.max(t, 30_000))) as { groups: Record<string, string[]>; truncated: boolean; unreadable: string[] };
       if (g.truncated) groupsError = "the group scan was cut at its bound";
       else if (g.unreadable.length) groupsError = `groups ${g.unreadable.join(", ")} could not be read`;
       else groups = g.groups;
@@ -349,10 +349,10 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
       if (o && r.name !== o.name) mismatches.push(`FID ${fid}: name ${JSON.stringify(r.name)}, was ${JSON.stringify(o.name)}`);
     }
     // Groups
-    let groupsAfter: Record<string, number[]> | undefined;
+    let groupsAfter: Record<string, string[]> | undefined;
     if (b.groups) {
       try {
-        const g = (await bridge.request("patch.groupsOf", { fids }, Math.max(t, 30_000))) as { groups: Record<string, number[]>; truncated: boolean; unreadable: number[] };
+        const g = (await bridge.request("patch.groupsOf", { fids }, Math.max(t, 30_000))) as { groups: Record<string, string[]>; truncated: boolean; unreadable: string[] };
         steps.push(asRead({ name: "read_groups", status: "succeeded", op: "patch.groupsOf", detail: { scanned: (g as { scanned?: number }).scanned } }));
         if (g.truncated || g.unreadable.length) notChecked.push("groups (the scan after the move was incomplete)");
         else {

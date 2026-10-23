@@ -6350,18 +6350,26 @@ end)()
   end
   local GROUPS_MAX_ENTRIES = 200000
 
-  -- args: { fids }. Every group of the current data pool whose selection holds one of the fixtures or a cell of one.
+  -- args: { fids }. Every group, in every data pool, whose selection holds one of the fixtures or a cell of one. A group
+  -- is named "<data pool>.<group>" ("1.5": Group 5 of DataPool 1).
   ops["patch.groupsOf"] = function(args)
     if type(args.fids) ~= "table" or #args.fids == 0 then raise("[bad-args] fids must be a non-empty list") end
     local want, out = {}, {}
     for _, f in ipairs(args.fids) do local n = integerArg(f, "fids[]", 1, PATCH_MAX_FID); want[n] = true; out[tostring(n)] = {} end
-    local okG, groups = pcall(function() return DataPool().Groups:Children() end)
-    if not okG or type(groups) ~= "table" then raise("[unreadable] the groups of the data pool cannot be read") end
+    local okP, pools = pcall(function() return ShowData().DataPools:Children() end)
+    if not okP or type(pools) ~= "table" then raise("[unreadable] the data pools cannot be read") end
+    local groups = {}
+    for _, dp in ipairs(pools) do
+      local okG, list = pcall(function() return dp.Groups:Children() end)
+      if not okG or type(list) ~= "table" then raise("[unreadable] the groups of data pool " .. tostring(safeProp(dp, "no")) .. " cannot be read") end
+      for _, g in ipairs(list) do groups[#groups + 1] = { h = g, id = tostring(safeProp(dp, "no")) .. "." .. tostring(safeProp(g, "no")) } end
+    end
     local scanned, entries, truncated, unreadable = 0, 0, false, {}
-    for _, g in ipairs(groups) do
+    for _, gg in ipairs(groups) do
+      local g = gg.h
       if truncated then break end
       local okD, data = pcall(function() return g:Get("SelectionData") end)
-      if not okD or type(data) ~= "table" then unreadable[#unreadable + 1] = safeProp(g, "no")
+      if not okD or type(data) ~= "table" then unreadable[#unreadable + 1] = gg.id
       else
         scanned = scanned + 1
         local hit, unresolved = {}, false
@@ -6379,12 +6387,12 @@ end)()
             unresolved = true
           end
         end
-        if unresolved then unreadable[#unreadable + 1] = safeProp(g, "no") end
-        for fid in pairs(hit) do table.insert(out[tostring(fid)], safeProp(g, "no")) end
+        if unresolved then unreadable[#unreadable + 1] = gg.id end
+        for fid in pairs(hit) do table.insert(out[tostring(fid)], gg.id) end
       end
     end
-    for k, v in pairs(out) do table.sort(v); out[k] = emptyArray(v) end
-    return { groups = out, scanned = scanned, total = #groups, unreadable = emptyArray(unreadable), truncated = truncated }
+    for k, v in pairs(out) do out[k] = emptyArray(v) end
+    return { groups = out, scanned = scanned, total = #groups, pools = #pools, unreadable = emptyArray(unreadable), truncated = truncated }
   end
 end)()
 
