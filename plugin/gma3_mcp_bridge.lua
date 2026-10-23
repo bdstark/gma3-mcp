@@ -4075,6 +4075,9 @@ end
 -- GUID, MODEDIRECT as the mode's type GUID and mode name, and any other "FixtureType N '" text without the number.
 --
 -- opts (SU-03):
+--   fixturePositions  false: a fixture's number and INDEX (its position in its list) are left out (0.42.0). A move
+--                 takes fixtures out of one list and into another, which renumbers the fixtures after them; the order
+--                 of every other fixture is still hashed (tree order), so a foreign reordering still differs.
 --   excludeGuids  types (by GUID) left out with their subtree: the type a removal deletes, on the live side
 --   guide         the live patch, for the copy of an import session. An import appends its type to the
 --                 fixture-type list and its attributes and features to the attribute-definition lists (live
@@ -4130,9 +4133,11 @@ local function patchFingerprint(p, only, exclude, opts)
       if not okn then r.complete = false; r.reason = "PropertyName failed on " .. tostring(safeProp(h, "name")); return false end
       pn = list; names[key] = list
     end
-    local parts = { tostring(depth), tostring(safeCall(h, "GetClass")), (renumbered or isType) and "" or tostring(safeProp(h, "no")) }
+    local class = tostring(safeCall(h, "GetClass"))
+    local unnumbered = renumbered or isType or (opts.fixturePositions == false and class == "Fixture")
+    local parts = { tostring(depth), class, unnumbered and "" or tostring(safeProp(h, "no")) }
     for _, k in ipairs(pn) do
-      if not PATCH_FP_PROP_SKIP[k] and not ((renumbered or isType) and k == "INDEX") then
+      if not PATCH_FP_PROP_SKIP[k] and not (unnumbered and k == "INDEX") then
         local v = (k == "FIXTURETYPE" and typeIdentity(h)) or (k == "MODEDIRECT" and modeIdentity(h)) or ((isType and k == "NAME") and tostring(safeProp(h, "name"))) or nil
         if v == nil then
           local okv, dv = pcall(function() return h:Get(k, Enums.Roles.Display) end)
@@ -4195,12 +4200,12 @@ end
 
 -- args: { side = "live" | "copy", collection = <name>, excludeFids = [ ... ],
 --         excludeGuids = [ type GUID, ... ], prefixOfLive = true (copy side only: hash only what the live patch
---         has in every container, leaving out what an import appended) }
+--         has in every container, leaving out what an import appended), fixturePositions = false (a move, 0.42.0) }
 ops["patch.fingerprint"] = function(args)
   if type(args.collection) ~= "string" then raise("[bad-args] collection (string) is required; patch.collections lists them") end
   local exclude = {}
   if type(args.excludeFids) == "table" then for _, f in ipairs(args.excludeFids) do local n = tonumber(f); if n then exclude[n] = true end end end
-  local opts = { excludeGuids = {} }
+  local opts = { excludeGuids = {}, fixturePositions = args.fixturePositions }
   if type(args.excludeGuids) == "table" then for _, g in ipairs(args.excludeGuids) do opts.excludeGuids[tostring(g)] = true end end
   local p = patchSide(args.side or "live")
   if args.prefixOfLive == true then
@@ -6052,6 +6057,383 @@ GUARDED_OPS["tags.protect"] = "a tag protection change"
     Mouse(md.display, "press", "Left")
     Mouse(md.display, "release", "Left")
     return { clicked = args.button, title = md.title, display = md.display }
+  end
+end)()
+
+-------------------------------------------------------------------------------
+-- 0.42.0: dialogs (DIALOG.md KB-27) and moving fixtures under a grouping fixture (docs/tools/patch.md).
+--   dialog.read       read-only: the top modal: class, name, title, message, its buttons (text, enabled) and display
+--   dialog.press      clicks one button of the top modal, named by its text, only while the modal still shows the
+--                     title and message the caller read: a dialog with another message is never answered
+--   patch.moveCheck   read-only pre-flight against the live patch: the fixtures, their common parent and the target
+--   patch.moveState   read-only, in the copy: whether the command line is at the stage's Fixtures, the source or the
+--                     target, how many of the fixtures are under the target, the last command and the top modal
+--   patch.moveStep    one step of a move in the copy, queued with CmdIndirect after its destination was checked:
+--                     source (ChangeDestination into the fixtures' grouping fixture), cut (Cut <positions>), target
+--                     (ChangeDestination .. and/or into the target grouping fixture), paste (Paste <position>)
+--   patch.moveAnswer  answers the "Move Fixtures" dialog that the paste opens: Absolute, Relative or Cancel
+--   patch.groupsOf    read-only: the groups that hold each of the given fixtures (or one of their cells)
+-- The move is what the Patch menu does, and what the Halloween 2026 build did by hand (live, onPC 2.5.1,
+-- 2026-10-23): Cut in the fixtures' list, ChangeDestination into the grouping fixture, Paste, then the console asks
+-- "Move Fixtures": keep the absolute 3D position and rotation, or the offset relative to the parent. FIDs, addresses,
+-- groups, presets and positions survived. Paste waits for that dialog, and a dialog opened from the plugin thread
+-- stalls the bridge, so every command is queued and the server polls patch.moveState between the steps.
+-------------------------------------------------------------------------------
+;(function()
+  local function squash(t) return (tostring(t):gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")) end
+  -- A console object, or the harness's mock object (a table with Addr).
+  local function isObj(v) return isHandle(v) or (type(v) == "table" and type(v.Addr) == "function") end
+  local function addrOf(h) local ok, a = pcall(function() return h:Addr() end); return ok and a or nil end
+
+  -- The top modal: (row, handle) when one is open, (nil) when none is, (nil, nil, reason) when it cannot be read; a
+  -- failed lookup is never taken for "no dialog". A MessageBox names its parts Title and Text; buttons are known by
+  -- their text only (their names are generic: KB-25).
+  local function topModal()
+    if type(GetTopModal) ~= "function" then return nil, nil, "GetTopModal is not available" end
+    local ok, m = pcall(GetTopModal)
+    if not ok then return nil, nil, "GetTopModal failed: " .. tostring(m) end
+    if not m then return nil end
+    local r = { class = safeCall(m, "GetClass"), name = tostring(safeProp(m, "name")), buttons = {} }
+    -- The class is part of the dialog's identity: unreadable, the dialog is incomplete (never bound without it).
+    if type(r.class) ~= "string" or r.class == "" then r.incomplete = "the dialog's class cannot be read" end
+    pcall(function() r.display = m:GetDisplayIndex() end)
+    local function walk(h, d)
+      -- A tree deeper than the bound is incomplete, never complete without what lies below it (a message, a button).
+      if d > 8 then
+        if #(h:UIChildren() or {}) > 0 then r.incomplete = "the dialog's UI tree is deeper than 9 levels" end
+        return
+      end
+      for _, c in ipairs(h:UIChildren() or {}) do
+        local vis = true
+        pcall(function() vis = c:IsVisible() end)
+        if vis then
+          local okT, tx = pcall(function() return c.Text end)
+          -- A visible part whose text cannot be read (the title, the message, a button) leaves the dialog unidentified.
+          if not okT then r.incomplete = "the text of " .. tostring(safeProp(c, "name")) .. " cannot be read" end
+          if okT and tx ~= nil and tx ~= "" then
+            if safeCall(c, "GetClass") == "Button" then
+              local en = true
+              pcall(function() en = c:IsEnabled() end)
+              r.buttons[#r.buttons + 1] = { text = tostring(tx), enabled = en ~= false }
+            elseif c.name == "Title" then r.title = tostring(tx)
+            elseif c.name == "Text" then r.text = tostring(tx) end
+          end
+        end
+        walk(c, d + 1)
+      end
+    end
+    local okW, errW = pcall(walk, m, 0)
+    if not okW then r.incomplete = tostring(errW) end
+    r.buttons = emptyArray(r.buttons)
+    return r, m
+  end
+
+  -- Clicks the one visible, enabled button with exactly this text at its centre (Mouse on the modal's display: KB-25).
+  local function click(md, m, text)
+    local found = {}
+    local function find(h)
+      for _, c in ipairs(h:UIChildren() or {}) do
+        local okB, isB = pcall(function() return c:GetClass() == "Button" and c.Text == text and c:IsVisible() and c:IsEnabled() end)
+        if okB and isB then found[#found + 1] = c end
+        find(c)
+      end
+    end
+    find(m)
+    if #found == 0 then raise("[no-button] the dialog has no visible, enabled button " .. text .. "; nothing was clicked") end
+    if #found > 1 then raise("[ambiguous-button] the dialog has " .. #found .. " buttons " .. text .. "; nothing was clicked") end
+    if type(md.display) ~= "number" then raise("[no-display] the dialog's display cannot be read; nothing was clicked") end
+    local r = found[1]:Get("AbsRect")
+    local x, y = math.floor(r.x + r.w / 2), math.floor(r.y + r.h / 2)
+    Mouse(md.display, "move", x, y)
+    -- From the press on, a failure leaves it unknown whether the button acted: [press-uncertain], never "not clicked".
+    -- A failed press or release gets one more release so the button is not left held.
+    local okP, errP = pcall(Mouse, md.display, "press", "Left")
+    local okR, errR = pcall(Mouse, md.display, "release", "Left")
+    if not okP or not okR then
+      if not okR then pcall(Mouse, md.display, "release", "Left") end
+      raise({ code = "press-uncertain", message = "the click on " .. text .. " failed part-way (" .. tostring(okP and errR or errP) .. "); whether the button acted is unknown: read the dialog again", at = { x = x, y = y } })
+    end
+    return { x = x, y = y }
+  end
+
+  local function lastCommand()
+    local ok, v = pcall(function() return tostring(CmdObj():Get("LastCommand")) end)
+    return ok and v or nil
+  end
+
+  ops["dialog.read"] = function()
+    local md, _, why = topModal()
+    if why then raise("[modal-unknown] whether a dialog is open cannot be read (" .. why .. ")") end
+    return { open = md ~= nil, modal = md or false, lastCommand = lastCommand() }
+  end
+
+  -- args: { button, expectTitle?, expectText?, expectClass?, exclusive }. expectTitle / expectText are what dialog.read
+  -- reported ("" for a dialog without one); at least one is required. The message is compared with whitespace
+  -- collapsed (it wraps).
+  ops["dialog.press"] = function(args)
+    if args.exclusive ~= true then raise("[not-exclusive] dialog.press needs exclusive = true: the client confirms that nobody else operates the console while it answers a dialog") end
+    if type(args.button) ~= "string" or args.button == "" then raise("[bad-args] button (the button's text) is required") end
+    if args.expectTitle == nil and args.expectText == nil then raise("[bad-args] expectTitle or expectText (as dialog.read reported them) is required") end
+    local md, m, why = topModal()
+    if why then raise("[modal-unknown] the dialog cannot be read (" .. why .. "); nothing was clicked") end
+    if not md then raise("[no-modal] no dialog is open; nothing was clicked") end
+    if md.incomplete then raise("[modal-unknown] the dialog could only be read in part (" .. md.incomplete .. "); nothing was clicked") end
+    if args.expectClass ~= nil and md.class ~= args.expectClass then raise("[wrong-modal] the open dialog is a " .. tostring(md.class) .. ", not a " .. tostring(args.expectClass) .. "; nothing was clicked") end
+    if args.expectTitle ~= nil and (md.title or "") ~= args.expectTitle then raise("[wrong-modal] the open dialog's title is " .. tostring(md.title) .. ", not " .. tostring(args.expectTitle) .. "; nothing was clicked") end
+    if args.expectText ~= nil and squash(md.text or "") ~= squash(args.expectText) then raise("[wrong-modal] the open dialog's message is " .. tostring(md.text) .. ", not the one expected; nothing was clicked") end
+    local at = click(md, m, args.button)
+    return { clicked = args.button, title = md.title, text = md.text, class = md.class, display = md.display, at = at }
+  end
+  GUARDED_OPS["dialog.press"] = "a dialog answer"
+
+  ---------------------------------------------------------------------------
+  -- Moving fixtures
+  ---------------------------------------------------------------------------
+  local MOVE_TITLE = "Move Fixtures"
+  local MOVE_TEXT = "Do you want the fixtures to keep their absolute position and rotation in 3D space?"
+  local MOVE_BUTTONS = { Absolute = true, Relative = true, Cancel = true }
+  local function isMoveDialog(md) return md ~= nil and md.title == MOVE_TITLE and squash(md.text or ""):sub(1, #MOVE_TEXT) == MOVE_TEXT end
+
+  local function destAddr()
+    local ok, d = pcall(function() return CmdObj():Get("Destination") end)
+    if ok and isObj(d) then return addrOf(d) end
+    return nil
+  end
+  local function typeName(f)
+    local ok, t = pcall(function() return f:Get("FixtureType") end)
+    if ok and isObj(t) then return tostring(safeProp(t, "name")) end
+    local d = displayProp(f, "FixtureType")
+    return d and (d:gsub("^%d+%s+", "")) or nil
+  end
+  local function fidOf(e) return e and numericFid(e.fixture) or nil end
+  local function parentArg(v)
+    if v == "root" then return nil end
+    return integerArg(v, "parent", 1, PATCH_MAX_FID)
+  end
+  -- "Cut 3 Thru 5 + 9": positions (sorted) as runs.
+  local function runs(pos)
+    local parts, i = {}, 1
+    while i <= #pos do
+      local j = i
+      while j < #pos and pos[j + 1] == pos[j] + 1 do j = j + 1 end
+      parts[#parts + 1] = (j > i) and (pos[i] .. " Thru " .. pos[j]) or tostring(pos[i])
+      i = j + 1
+    end
+    return table.concat(parts, " + ")
+  end
+
+  -- The move as it stands in patch p, before the paste: the fixtures share one parent (a top-level grouping fixture,
+  -- or none) in one stage, hold no fixtures themselves, and the target is another top-level grouping fixture of that
+  -- stage (or the stage itself: parent "root").
+  local function movePlan(p, args)
+    if type(args.fids) ~= "table" or #args.fids == 0 then raise("[bad-args] fids must be a non-empty list") end
+    if #args.fids > PATCH_MAX_COUNT then raise("[bad-args] at most " .. PATCH_MAX_COUNT .. " fixtures per move") end
+    local parentFid = parentArg(args.parent)
+    local by = fixturesByFid(p)
+    local entries, seen, stageName, srcFid, first = {}, {}, nil, nil, true
+    for _, f in ipairs(args.fids) do
+      local fid = integerArg(f, "fids[]", 1, PATCH_MAX_FID)
+      if seen[fid] then raise("[bad-args] FID " .. fid .. " appears twice") end
+      seen[fid] = true
+      local e = by[fid]
+      if not e then raise("[no-fixture] no fixture with FID " .. fid) end
+      if fixtureChildren(e.fixture) > 0 then raise("[has-subfixtures] FID " .. fid .. " holds fixtures of its own; moving it is not supported") end
+      if stageName == nil then stageName = e.stage elseif e.stage ~= stageName then raise("[mixed-stages] FID " .. fid .. " is in stage " .. tostring(e.stage) .. ", the others in " .. tostring(stageName)) end
+      local pf = e.parent and numericFid(e.parent) or false
+      if e.parent and not pf then raise("[no-parent-fid] the parent of FID " .. fid .. " has no FID") end
+      if first then srcFid = pf; first = false
+      elseif pf ~= srcFid then
+        raise("[mixed-parents] the fixtures have different parents (FID " .. fid .. " is " .. (pf and ("under FID " .. pf) or "at the top level") .. ", FID " .. entries[1].fid .. " " .. (srcFid and ("under FID " .. srcFid) or "at the top level") .. "); move each parent's fixtures in their own call")
+      end
+      entries[#entries + 1] = { fid = fid, entry = e }
+    end
+    local source = srcFid and by[srcFid] or nil
+    if source and source.depth ~= 0 then raise("[nested] the fixtures' parent FID " .. srcFid .. " is inside another fixture; only top-level grouping fixtures are supported") end
+    if source then
+      local sn = typeName(source.fixture)
+      if sn ~= "Grouping" then raise("[not-grouping] the fixtures' parent FID " .. srcFid .. " is a " .. tostring(sn) .. ", not a grouping fixture; moving the children of other fixtures is not supported") end
+    end
+    local target
+    if parentFid then
+      if seen[parentFid] then raise("[bad-args] the parent FID " .. parentFid .. " is one of the fixtures") end
+      target = by[parentFid]
+      if not target then raise("[no-parent] no fixture with FID " .. parentFid) end
+      if target.stage ~= stageName then raise("[mixed-stages] the parent FID " .. parentFid .. " is in stage " .. tostring(target.stage) .. ", the fixtures in " .. tostring(stageName)) end
+      if target.depth ~= 0 then raise("[nested] the parent FID " .. parentFid .. " is inside another fixture; only top-level grouping fixtures are supported") end
+      local tn = typeName(target.fixture)
+      if tn ~= "Grouping" then raise("[not-grouping] FID " .. parentFid .. " is a " .. tostring(tn) .. ", not a grouping fixture") end
+      if srcFid == parentFid then raise("[already-there] the fixtures are already under FID " .. parentFid) end
+    elseif not source then
+      raise("[already-there] the fixtures are already at the top level of " .. tostring(stageName))
+    end
+    local stage = stageOf(p, stageName)
+    return { stage = stage, stageName = stageName, entries = entries, source = source, target = target, parentFid = parentFid, sourceFid = srcFid or nil }
+  end
+
+  local function sideRow(e, stageName)
+    if not e then return { fid = "root", name = stageName } end
+    return { fid = numericFid(e.fixture), name = tostring(safeProp(e.fixture, "name")), type = typeName(e.fixture), index = e.index }
+  end
+
+  -- args: { fids, parent (a FID or "root") }. Read-only, against the live patch.
+  ops["patch.moveCheck"] = function(args)
+    local plan = movePlan(ShowData().LivePatch, args)
+    local rows = {}
+    for _, x in ipairs(plan.entries) do rows[#rows + 1] = fixtureRow(x.entry) end
+    return { stage = plan.stageName, source = sideRow(plan.source, plan.stageName), target = sideRow(plan.target, plan.stageName), fixtures = emptyArray(rows) }
+  end
+
+  -- args: { fids, parent, source (the fixtures' parent before the move: a FID or "root"), stage }
+  ops["patch.moveState"] = function(args)
+    local p = requireCopy(nil)
+    local stageName = nameArg(args.stage, "stage")
+    local stage = stageOf(p, stageName)
+    local by = fixturesByFid(p)
+    local d = destAddr()
+    local function holderOf(v)
+      if v == "root" or v == nil then return stage.Fixtures end
+      local e = by[tonumber(v)]
+      return e and e.fixture or nil
+    end
+    local function at(v) local h = holderOf(v); return d ~= nil and h ~= nil and addrOf(h) == d end
+    local under, underSource, fixtures = 0, 0, {}
+    local targetFid = args.parent ~= "root" and tonumber(args.parent) or nil
+    local sourceFid = args.source ~= "root" and tonumber(args.source) or nil
+    for _, f in ipairs(type(args.fids) == "table" and args.fids or {}) do
+      local e = by[tonumber(f)]
+      local pf = e and (e.parent and numericFid(e.parent) or false)
+      if e and pf == (targetFid or false) and e.stage == tostring(stage.name) then under = under + 1 end
+      if e and pf == (sourceFid or false) and e.stage == tostring(stage.name) then underSource = underSource + 1 end
+      fixtures[#fixtures + 1] = { fid = tonumber(f), exists = e ~= nil, parentFid = e and (pf or "root") or nil }
+    end
+    local md, _, why = topModal()
+    return {
+      destination = patchDestination(), atStage = at("root"), atSource = at(args.source), atTarget = at(args.parent),
+      underTarget = under, underSource = underSource, count = #fixtures, fixtures = emptyArray(fixtures),
+      lastCommand = lastCommand(), modal = md or false, modalKnown = why == nil, modalError = why, moveDialog = isMoveDialog(md),
+    }
+  end
+
+  -- args: { fids, parent, stage, step = "source" | "cut" | "target" | "paste", exclusive }. Each step checks the
+  -- destination it starts from and that no dialog is open, then queues its command(s).
+  ops["patch.moveStep"] = function(args)
+    requireExclusive(args, "patch.moveStep")
+    local p = requireCopy(nil)
+    local md, _, why = topModal()
+    if why then raise("[modal-unknown] whether a dialog is open cannot be read (" .. why .. "); nothing was sent") end
+    if md then raise({ code = "modal-open", message = "a dialog is open (" .. tostring(md.title or md.name) .. "); nothing was sent", modal = md }) end
+    local plan = movePlan(p, args)
+    if nameArg(args.stage, "stage") ~= plan.stageName then raise("[wrong-stage] the fixtures are in stage " .. tostring(plan.stageName) .. ", not " .. tostring(args.stage)) end
+    local list = plan.stage.Fixtures
+    local sourceHolder = plan.source and plan.source.fixture or list
+    local targetHolder = plan.target and plan.target.fixture or list
+    local d = destAddr()
+    local function expectAt(h, what)
+      if d == nil or d ~= addrOf(h) then raise("[wrong-destination] the command line is at " .. tostring(patchDestination()) .. ", not " .. what .. "; nothing was sent") end
+    end
+    local sent = {}
+    local function send(c) CmdIndirect(c); sent[#sent + 1] = c end
+    if args.step == "source" then
+      expectAt(list, plan.stageName .. ".Fixtures")
+      if plan.source then send("ChangeDestination " .. plan.source.index) end
+    elseif args.step == "cut" then
+      expectAt(sourceHolder, plan.source and ("FID " .. plan.sourceFid) or (plan.stageName .. ".Fixtures"))
+      local pos = {}
+      for _, x in ipairs(plan.entries) do pos[#pos + 1] = x.entry.index end
+      table.sort(pos)
+      send("Cut " .. runs(pos))
+    elseif args.step == "target" then
+      expectAt(sourceHolder, plan.source and ("FID " .. plan.sourceFid) or (plan.stageName .. ".Fixtures"))
+      if plan.source then send("ChangeDestination ..") end
+      if plan.target then send("ChangeDestination " .. plan.target.index) end
+    elseif args.step == "paste" then
+      expectAt(targetHolder, plan.target and ("FID " .. plan.parentFid) or (plan.stageName .. ".Fixtures"))
+      send("Paste " .. (#targetHolder:Children() + 1))
+    else
+      raise("[bad-args] step must be source, cut, target or paste")
+    end
+    return { step = args.step, commands = emptyArray(sent), stage = plan.stageName, source = sideRow(plan.source, plan.stageName), target = sideRow(plan.target, plan.stageName) }
+  end
+  GUARDED_OPS["patch.moveStep"] = "a patch change"
+
+  -- args: { button = "Absolute" | "Relative" | "Cancel", exclusive }. Only the console's own Move Fixtures dialog.
+  ops["patch.moveAnswer"] = function(args)
+    requireExclusive(args, "patch.moveAnswer")
+    if not MOVE_BUTTONS[args.button] then raise("[bad-args] button must be Absolute, Relative or Cancel") end
+    requireCopy(nil)
+    local md, m, why = topModal()
+    if why then raise("[modal-unknown] the dialog cannot be read (" .. why .. "); nothing was clicked") end
+    if not md then raise("[no-modal] no dialog is open; nothing was clicked") end
+    if md.incomplete then raise("[modal-unknown] the dialog could only be read in part (" .. md.incomplete .. "); nothing was clicked") end
+    if not isMoveDialog(md) then raise({ code = "wrong-modal", message = "the open dialog is not the console's Move Fixtures question (" .. tostring(md.title) .. "); nothing was clicked", modal = md }) end
+    local xy = click(md, m, args.button)
+    return { clicked = args.button, title = md.title, display = md.display, at = xy }
+  end
+  GUARDED_OPS["patch.moveAnswer"] = "a patch change"
+
+  -- The fixture among `want` that a selected (sub)fixture is or belongs to (a cell counts for its fixture), and whether
+  -- that was established: a Parent link that fails, or more than ten levels, is (nil, false), never "not one of them".
+  local function ownerIn(sf, want)
+    local h = sf
+    for _ = 1, 10 do
+      local f = numericFid(h)
+      if f and want[f] then return f, true end
+      local okF, fn = pcall(function() return h.Parent end)
+      if not okF then return nil, false end
+      if type(fn) ~= "function" then return nil, true end
+      local okP, par = pcall(fn, h)
+      if not okP then return nil, false end
+      local pc = par and safeCall(par, "GetClass") or nil
+      if pc ~= "Fixture" and pc ~= "SubFixture" then return nil, true end
+      h = par
+    end
+    return nil, false
+  end
+  local GROUPS_MAX_ENTRIES = 200000
+
+  -- args: { fids }. Every group, in every data pool, whose selection holds one of the fixtures or a cell of one. A group
+  -- is named "<data pool>.<group>" ("1.5": Group 5 of DataPool 1).
+  ops["patch.groupsOf"] = function(args)
+    if type(args.fids) ~= "table" or #args.fids == 0 then raise("[bad-args] fids must be a non-empty list") end
+    local want, out = {}, {}
+    for _, f in ipairs(args.fids) do local n = integerArg(f, "fids[]", 1, PATCH_MAX_FID); want[n] = true; out[tostring(n)] = {} end
+    local okP, pools = pcall(function() return ShowData().DataPools:Children() end)
+    if not okP or type(pools) ~= "table" then raise("[unreadable] the data pools cannot be read") end
+    local groups = {}
+    for _, dp in ipairs(pools) do
+      local okG, list = pcall(function() return dp.Groups:Children() end)
+      if not okG or type(list) ~= "table" then raise("[unreadable] the groups of data pool " .. tostring(safeProp(dp, "no")) .. " cannot be read") end
+      for _, g in ipairs(list) do groups[#groups + 1] = { h = g, id = tostring(safeProp(dp, "no")) .. "." .. tostring(safeProp(g, "no")) } end
+    end
+    local scanned, entries, truncated, unreadable = 0, 0, false, {}
+    for _, gg in ipairs(groups) do
+      local g = gg.h
+      if truncated then break end
+      local okD, data = pcall(function() return g:Get("SelectionData") end)
+      if not okD or type(data) ~= "table" then unreadable[#unreadable + 1] = gg.id
+      else
+        scanned = scanned + 1
+        local hit, unresolved = {}, false
+        for _, e in ipairs(data) do
+          entries = entries + 1
+          if entries > GROUPS_MAX_ENTRIES then truncated = true; break end
+          -- An entry that cannot be resolved to a (sub)fixture could be one of the fixtures: the group is unreadable,
+          -- never "does not hold them".
+          local okS, sf = false, nil
+          if type(e) == "table" and type(e.sf_index) == "number" then okS, sf = callApi("GetSubfixture", e.sf_index) end
+          if okS and isObj(sf) then
+            local fid, known = ownerIn(sf, want)
+            if fid then hit[fid] = true elseif not known then unresolved = true end
+          else
+            unresolved = true
+          end
+        end
+        if unresolved then unreadable[#unreadable + 1] = gg.id end
+        for fid in pairs(hit) do table.insert(out[tostring(fid)], gg.id) end
+      end
+    end
+    for k, v in pairs(out) do out[k] = emptyArray(v) end
+    return { groups = out, scanned = scanned, total = #groups, pools = #pools, unreadable = emptyArray(unreadable), truncated = truncated }
   end
 end)()
 
