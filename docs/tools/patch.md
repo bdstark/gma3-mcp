@@ -169,8 +169,8 @@ case; for an `.xml` file also in its header's name, manufacturer, short name or 
 16 KB before filtering, cached by path, size and time). `sources` limits the libraries; scenery (`set@` files) is left out unless `include_sets`; `limit` (default 50,
 max 500) / `offset` paginate, and `nextOffset` says where the next page starts.
 
-`compact: true` lists file names only, grouped by library (`files: {grandma2: [...], user: [...]}`), with `inShow` and
-`notVerified` for just the files that have them; its default `limit` is 500. Use it for a broad query (a manufacturer),
+`compact: true` lists file names only, grouped by library (`files: {grandma2: [...], user: [...]}`), with `inShow`
+(`{user: {"<file>": [types]}}`) and `notVerified` (`{user: [files]}`), also per library, for just the files that have them; its default `limit` is 500. Use it for a broad query (a manufacturer),
 then ask for the full entries of the files you need. Every page is cut to 40 000 characters so a client takes it whole
 (`truncated` says so and names the next offset; an entry over the limit on its own is listed in a bounded form, without
 its modes and description and with at most 5 `inShow` types, marked `oversized`, so the next offset still moves on): the Halloween build's 500-entry pages for `adj` and `chauvet` were 95

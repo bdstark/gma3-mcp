@@ -187,11 +187,11 @@ test("gma3_patch_library compact: file names per library, inShow and notVerified
     const { result } = await h.callJson("gma3_patch_library", { query: "acme", compact: true });
     assert.equal(result.compact, true);
     assert.deepEqual(result.files, { grandma3: ["acme@spot.xml"], user: ["acme@spot.xml"] });
-    assert.deepEqual(result.notVerified, ["acme@spot.xml"]);
+    assert.deepEqual(result.notVerified, { user: ["acme@spot.xml"] }, "per library: the grandMA3 copy of the same name is verified");
     assert.equal(result.entries, undefined);
     assert.equal(h.fake.requests.find((r) => r.op === "patch.library")!.args.limit, 500);
     const adj = await h.callJson("gma3_patch_library", { query: "mega hex", compact: true });
-    assert.deepEqual(adj.result.inShow, { "adj@mega hex par.pxml": [{ no: 1, name: "Mega Hex Par" }] });
+    assert.deepEqual(adj.result.inShow, { grandma2: { "adj@mega hex par.pxml": [{ no: 1, name: "Mega Hex Par" }] } });
   } finally {
     await h.close();
   }

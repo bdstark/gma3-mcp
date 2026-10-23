@@ -12,6 +12,9 @@ class Obj {
   props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000" };
   install(h: Harness) {
     h.fake.on("objects", (args) => {
+      // An appearance resolves to itself, as a reference property's target (asText false: summaries).
+      const app = String(args.ref).match(/^Appearance (\d+)$/);
+      if (app) return { total: 1, offset: 0, count: 1, items: [{ name: `App ${app[1]}`, class: "Appearance", addr: `addr:app${app[1]}` }] };
       const fields: Record<string, string> = {};
       for (const f of (args.fields as string[]) ?? []) if (f in this.props) fields[f] = this.props[f];
       return { total: 1, offset: 0, count: 1, items: [{ name: this.props.Name, class: "RenderQuality", fields }] };
@@ -21,6 +24,8 @@ class Obj {
       const v = String(args.value);
       if (p === "Lock") this.props.Lock = /^(yes|on|true)$/i.test(v) ? "Yes" : "";
       // A macro line's Wait coerces a value it does not take to Follow (review of PR #87).
+      else if (this.props.Lock === "" && p === "Appearance") this.props[p] = `App ${v.replace(/^Appearance /, "")}`;
+      else if (this.props.Lock === "" && p === "AddToCmdline") this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
       else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) ? Number(v).toFixed(3) : "Follow") : v;
       return { ref: args.ref, property: p, value: this.props[p] };
     });
@@ -111,6 +116,30 @@ test("set_property: a value the console replaced with its own (Wait \"abc\" read
   }
 });
 
+test("set_property: a Yes/No field named with Command or Cmd, a reference property, and a no-op on a locked object (review of PR #87)", async () => {
+  const { h, o } = await setup();
+  try {
+    let r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "AddToCmdline", value: true });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    // Appearance reads back as the appearance's name: the request is resolved and compared by its object.
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 3" });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    assert.equal(r.result.value, "App 3");
+    // Already the requested value on a locked object: the state is right, and the result says the write was refused.
+    o.props.HazeEnabled = "Yes";
+    o.props.Lock = "Yes";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "HazeEnabled", value: true });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    assert.match(String(r.result.note), /already read "Yes"; RenderQuality 2 is locked/);
+    assert.deepEqual(r.result.locked, { Lock: "Yes" });
+    // A locked object whose appearance is not the requested one is still an error.
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 4" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+  } finally {
+    await h.close();
+  }
+});
+
 test("sameValue ignores case, spacing, number format and Yes/No spellings, not the value", () => {
   assert.ok(sameValue("Yes", true));
   assert.ok(sameValue("Off", "no"));
@@ -127,4 +156,6 @@ test("sameValue ignores case, spacing, number format and Yes/No spellings, not t
   assert.ok(!sameValue("2.500", 2.5, "Name"));
   assert.ok(!sameValue("Off", false, "Name"));
   assert.ok(sameValue("2.5", 2.5, "Name"));
+  assert.ok(sameValue("Yes", true, "ForwardCommands"));
+  assert.ok(sameValue("No", false, "AddToCmdline"));
 });

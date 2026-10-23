@@ -826,15 +826,16 @@ export function shapeLibraryPage(page: LibraryPage, compact: boolean, maxChars =
     // The note is part of the page, so it counts towards the size.
     const truncated = entries.length < page.entries.length ? { truncated: `cut from ${page.entries.length} to ${entries.length} entries to stay under ${maxChars} characters (clients cut off longer results); ask again with offset ${page.offset + entries.length}${compact ? "" : ", or compact: true for file names only"}` } : {};
     if (!compact) return { ...head, ...nextOffset, ...truncated, entries, ...(page.paths !== undefined ? { paths: page.paths } : {}) };
+    // Per library, like files: the same file name can be in two libraries with different headers.
     const files: Record<string, string[]> = {};
-    const inShow: Record<string, Array<{ no: number; name: string }>> = {};
-    const notVerified: string[] = [];
+    const inShow: Record<string, Record<string, Array<{ no: number; name: string }>>> = {};
+    const notVerified: Record<string, string[]> = {};
     for (const e of entries) {
       (files[e.source] ??= []).push(e.file);
-      if (e.inShow?.length) inShow[e.file] = e.inShow.map((x) => ({ no: x.no, name: x.name }));
-      if (e.verified === false) notVerified.push(e.file);
+      if (e.inShow?.length) (inShow[e.source] ??= {})[e.file] = e.inShow.map((x) => ({ no: x.no, name: x.name }));
+      if (e.verified === false) (notVerified[e.source] ??= []).push(e.file);
     }
-    return { ...head, ...nextOffset, ...truncated, compact: true, files, ...(Object.keys(inShow).length ? { inShow } : {}), ...(notVerified.length ? { notVerified } : {}) };
+    return { ...head, ...nextOffset, ...truncated, compact: true, files, ...(Object.keys(inShow).length ? { inShow } : {}), ...(Object.keys(notVerified).length ? { notVerified } : {}) };
   };
   const size = (v: unknown) => JSON.stringify(v, null, 2).length;
   let keep = page.entries.length;
@@ -1205,7 +1206,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
         "the mode names when the file is readable (grandMA3 and user .xml; grandMA2 .pxml files are encrypted, so their modes are known only after the import: gma3_patch_types then lists them), " +
         "verified (false for user-library .xml and WorldServer files, whose import is not verified on the console yet; user-library .gdtf is verified) and inShow: show types already matching it by manufacturer and name (importing again would add a duplicate). " +
         "Scenery (set@ files) is left out unless include_sets. Paginated (limit default 50, max 500; nextOffset is where the next page starts). " +
-        "compact: true lists file names only, per library, with inShow and notVerified for the files that have them (default limit 500): use it for a broad query (a manufacturer) and ask for the full entries of the files you need. " +
+        "compact: true lists file names only, per library, with inShow and notVerified (also per library) for the files that have them (default limit 500): use it for a broad query (a manufacturer) and ask for the full entries of the files you need. " +
         `Every page is cut to about ${LIBRARY_MAX_CHARS / 1000}000 characters so it fits the client; the result says truncated when it was. gma3_patch_library_add puts a .gdtf or .xml file into the user library. Needs bridge 0.26.0.`,
       inputSchema: {
         query: z.string().optional().describe("Words to match, e.g. \"oppsk wall washer\". Omit to list everything."),
@@ -1213,7 +1214,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
         include_sets: z.boolean().optional().describe("Include scenery (set@ files: trusses, buildings, markers)."),
         limit: z.number().optional().describe("Maximum entries (default 50, or 500 with compact; max 500)."),
         offset: z.number().optional().describe("Entries to skip (default 0)."),
-        compact: z.boolean().optional().describe("File names only, grouped by library, plus inShow and notVerified where they apply (default false)."),
+        compact: z.boolean().optional().describe("File names only, grouped by library, plus inShow and notVerified (per library) where they apply (default false)."),
       },
     },
     async (args) => {

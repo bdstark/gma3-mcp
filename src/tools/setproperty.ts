@@ -9,7 +9,7 @@
  * not, even when it changed: the console coerces a value it does not accept (an invalid macro-line Wait reads Follow).
  */
 import type { Gma3Bridge } from "../bridge.js";
-import { readFields } from "./common.js";
+import { readFields, readObjects } from "./common.js";
 
 const LOCK_FIELDS = ["Lock", "SystemLocked"];
 
@@ -22,8 +22,11 @@ const text = (v: unknown): string | undefined => {
   return String(v);
 };
 
-/** Properties holding free text: a name "Off" is not the value No, and a case-only rename is a change. */
-const TEXTUAL = /name|note|label|text|description|comment|title|command|cmd|path|file|appearance/i;
+/**
+ * Properties holding free text: a name "Off" is not the value No, and a case-only rename is a change. Whole property
+ * names only: ForwardCommands and AddToCmdline are Yes/No, and Appearance is an object reference.
+ */
+const TEXTUAL = /^(name|note|label|text|description|comment|title|command|path|filename|filepath)$/i;
 
 /**
  * Compare a read-back with a requested value. Free-text properties (Name, Note, ...) compare exactly with the text the
@@ -50,6 +53,23 @@ export function sameValue(got: unknown, want: unknown, property = ""): boolean {
   return Boolean(x && y && Math.abs(Number(x[1]) - Number(y[1])) < 1e-6 && (!x[2] || !y[2] || x[2] === y[2]));
 }
 
+/**
+ * A reference property (Appearance, Object, ...) reads back as the referenced object's name or a handle summary, not
+ * the reference that was sent ("Appearance 3"): the request is resolved to its object and compared by address or name.
+ */
+async function sameObject(bridge: Gma3Bridge, got: unknown, want: unknown, property: string): Promise<boolean> {
+  if (typeof want !== "string" || TEXTUAL.test(property) || got === null || got === undefined || !/^[A-Za-z][A-Za-z ]*\s+\d+(\.\d+)*$/.test(want.trim())) return false;
+  const res = await readObjects(bridge, want.trim(), [], 2, { asText: false }).catch(() => null);
+  const items = res?.items ?? [];
+  if (items.length !== 1) return false;
+  const target = items[0] as { name?: string; addr?: string };
+  if (typeof got === "object") {
+    const g = got as { addr?: unknown; name?: unknown };
+    return (g.addr !== undefined && g.addr === target.addr) || (g.addr === undefined && g.name === target.name);
+  }
+  return typeof target.name === "string" && String(got) === target.name;
+}
+
 const isLocked = (v: unknown): boolean => typeof v === "string" ? v.trim() !== "" && !/^(no|off|false|0)$/i.test(v.trim()) : v === true;
 
 export interface SetPropertyArgs {
@@ -67,11 +87,15 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   const before = await readFields(bridge, ref, fields).catch(() => null);
   const res = (await bridge.request("set", { ref, property, value })) as Record<string, unknown>;
   const got = lockField && res.value === "" ? "No" : res.value;
-  if (sameValue(got, value, property)) return { result: { ...res, requested: value, verified: true }, failed: false };
   const old = lockField && before?.[lockField] === "" ? "No" : before?.[lockField ?? property];
   // Unchanged means the very same text: any other read-back is a change the console made.
   const unchanged = old !== undefined && old !== null && text(got) === text(old);
   const locks = LOCK_FIELDS.filter((f) => f !== lockField && isLocked(before?.[f]));
+  if (sameValue(got, value, property) || (await sameObject(bridge, got, value, property))) {
+    // Already the requested value: the end state is right, but on a locked object the write itself was refused.
+    const note = unchanged && locks.length ? { note: `${property} already read ${JSON.stringify(old)}; ${ref} is locked (${locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ")}), so the console did not take the write itself`, locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {};
+    return { result: { ...res, requested: value, verified: true, ...note }, failed: false };
+  }
   const lockText = locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ");
   const error = locks.length
     ? `${ref} is locked (${lockText}): the console kept ${property} = ${JSON.stringify(got)} and did not apply ${JSON.stringify(value)}. Unlock it first (Unlock ${ref}), set the property, and lock it again`
