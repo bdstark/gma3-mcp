@@ -465,8 +465,7 @@ async function layoutCellsLocked(ctx: ToolContext, job: LayoutJob): Promise<Oper
   return result;
 }
 
-export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unknown>): Promise<OperationResult> {
-  const op = "assign_cell_layout";
+export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unknown>, op = "assign_cell_layout"): Promise<OperationResult> {
   const v = new Validator();
   const fids = Array.isArray(raw.fixtures) && raw.fixtures.length ? raw.fixtures.map((x, i) => v.check(() => finiteNumber(`fixtures[${i}]`, x, { integer: true, min: 1 })) ?? 0) : (v.fail("fixtures must list FIDs"), []);
   const type = typeof raw.type === "number" || (typeof raw.type === "string" && raw.type.trim()) ? raw.type : (v.fail("type (number or name) is required"), undefined);

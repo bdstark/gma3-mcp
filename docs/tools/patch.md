@@ -5,7 +5,8 @@
 `gma3_patch_remove_type` (fixture types, [SETUP.md](../../SETUP.md) SU-03): bridge 0.26.0. The design and its evidence
 are in [DIALOG.md](../../DIALOG.md) ("KB-25", "KB-26"), the [KB-25 record](../probes/kb-25-dialogs-macos-2.5.1.md) and
 the [SU-03 record](../probes/su-03-import-macos-2.5.1.md). `gma3_patch_library_add` (a file into the user library,
-SU-22): bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md).
+SU-22): bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md). `gma3_patch_move` (fixtures under a
+grouping fixture) and `gma3_patch_retype` (fixtures to another type of the same mode): bridge 0.39.0 and 0.29.0.
 
 ## Common behaviour
 
@@ -159,6 +160,69 @@ The change is `patch.set`. Read-back compares each fixture's patch address and/o
 `fids`: up to 256 FIDs, each once. Removing a fixture deletes it from the show; the console handles what referred to
 it. Pre-flight (`patch.check` `fids`): every FID exists and has no sub-fixtures. The change is `patch.remove`.
 Read-back checks the FIDs are gone. The result's `removed` lists the fixtures as they were.
+
+## gma3_patch_move
+
+Moves fixtures into a grouping fixture's children, or back to the stage's top level. The MA Show Start expects the rig
+under its grouping fixtures FID 1–8; the Halloween 2026 build did this by hand in about 33 `gma3_lua` calls,
+synthetic mouse clicks included (live, onPC 2.5.1, 2026-10-23). FIDs, addresses, names, groups and presets are kept.
+
+| Parameter | |
+| --- | --- |
+| `fids` | 1-256 FIDs, each once, all with the same parent |
+| `parent` | The FID of a top-level grouping fixture (type `Grouping`), or `"root"` for the stage's top level |
+| `position` | `"absolute"` (default) or `"relative"`: the answer to the console's question below |
+| `exclusive` | Must be `true` |
+| `verify` | Default `true` |
+
+**The question.** Pasting fixtures under another parent opens the console's own dialog "Move Fixtures": *keep the
+absolute position and rotation in 3D space, or the offset relative to the parent?* (Absolute / Relative / Cancel).
+`absolute` keeps each fixture where it is in the world (its pose relative to the new parent changes); `relative` keeps
+its pose relative to the parent, so it moves with the parent's position and rotation. With a parent at the origin and
+unrotated, as the Show Start's grouping fixtures are, both give the same result.
+
+Pre-flight (`patch.moveCheck`, against the live patch), nothing sent on failure: every FID exists and holds no fixtures
+of its own; all share one parent (the top level, or one top-level grouping fixture) in one stage; the target is another
+top-level grouping fixture of that stage, or the top level when they have a parent. Fixtures with different parents are
+moved in one call per parent. The pre-flight also reads what the read-back compares: the fixtures' rows, the poses of
+the fixtures and of both parents (`objects`), and their groups (`patch.groupsOf`).
+
+The edit is several steps, each queued by the bridge with `CmdIndirect` after it checked where the command line is (the
+destination is compared by object address) and that no dialog is open, then polled with `patch.moveState` (100 ms, up
+to 3 s) before the next one:
+
+| Step | Bridge op | What it does |
+| --- | --- | --- |
+| `move_source`, `wait_source` | `patch.moveStep` `source` | `ChangeDestination <position>` into the fixtures' grouping fixture (only when they have one) |
+| `move_cut`, `wait_cut` | `patch.moveStep` `cut` | `Cut <positions>` in that list (runs as `a Thru b`); waits for `OK: Cut …`. Nothing moves yet |
+| `move_target`, `wait_target` | `patch.moveStep` `target` | `ChangeDestination ..` (out of a grouping fixture) and/or `ChangeDestination <position>` into the target |
+| `move_paste`, `wait_dialog` | `patch.moveStep` `paste` | `Paste <end of the target's list>`; waits for the Move Fixtures dialog |
+| `move_answer`, `wait_paste` | `patch.moveAnswer` | Clicks Absolute or Relative on that dialog, and only on a dialog with that title and message; waits for `OK: Paste …` with every fixture under the target |
+
+Any other dialog stops the move and is left alone. When a step fails after the paste and the Move Fixtures dialog is
+still open, the tool clicks Cancel (`cancel_dialog`), which moves nothing, so the copy can be closed unchanged. If the
+console pastes without asking, the result says `dialog: "not_shown"` and the read-back still checks the pose.
+
+The isolation check leaves out the moved FIDs and compares fixtures without their number in their list
+(`fixturePositions: false`, bridge 0.39.0): taking fixtures out of a list renumbers the ones after them. The order of
+every other fixture is still compared.
+
+Read-back, against the state before the session: each fixture's parent, address and name (`patch.list`), its groups
+(`patch.groupsOf`: every group whose selection holds the fixture or one of its cells), and its 3D pose (`objects`):
+`absolute` compares the world pose (the parent's position and rotation applied; mesh mirroring and scale are not
+considered), `relative` the pose relative to the parent, within 1 mm and by quaternion. A part that cannot be read
+makes the verification `unavailable` and names it; the result's `fixtures` lists each fixture's parent, address,
+groups and poses.
+
+## gma3_patch_retype
+
+Moves fixtures to another fixture type in the show whose DMX mode of the same name has the same expanded DMX
+addressing (every channel at the same address in every cell, the same cells); FIDs, addresses, cells, groups and
+preset values are kept. The case it is for: a GDTF fixed and imported again (`gma3_patch_import` with
+`allow_duplicate`, Halloween finding #5) lands as a second type with the same name; this moves the fixtures to the new
+import, and `gma3_patch_remove_type` then removes the old one by number. It is the same session as
+`gma3_assign_cell_layout` (`patch.retype`, [positions.md](positions.md#gma3_assign_cell_layout)) under a patch-centred
+name. Give `type` by number when two types share a name.
 
 ## gma3_patch_library
 

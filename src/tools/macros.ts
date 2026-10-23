@@ -26,6 +26,7 @@ import type { Gma3Bridge } from "../bridge.js";
 import { exists } from "./common.js";
 import { VarTracker, variablePresence, variableRefs } from "./variables.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
+import { describeDialog, readDialog, type DialogRow } from "./dialog.js";
 import { BATCH_NOTE, batchOptionShape, duplicates, runBatchCall } from "../batch.js";
 import {
   asRead,
@@ -1011,11 +1012,23 @@ export async function runMacro(ctx: ToolContext, raw: RunArgs): Promise<Operatio
       // Stopped only on a successfully read idle state.
       if (action === "off" && observation.confirmedIdle && (observation.state === "not_observed" || observation.state === "finished")) observation.state = "stopped";
     }
+    // A line that opened a dialog (a Lua Confirm(), a prompt) waits for it: the run state alone reads paused_at_go or
+    // running (Show Start's Position Wizard, Halloween 2026). The top modal after observing, best-effort.
+    let dialog: DialogRow | false | "unknown" | undefined;
+    if (s.status === "succeeded" && action === "go") {
+      try {
+        dialog = (await readDialog(bridge, t)).modal;
+      } catch {
+        dialog = "unknown";
+      }
+    }
+    if (dialog && dialog !== "unknown") warnings.push(`a dialog is open on the console: ${describeDialog(dialog)}. A macro line may be waiting for it: read and answer it with gma3_dialog (sending go again does not answer it)`);
     const execution = {
       dispatched: s.status === "succeeded",
       command,
       runningBefore: b.runState === "unknown" ? "unknown" : b.running,
       ...(observation ? { observed: observation } : { observed: null }),
+      ...(dialog !== undefined ? { dialog } : {}),
     };
     const verification: Verification =
       action === "off"
@@ -1033,7 +1046,7 @@ export async function runMacro(ctx: ToolContext, raw: RunArgs): Promise<Operatio
     const summary =
       s.status !== "succeeded"
         ? `${command} was not accepted: ${s.error}`
-        : `${command} dispatched${observation ? `; observed: ${observation.state}${observation.pausedAt ? ` at line ${observation.pausedAt} (wait Go: send go again to continue)` : ""}${observation.linesSeen.length ? `, lines seen ${observation.linesSeen.map((l) => l.line).join(", ")}` : ""}` : ""}. Completion of every line is not inferred.`;
+        : `${command} dispatched${observation ? `; observed: ${observation.state}${observation.pausedAt ? ` at line ${observation.pausedAt} (${dialog && dialog !== "unknown" ? "a dialog is open" : "wait Go: send go again to continue"})` : ""}${observation.linesSeen.length ? `, lines seen ${observation.linesSeen.map((l) => l.line).join(", ")}` : ""}` : ""}${dialog && dialog !== "unknown" ? `; a dialog is open: ${describeDialog(dialog)}, answer it with gma3_dialog` : ""}. Completion of every line is not inferred.`;
     return buildResult({ operation: op, target, steps, verification, warnings, summary, extra: { execution } });
   });
 }
@@ -1173,7 +1186,7 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
     {
       title: "Run (Go+) or stop (Off) a macro and observe it",
       description:
-        "EXECUTES: action go sends Go+ Macro N (starts it, or continues it after a Go wait); off sends Off Macro N. Then OBSERVES the macro's running line over time, on the server side (no Lua loop needed), for observe_seconds (default 3, max 60): finished, paused_at_go (a manual wait), running, idle. The result separates dispatched (the command was accepted) from observed (the run state seen); it never claims that every line succeeded, because a failing line does not stop a macro. Lines with a (prompt) ask the operator for input.",
+        "EXECUTES: action go sends Go+ Macro N (starts it, or continues it after a Go wait); off sends Off Macro N. Then OBSERVES the macro's running line over time, on the server side (no Lua loop needed), for observe_seconds (default 3, max 60): finished, paused_at_go (a manual wait), running, idle. After a go it also reads the console's top dialog: a line that opened one (a Lua Confirm(), e.g. the MA Show Start's wizards) waits for it, and execution.dialog then has its title, message and buttons, to answer with gma3_dialog (dialog: false when none is open; needs bridge 0.39.0; unknown on an older one). The result separates dispatched (the command was accepted) from observed (the run state seen); it never claims that every line succeeded, because a failing line does not stop a macro. Lines with a (prompt) ask the operator for input.",
       inputSchema: { ...dataPoolShape, macro: z.number(), action: z.enum(["go", "off"]), observe_seconds: z.number().optional(), interval_ms: z.number().optional() },
     },
     async (args) => operation(() => runMacro(inDataPool(ctx, args), args)),

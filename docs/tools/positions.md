@@ -158,6 +158,11 @@ same address in every cell, with the same cells (names and break offsets). Only 
 (`patch.retype`), committed with no undo, then a read-back of the fixtures' type. An unused copy is removed with
 `gma3_patch_remove_type`.
 
+The target need not be a layout copy: any type with a matching mode works. The Halloween 2026 build (finding #5) used
+it to move two fixtures from one import of a GDTF to a fixed revision of it imported beside the first, keeping their
+FIDs, groups and presets. `gma3_patch_retype` is the same tool under a patch-centred name
+([patch.md](patch.md#gma3_patch_retype)).
+
 ## Live test procedure
 
 `test/live/positions.live.ts`, with `GMA3_LIVE=1`, on a disposable show. It uses the two top-level fixtures in

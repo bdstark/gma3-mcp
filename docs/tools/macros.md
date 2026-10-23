@@ -144,6 +144,12 @@ See [Batch forms](README.md#batch-forms-su-12).
   lines' effects separately. For `off` it is `matched` when the macro is idle afterwards.
 - Warnings name disabled lines (skipped with their waits) and lines with a `(prompt)`, which ask the operator for a
   value when they run.
+- After a `go`, `execution.dialog` is the console's top dialog (bridge 0.39.0, `dialog.read`): its class, title,
+  message and buttons, `false` when none is open, `"unknown"` when it cannot be read (an older bridge). A line that opens
+  a dialog waits for it, and the run state alone then reads `paused_at_go` or `running`: the MA Show Start's Position
+  Wizard (macro 5002) starts with a Lua `Confirm()` ("Are you sure you want to overwrite positions?", OK / Cancel) on a
+  line with a Go wait (Halloween 2026). An open dialog is named in the summary and a warning; answer it with
+  [`gma3_dialog`](dialog.md), not with another `go`.
 
 ## What is and is not verified
 

@@ -165,16 +165,104 @@ end
 
 local console
 local function reset()
-  console = { live = buildLive(), copyOpen = false, dest = "Root", queue = {}, modal = false, last = "", addMode = "ok", addCalls = {}, importPath = "" }
+  console = { live = buildLive(), copyOpen = false, dest = "Root", queue = {}, modal = false, last = "", addMode = "ok", addCalls = {}, importPath = "", destStack = {} }
   console.copy = obj("Patch", "Patch", 10, {}, {}); console.copy.addr = "14.10"
 end
 reset()
 
 ShowData = function() return { LivePatch = console.live, Patch = console.copy } end
 Patch = function() return console.copyOpen and console.copy or console.live end
-CmdObj = function() return { Get = function(_, k) if k == "Destination" then return console.dest elseif k == "LastCommand" then return console.last end end } end
+-- The destination raw is the object (0.39.0 compares its address); in the display role, its path text.
+CmdObj = function() return { Get = function(_, k, role) if k == "Destination" then if role == nil and console.destObj then return console.destObj end return console.dest elseif k == "LastCommand" then return console.last end end } end
 GetTopModal = function() return console.modal or nil end
 CmdIndirect = function(cmd) console.queue[#console.queue + 1] = cmd end
+
+-- 0.39.0: a console UI object and a MessageBox (KB-25: Title, Text and buttons known by their text), and Mouse
+-- clicks on its buttons.
+local function ui(class, name, text, rect)
+  return { class = class, name = name, Text = text, rect = rect, kids = {}, GetClass = function(s) return s.class end, UIChildren = function(s) return s.kids end,
+    IsVisible = function() return true end, IsEnabled = function() return true end, Get = function(s, k) if k == "AbsRect" then return s.rect end end }
+end
+local function messageBox(title, text, buttons, onButton)
+  local m = ui("MessageBox", "MsgBox")
+  m.GetDisplayIndex = function() return 1 end
+  local box = ui("UIObject", "Frame")
+  m.kids = { box }
+  if title then box.kids[#box.kids + 1] = ui("UIObject", "Title", title, { x = 0, y = 0, w = 600, h = 50 }) end
+  box.kids[#box.kids + 1] = ui("UIObject", "Text", text, { x = 0, y = 60, w = 600, h = 60 })
+  for i, b in ipairs(buttons) do box.kids[#box.kids + 1] = ui("Button", "Button " .. (i + 2), b, { x = (i - 1) * 200, y = 200, w = 200, h = 50 }) end
+  m.onButton = onButton
+  return m
+end
+Mouse = function(display, action, a, b)
+  console.mouse = console.mouse or {}
+  if action == "move" then console.mouse.x, console.mouse.y, console.mouse.display = a, b, display
+  elseif action == "release" and console.modal and console.modal.onButton then
+    local x, y = console.mouse.x, console.mouse.y
+    local function find(h)
+      for _, c in ipairs(h.kids or {}) do
+        if c.class == "Button" and c.rect and x >= c.rect.x and x < c.rect.x + c.rect.w and y >= c.rect.y and y < c.rect.y + c.rect.h then return c end
+        local f = find(c)
+        if f then return f end
+      end
+    end
+    local btn = find(console.modal)
+    console.clicked = btn and btn.Text
+    if btn then console.modal.onButton(btn.Text) end
+  end
+end
+local MOVE_TEXT = "Do you want the fixtures to keep their absolute position and rotation in 3D space? Or do you want to keep their position and rotation offset which are relative to their parent?"
+
+-- The move commands (live 2026-10-23): ChangeDestination <position> / .. walk the copy's fixture lists, Cut marks
+-- objects (nothing moves), Paste opens "Move Fixtures" and moves them only once a button is clicked.
+local function moveCommand(cmd)
+  local stageName = cmd:match('^ChangeDestination "Stages"%."(.-)"%."Fixtures"$')
+  if stageName and console.copyOpen then
+    for _, st in ipairs(console.copy.Stages:Children()) do if st.name == stageName then console.destObj = st.Fixtures end end
+    console.destStack = {}
+    return
+  end
+  if cmd == "ChangeDestination Root" then console.destObj = nil; console.destStack = {}; console.clip = nil; return end
+  local n = cmd:match("^ChangeDestination (%d+)$")
+  if n and console.destObj then
+    console.destStack[#console.destStack + 1] = console.destObj
+    console.destObj = console.destObj.kids[tonumber(n)]
+    console.dest = console.destObj and console.destObj.name or "?"
+    return
+  end
+  if cmd == "ChangeDestination .." and console.destObj then
+    console.destObj = table.remove(console.destStack)
+    console.dest = console.destObj and console.destObj.name or "?"
+    return
+  end
+  local spec = cmd:match("^Cut (.+)$")
+  if spec and console.destObj then
+    local objs = {}
+    for part in spec:gmatch("[^+]+") do
+      local a, b = part:match("^%s*(%d+)%s+Thru%s+(%d+)%s*$")
+      if a then for i = tonumber(a), tonumber(b) do objs[#objs + 1] = console.destObj.kids[i] end
+      else objs[#objs + 1] = console.destObj.kids[tonumber(part:match("%d+"))] end
+    end
+    console.clip = { holder = console.destObj, objs = objs }
+    return
+  end
+  local at = cmd:match("^Paste (%d+)$")
+  if at and console.clip then
+    local holder = console.destObj
+    console.modal = messageBox("Move Fixtures", MOVE_TEXT, { "Absolute", "Relative", "Cancel" }, function(button)
+      console.modal = false
+      console.lastAnswer = button
+      if button == "Cancel" then console.last = "User Canceled Command: " .. cmd; return end
+      local clip = console.clip
+      console.clip = nil
+      for _, o in ipairs(clip.objs) do for i, k in ipairs(clip.holder.kids) do if k == o then table.remove(clip.holder.kids, i); break end end end
+      local pos = math.min(tonumber(at), #holder.kids + 1)
+      for j, o in ipairs(clip.objs) do table.insert(holder.kids, pos + j - 1, o) end
+      console.last = "OK: " .. cmd
+    end)
+    return "pending"
+  end
+end
 
 local function frame()
   local q = console.queue
@@ -209,6 +297,7 @@ local function frame()
       if console.copyOpen then local l = deepcopy(console.copy); l.addr = "14.9"; l.name = "LivePatch"; console.live = l end
       console.copy = obj("Patch", "Patch", 10, {}, {}); console.copy.addr = "14.10"; console.copyOpen = false; console.dest = "Root"
     end
+    if moveCommand(cmd) == "pending" then goto continue end
     console.last = "OK: " .. cmd
     ::continue::
   end
@@ -311,7 +400,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.38.2", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.39.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -639,6 +728,161 @@ local names = {}
 if r.ok then for _, t in ipairs(r.result.types) do names[#names + 1] = t.no .. ":" .. t.name end end
 local listed = table.concat(names, ",")
 check("after the commit the type is gone and the ones after it renumbered", r.ok and r.result.count == 5 and not listed:find("Spare") and listed:find("5:Mega Hex Par"), listed)
+
+-------------------------------------------------------------------------------
+-- 0.39.0: moving fixtures under a grouping fixture, and dialogs
+-------------------------------------------------------------------------------
+reset()
+r = request("patch.moveCheck", { fids = { 501 }, parent = 4 })
+check("patch.moveCheck: a top-level fixture into a grouping fixture", r.ok and r.result.stage == "Stage 1" and r.result.source.fid == "root" and r.result.target.fid == 4 and r.result.target.type == "Grouping" and r.result.fixtures[1].fid == 501, J(r))
+r = request("patch.moveCheck", { fids = { 501, 401 }, parent = 4 })
+check("patch.moveCheck refuses fixtures with different parents", r.ok == false and r.code == "mixed-parents", J(r))
+r = request("patch.moveCheck", { fids = { 401 }, parent = 4 })
+check("patch.moveCheck refuses fixtures already under the target", r.ok == false and r.code == "already-there", J(r))
+r = request("patch.moveCheck", { fids = { 501 }, parent = "root" })
+check("patch.moveCheck refuses a move to the top level of top-level fixtures", r.ok == false and r.code == "already-there", J(r))
+r = request("patch.moveCheck", { fids = { 401 }, parent = 501 })
+check("patch.moveCheck refuses a target that is not a grouping fixture", r.ok == false and r.code == "not-grouping", J(r))
+r = request("patch.moveCheck", { fids = { 4 }, parent = "root" })
+check("patch.moveCheck refuses a fixture that holds fixtures", r.ok == false and r.code == "has-subfixtures", J(r))
+r = request("patch.moveCheck", { fids = { 501 }, parent = 999 })
+check("patch.moveCheck refuses a missing parent", r.ok == false and r.code == "no-parent", J(r))
+r = request("patch.moveCheck", { fids = { 501, 501 }, parent = 4 })
+check("patch.moveCheck refuses a FID given twice", r.ok == false and r.code == "bad-args", J(r))
+r = request("patch.moveStep", { fids = { 501 }, parent = 4, stage = "Stage 1", step = "cut", exclusive = true })
+check("patch.moveStep refuses while the copy is closed", r.ok == false and r.code == "copy-closed", J(r))
+
+local M = { fids = { 501 }, parent = 4, stage = "Stage 1" }
+local function mv(step, extra) local a = { fids = M.fids, parent = M.parent, stage = M.stage, step = step, exclusive = true }; for k, v in pairs(extra or {}) do a[k] = v end; return request("patch.moveStep", a) end
+local function st(source) return request("patch.moveState", { fids = M.fids, parent = M.parent, stage = M.stage, source = source }) end
+enter()
+r = request("patch.moveStep", { fids = { 501 }, parent = 4, stage = "Stage 1", step = "cut" })
+check("patch.moveStep without exclusive is refused", r.ok == false and r.code == "not-exclusive", J(r))
+r = mv("paste")
+check("patch.moveStep paste refuses at the wrong destination (still at the stage)", r.ok == false and r.code == "wrong-destination" and #console.queue == 0, J(r))
+r = mv("source")
+check("move source: a top-level fixture needs no ChangeDestination", r.ok and #r.result.commands == 0, J(r))
+r = mv("cut")
+check("move cut: Cut <its position> in the stage's list", r.ok and r.result.commands[1] == "Cut 2", J(r))
+frame()
+r = st("root")
+check("after the cut nothing has moved yet; the last command is the cut", r.ok and r.result.lastCommand == "OK: Cut 2" and r.result.underTarget == 0 and r.result.atStage and r.result.atSource and not r.result.atTarget, J(r))
+r = mv("target")
+check("move target: ChangeDestination <the grouping fixture's position>", r.ok and #r.result.commands == 1 and r.result.commands[1] == "ChangeDestination 1", J(r))
+frame()
+r = st("root")
+check("the command line is at the target", r.ok and r.result.atTarget and not r.result.atStage, J(r))
+r = mv("paste")
+check("move paste: Paste at the end of the target's list", r.ok and r.result.commands[1] == "Paste 4", J(r))
+frame()
+r = st("root")
+check("the paste waits for the Move Fixtures dialog", r.ok and r.result.moveDialog == true and r.result.modal.title == "Move Fixtures" and #r.result.modal.buttons == 3 and r.result.underTarget == 0, J(r))
+r = request("dialog.read")
+check("dialog.read: title, message and buttons", r.ok and r.result.open and r.result.modal.title == "Move Fixtures" and r.result.modal.text == MOVE_TEXT and r.result.modal.buttons[1].text == "Absolute" and r.result.modal.buttons[1].enabled == true and r.result.modal.display == 1, J(r))
+r = mv("cut")
+check("patch.moveStep refuses while a dialog is open", r.ok == false and r.code == "modal-open", J(r))
+r = request("patch.moveAnswer", { button = "Sideways", exclusive = true })
+check("patch.moveAnswer refuses another button", r.ok == false and r.code == "bad-args" and console.modal, J(r))
+r = request("patch.moveAnswer", { button = "Absolute", exclusive = true })
+check("patch.moveAnswer clicks Absolute on the dialog", r.ok and r.result.clicked == "Absolute" and console.lastAnswer == "Absolute" and console.mouse.display == 1, J(r))
+r = st("root")
+check("after the answer the fixture is under the target and the paste is done", r.ok and r.result.underTarget == 1 and r.result.underSource == 0 and r.result.lastCommand == "OK: Paste 4" and r.result.modal == false, J(r))
+check("the copy matches the live patch outside the moved fixture (fixtures without their list positions)", fpOf("copy", { 501 }) == fpOf("live", { 501 }))
+request("patch.commit", X); frame()
+r = request("patch.list", { fromFid = 501, toFid = 501 })
+check("committed: FID 501 is under grouping fixture 4 with its address", r.ok and r.result.fixtures[1].parentFid == 4 and r.result.fixtures[1].depth == 1 and r.result.fixtures[1].patch == "1.100", J(r))
+
+-- Back to the top level: ChangeDestination into the source, Cut, ChangeDestination .., Paste.
+M = { fids = { 501 }, parent = "root", stage = "Stage 1" }
+enter()
+r = mv("source")
+check("move source: ChangeDestination into the fixtures' grouping fixture", r.ok and r.result.commands[1] == "ChangeDestination 1", J(r))
+frame()
+r = st(4)
+check("the command line is at the source", r.ok and r.result.atSource and not r.result.atStage, J(r))
+r = mv("cut")
+check("move cut inside the grouping fixture", r.ok and r.result.commands[1] == "Cut 4", J(r))
+frame()
+r = mv("target")
+check("move target to the top level: ChangeDestination ..", r.ok and #r.result.commands == 1 and r.result.commands[1] == "ChangeDestination ..", J(r))
+frame()
+r = st(4)
+check("the command line is at the stage's list", r.ok and r.result.atTarget and r.result.atStage, J(r))
+r = mv("paste")
+check("move paste at the end of the stage's list", r.ok and r.result.commands[1] == "Paste 2", J(r))
+frame()
+r = request("patch.moveAnswer", { button = "Relative", exclusive = true })
+check("patch.moveAnswer clicks Relative", r.ok and console.lastAnswer == "Relative", J(r))
+r = st(4)
+check("the fixture is at the top level again", r.ok and r.result.underTarget == 1 and r.result.underSource == 0, J(r))
+request("patch.commit", X); frame()
+r = request("patch.list", { fromFid = 501, toFid = 501 })
+check("committed: FID 501 at the top level", r.ok and r.result.fixtures[1].parentFid == nil and r.result.fixtures[1].depth == 0, J(r))
+
+-- Cancel moves nothing.
+M = { fids = { 501 }, parent = 4, stage = "Stage 1" }
+enter(); mv("source"); mv("cut"); frame(); mv("target"); frame(); mv("paste"); frame()
+r = request("patch.moveAnswer", { button = "Cancel", exclusive = true })
+r = st("root")
+check("Cancel closes the dialog and moves nothing", r.ok and r.result.modal == false and r.result.underTarget == 0 and r.result.lastCommand:find("^User Canceled") ~= nil, J(r))
+check("after Cancel the copy equals the live patch", fpOf("copy") == fpOf("live"))
+
+-- Another dialog is never answered as Move Fixtures.
+console.modal = messageBox(nil, "Are you sure you want to overwrite positions?", { "OK", "Cancel" }, function(b) console.modal = false; console.confirmed = b end)
+r = request("patch.moveAnswer", { button = "Absolute", exclusive = true })
+check("patch.moveAnswer refuses a dialog that is not Move Fixtures", r.ok == false and r.code == "wrong-modal" and console.confirmed == nil and console.modal, J(r))
+console.modal = false
+request("patch.commit", X); frame()
+
+-- fixturePositions = false leaves a fixture's number out (a move renumbers the fixtures after the moved ones).
+enter()
+local dimCopy
+for _, f in ipairs(allFixtures(console.copy)) do if f.FID == 501 then dimCopy = f end end
+dimCopy.no = 77
+local function fpPos(side, positions)
+  local cols = request("patch.collections", {}).result
+  local parts = {}
+  for _, c in ipairs(cols[side]) do local q = request("patch.fingerprint", { side = side, collection = c, excludeFids = {}, fixturePositions = positions }); parts[#parts + 1] = tostring(q.result.hash) end
+  return table.concat(parts, ",")
+end
+check("a fixture's changed number makes the fingerprints differ", fpPos("copy") ~= fpPos("live"))
+check("with fixturePositions = false they match", fpPos("copy", false) == fpPos("live", false))
+dimCopy.no = 501
+request("patch.commit", X); frame()
+
+-- dialog.read / dialog.press: a Lua Confirm() (a MessageBox without a title), as the Position Wizard opens it.
+r = request("dialog.read")
+check("dialog.read with no dialog open", r.ok and r.result.open == false and r.result.modal == false, J(r))
+console.modal = messageBox(nil, "Are you sure you want to overwrite positions?", { "OK", "Cancel" }, function(b) console.modal = false; console.confirmed = b end)
+r = request("dialog.read")
+check("dialog.read: a Confirm() has no title, a message and OK / Cancel", r.ok and r.result.modal.title == nil and r.result.modal.text == "Are you sure you want to overwrite positions?" and #r.result.modal.buttons == 2, J(r))
+r = request("dialog.press", { button = "OK", expectTitle = "" })
+check("dialog.press without exclusive is refused", r.ok == false and r.code == "not-exclusive", J(r))
+r = request("dialog.press", { button = "OK", exclusive = true })
+check("dialog.press needs the expected title or message", r.ok == false and r.code == "bad-args", J(r))
+r = request("dialog.press", { button = "OK", expectTitle = "Store", exclusive = true })
+check("dialog.press refuses a dialog with another title", r.ok == false and r.code == "wrong-modal" and console.confirmed == nil, J(r))
+r = request("dialog.press", { button = "OK", expectText = "Delete everything?", exclusive = true })
+check("dialog.press refuses a dialog with another message", r.ok == false and r.code == "wrong-modal" and console.confirmed == nil, J(r))
+r = request("dialog.press", { button = "Yes", expectTitle = "", exclusive = true })
+check("dialog.press refuses a button the dialog does not have", r.ok == false and r.code == "no-button" and console.confirmed == nil, J(r))
+r = request("dialog.press", { button = "OK", expectTitle = "", expectText = "Are you  sure you want to overwrite\npositions?", exclusive = true })
+check("dialog.press clicks OK (the message compared with whitespace collapsed)", r.ok and r.result.clicked == "OK" and console.confirmed == "OK" and console.modal == false, J(r))
+
+-- patch.groupsOf: the groups holding each fixture or one of its cells.
+local par401
+for _, f in ipairs(allFixtures(console.live)) do if f.FID == 401 then par401 = f end end
+local dim501, grp4
+for _, f in ipairs(allFixtures(console.live)) do if f.FID == 501 then dim501 = f elseif f.FID == 4 then grp4 = f end end
+local cell = obj("SubFixture", "Cell 1", 1, {}, {}, { Parent = function() return par401 end })
+local SUBS = { dim501, cell, grp4 }
+GetSubfixture = function(i) return SUBS[i] end
+local grpA = obj("Group", "A", 7, { { "SELECTIONDATA", { { sf_index = 1 }, { sf_index = 3 } } } })
+local grpB = obj("Group", "B", 9, { { "SELECTIONDATA", { { sf_index = 2 }, { sf_index = 1 } } } })
+local grpC = obj("Group", "C", 11, { { "SELECTIONDATA", { { sf_index = 3 } } } })
+DataPool = function() return { Groups = obj("Groups", "Groups", 1, {}, { grpA, grpB, grpC }) } end
+r = request("patch.groupsOf", { fids = { 401, 501, 402 } })
+check("patch.groupsOf: fixtures and cells, by group number", r.ok and J(r.result.groups["501"]) == "[7,9]" and J(r.result.groups["401"]) == "[9]" and J(r.result.groups["402"]) == "[]" and r.result.scanned == 3 and r.result.truncated == false, J(r))
 
 print(string.format("%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) end
