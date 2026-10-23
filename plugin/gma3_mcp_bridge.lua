@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.43.0"
+local VERSION      = "0.44.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -599,8 +599,8 @@ function TagCodec.decode(text)
   return out
 end
 
--- Read a single property as a JSON-safe value.
-local function getProp(h, name, asText)
+-- Read a single property as a JSON-safe value. Strings are trimmed unless keepSpace is set.
+local function getProp(h, name, asText, keepSpace)
   if type(name) == "string" and name:upper() == "TAGS" then
     local text = TagCodec.text(h)
     if text ~= nil then return TagCodec.decode(text) end
@@ -626,6 +626,7 @@ local function getProp(h, name, asText)
         if nm then return nm end
       end
     end
+    if keepSpace then return v end
     return (v:gsub("^%s+", ""):gsub("%s+$", ""))
   end
   return v
@@ -2836,8 +2837,18 @@ ops.set = function(args)
   if type(value) ~= "string" then value = tostring(value) end
   local ok, err = pcall(h.Set, h, args.property, value)
   if not ok then error("Set failed: " .. tostring(err)) end
-  local newValue = getProp(h, args.property, true)
-  return { ref = args.ref, property = args.property, value = newValue }
+  -- readOk tells an empty property (a cleared reference reads nil) from a read-back that failed: both send no value
+  -- (bridge 0.44.0).
+  -- One read, as stored; value is trimmed as everywhere else, and exact is the stored text when trimming changed it,
+  -- for properties whose spaces count (a Note " cue ").
+  local newValue, readError = getProp(h, args.property, true, true)
+  local exact
+  if type(newValue) == "string" then
+    local trimmed = newValue:gsub("^%s+", ""):gsub("%s+$", "")
+    if trimmed ~= newValue then exact = newValue end
+    newValue = trimmed
+  end
+  return { ref = args.ref, property = args.property, value = newValue, exact = exact, readOk = readError == nil, readError = readError }
 end
 
 ops.setfader = function(args)
