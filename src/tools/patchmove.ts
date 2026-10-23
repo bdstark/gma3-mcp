@@ -171,7 +171,8 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
     if (last !== before && last !== `OK: ${cmd}` && !last.startsWith("OK: ")) return `the console answered ${JSON.stringify(last)} to ${cmd}`;
     return false;
   };
-  const otherModal = (s: MoveState) => (s.modal && !s.moveDialog ? `another dialog opened: ${describeDialog(s.modal)}; it was left alone` : false);
+  const otherModal = (s: MoveState) =>
+    s.modalKnown === false ? "whether a dialog is open cannot be read (GetTopModal failed)" : s.modal && !s.moveDialog ? `another dialog opened: ${describeDialog(s.modal)}; it was left alone` : false;
 
   async function step(name: string, which: "source" | "cut" | "target" | "paste"): Promise<StepResult> {
     try {
@@ -265,6 +266,7 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
       ans = { name: "move_answer", status: "succeeded", op: "patch.moveAnswer", detail: res };
     } catch (err) {
       ans = stepFromError("move_answer", err, { op: "patch.moveAnswer" });
+      if (err instanceof BridgeError && err.code === "press-uncertain") ans.status = "unknown";
     }
     steps.push(ans);
     if (ans.status !== "succeeded") {
@@ -307,7 +309,8 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
         if (err instanceof BridgeError && /unknown op/.test(err.message)) s.error = `${s.error}: the console runs an older bridge plugin without patch.moveCheck (bridge 0.40.0); update the plugin`;
         return s;
       }
-      try {
+      // The before-state is only for the read-back: without verify it is neither read nor required.
+      if (verify) try {
         before = await readBefore();
       } catch (err) {
         return asRead({ ...stepFromError("check_move", err, { op: "objects" }), error: `the fixtures' state before the move could not be read: ${err instanceof Error ? err.message : String(err)}` });
@@ -382,15 +385,16 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
       for (const fid of fids) {
         const l0 = poseOf(b.poses.get(fid));
         const l1 = poseOf(after.get(fid));
-        if (!l0 || !l1 || !srcBefore || !tgtAfter) {
+        // Relative compares the local poses only; the parents' poses are needed for the world pose (absolute).
+        if (!l0 || !l1 || (position === "absolute" && (!srcBefore || !tgtAfter))) {
           notChecked.push(`the 3D pose of FID ${fid} (unreadable)`);
           continue;
         }
-        const w0 = worldPose(l0, srcBefore);
-        const w1 = worldPose(l1, tgtAfter);
-        const kept = position === "absolute" ? samePose(w0, w1) : samePose(l0, l1);
-        if (!kept) mismatches.push(`FID ${fid}: the ${position === "absolute" ? "world" : "parent-relative"} 3D pose changed (${JSON.stringify(poseOut(position === "absolute" ? w0 : l0))} -> ${JSON.stringify(poseOut(position === "absolute" ? w1 : l1))})`);
-        posesOut.push({ fid, before: poseOut(l0), after: poseOut(l1), world: poseOut(w1) });
+        const w0 = srcBefore ? worldPose(l0, srcBefore) : null;
+        const w1 = tgtAfter ? worldPose(l1, tgtAfter) : null;
+        const kept = position === "absolute" ? samePose(w0!, w1!) : samePose(l0, l1);
+        if (!kept) mismatches.push(`FID ${fid}: the ${position === "absolute" ? "world" : "parent-relative"} 3D pose changed (${JSON.stringify(poseOut(position === "absolute" ? w0! : l0))} -> ${JSON.stringify(poseOut(position === "absolute" ? w1! : l1))})`);
+        posesOut.push({ fid, before: poseOut(l0), after: poseOut(l1), ...(w1 ? { world: poseOut(w1) } : {}) });
       }
     } catch (err) {
       steps.push(asRead(stepFromError("read_positions", err, { op: "objects" })));

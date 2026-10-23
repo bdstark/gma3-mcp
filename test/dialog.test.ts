@@ -111,6 +111,24 @@ test("gma3_dialog press: a dialog read only in part is refused; failed reads aft
   }
 });
 
+test("gma3_dialog press: a click that failed after the mouse went down is unknown and the dialog is read again (PR #89 review)", async () => {
+  const h = await startHarness(registerDialogTools);
+  try {
+    let modal: unknown = CONFIRM;
+    h.fake.on("dialog.read", () => ({ open: modal !== false, modal, lastCommand: "OK" }));
+    h.fake.on("dialog.press", () => {
+      modal = false;
+      throw new BridgeReplyError("[press-uncertain] the click on OK failed part-way", "press-uncertain");
+    });
+    const { result } = await h.callJson("gma3_dialog", { action: "press", button: "OK", expect_title: "", exclusive: true });
+    assert.equal(result.outcome, "unknown");
+    assert.equal(result.state, "closed");
+    assert.match(result.summary, /^The click was not confirmed/);
+  } finally {
+    await h.close();
+  }
+});
+
 test("gma3_dialog press on an older bridge says so", async () => {
   const h = await startHarness(registerDialogTools);
   try {

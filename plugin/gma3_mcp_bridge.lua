@@ -6121,8 +6121,14 @@ end)()
     local r = found[1]:Get("AbsRect")
     local x, y = math.floor(r.x + r.w / 2), math.floor(r.y + r.h / 2)
     Mouse(md.display, "move", x, y)
-    Mouse(md.display, "press", "Left")
-    Mouse(md.display, "release", "Left")
+    -- From the press on, a failure leaves it unknown whether the button acted: [press-uncertain], never "not clicked".
+    -- A failed press or release gets one more release so the button is not left held.
+    local okP, errP = pcall(Mouse, md.display, "press", "Left")
+    local okR, errR = pcall(Mouse, md.display, "release", "Left")
+    if not okP or not okR then
+      if not okR then pcall(Mouse, md.display, "release", "Left") end
+      raise({ code = "press-uncertain", message = "the click on " .. text .. " failed part-way (" .. tostring(okP and errR or errP) .. "); whether the button acted is unknown: read the dialog again", at = { x = x, y = y } })
+    end
     return { x = x, y = y }
   end
 
@@ -6341,18 +6347,23 @@ end)()
   end
   GUARDED_OPS["patch.moveAnswer"] = "a patch change"
 
-  -- The fixture among `want` that a selected (sub)fixture is or belongs to (a cell counts for its fixture).
+  -- The fixture among `want` that a selected (sub)fixture is or belongs to (a cell counts for its fixture), and whether
+  -- that was established: a Parent link that fails, or more than ten levels, is (nil, false), never "not one of them".
   local function ownerIn(sf, want)
     local h = sf
     for _ = 1, 10 do
       local f = numericFid(h)
-      if f and want[f] then return f end
-      local par = safeCall(h, "Parent")
+      if f and want[f] then return f, true end
+      local okF, fn = pcall(function() return h.Parent end)
+      if not okF then return nil, false end
+      if type(fn) ~= "function" then return nil, true end
+      local okP, par = pcall(fn, h)
+      if not okP then return nil, false end
       local pc = par and safeCall(par, "GetClass") or nil
-      if pc ~= "Fixture" and pc ~= "SubFixture" then return nil end
+      if pc ~= "Fixture" and pc ~= "SubFixture" then return nil, true end
       h = par
     end
-    return nil
+    return nil, false
   end
   local GROUPS_MAX_ENTRIES = 200000
 
@@ -6387,8 +6398,8 @@ end)()
           local okS, sf = false, nil
           if type(e) == "table" and type(e.sf_index) == "number" then okS, sf = callApi("GetSubfixture", e.sf_index) end
           if okS and isObj(sf) then
-            local fid = ownerIn(sf, want)
-            if fid then hit[fid] = true end
+            local fid, known = ownerIn(sf, want)
+            if fid then hit[fid] = true elseif not known then unresolved = true end
           else
             unresolved = true
           end

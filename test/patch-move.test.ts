@@ -52,6 +52,10 @@ class MoveWorld {
   pasteSilent = false;
   /** The move clears a fixture's second DMX break. */
   dropBreak2 = false;
+  /** patch.moveState cannot read the top modal. */
+  modalUnknown = false;
+  /** The grouping fixtures' poses cannot be read. */
+  parentPoseUnreadable = false;
   answered: string[] = [];
 
   frame() {
@@ -112,8 +116,8 @@ class MoveWorld {
         underSource,
         count: fids.length,
         lastCommand: this.last,
-        modal: this.modal,
-        modalKnown: true,
+        modal: this.modalUnknown ? false : this.modal,
+        modalKnown: !this.modalUnknown,
         moveDialog: this.moveDialog,
       };
     };
@@ -187,7 +191,7 @@ class MoveWorld {
         .map((x) => ({
           name: x.name,
           class: "Fixture",
-          fields: args.asText === false ? { FID: x.fid, Name: x.name, POSX: x.pos.x, POSY: x.pos.y, POSZ: x.pos.z, ROTX: 0, ROTY: 0, ROTZ: 0, MESHMIRRORX: "No" } : { FID: String(x.fid), ROTDIRECT: "0,0,0,1" },
+          fields: args.asText === false ? { FID: x.fid, Name: x.name, POSX: this.parentPoseUnreadable && x.grouping ? "" : x.pos.x, POSY: x.pos.y, POSZ: x.pos.z, ROTX: 0, ROTY: 0, ROTZ: 0, MESHMIRRORX: "No" } : { FID: String(x.fid), ROTDIRECT: "0,0,0,1" },
         }));
       return { items };
     });
@@ -405,6 +409,37 @@ test("gma3_patch_retype: a FID given twice is refused before anything is sent (P
     assert.equal(h.fake.requests.length, 0);
   } finally {
     await h.close();
+  }
+});
+
+test("gma3_patch_move: an unreadable modal state stops the move instead of being taken for no dialog (PR #89 review)", async () => {
+  const { h, w } = await setup();
+  try {
+    w.modalUnknown = true;
+    const { result } = await h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true });
+    assert.equal(result.committed, false);
+    assert.match(JSON.stringify(result.steps), /whether a dialog is open cannot be read/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_move: verify false reads no before-state; relative needs no parent pose (PR #89 review)", async () => {
+  const a = await setup();
+  try {
+    const { result } = await a.h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true, verify: false });
+    assert.equal(result.outcome, "succeeded");
+    assert.ok(!a.ops().includes("objects") && !a.ops().includes("patch.groupsOf"), JSON.stringify(a.ops()));
+  } finally {
+    await a.h.close();
+  }
+  const b = await setup();
+  try {
+    b.w.parentPoseUnreadable = true;
+    const rel = await b.h.callJson("gma3_patch_move", { fids: [101], parent: 2, position: "relative", exclusive: true });
+    assert.equal(rel.result.verification.status, "matched", JSON.stringify(rel.result.verification));
+  } finally {
+    await b.h.close();
   }
 });
 

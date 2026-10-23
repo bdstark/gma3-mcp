@@ -184,8 +184,8 @@ unrotated, as the Show Start's grouping fixtures are, both give the same result.
 Pre-flight (`patch.moveCheck`, against the live patch), nothing sent on failure: every FID exists and holds no fixtures
 of its own; all share one parent (the top level, or one top-level grouping fixture) in one stage; the target is another
 top-level grouping fixture of that stage, or the top level when they have a parent. Fixtures with different parents are
-moved in one call per parent. The pre-flight also reads what the read-back compares: the fixtures' rows, the poses of
-the fixtures and of both parents (`objects`), and their groups (`patch.groupsOf`).
+moved in one call per parent. With `verify` (the default) the pre-flight also reads what the read-back compares: the
+fixtures' rows, the poses of the fixtures and of both parents (`objects`), and their groups (`patch.groupsOf`).
 
 The edit is several steps, each queued by the bridge with `CmdIndirect` after it checked where the command line is (the
 destination is compared by object address) and that no dialog is open, then polled with `patch.moveState` (100 ms, up
@@ -199,7 +199,7 @@ to 3 s) before the next one:
 | `move_paste`, `wait_dialog` | `patch.moveStep` `paste` | `Paste <end of the target's list>`; waits for the Move Fixtures dialog |
 | `move_answer`, `wait_paste` | `patch.moveAnswer` | Clicks Absolute or Relative on that dialog, and only on a dialog with that title and message; waits for `OK: Paste …` with every fixture under the target |
 
-Any other dialog stops the move and is left alone. When a step fails after the paste and the Move Fixtures dialog is
+Any other dialog stops the move and is left alone, and so does a poll that cannot read whether a dialog is open. When a step fails after the paste and the Move Fixtures dialog is
 still open, the tool clicks Cancel (`cancel_dialog`), which moves nothing, so the copy can be closed unchanged. A
 paste without a reply may still have been queued: the tool waits for its dialog and cancels it the same way. If the
 console pastes without asking, the result says `dialog: "not_shown"` and the read-back still checks the pose.

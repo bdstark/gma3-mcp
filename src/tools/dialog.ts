@@ -108,10 +108,12 @@ export async function pressDialog(ctx: ToolContext, raw: PressArgs): Promise<Ope
       press = { name: "press", status: "succeeded", op: "dialog.press", detail: res };
     } catch (err) {
       press = stepFromError("press", err, { op: "dialog.press" });
+      // A click that failed after the mouse went down may have acted: unknown, and the dialog is read again below.
+      if (err instanceof BridgeError && err.code === "press-uncertain") press.status = "unknown";
     }
     steps.push(press);
-    if (press.status !== "succeeded") {
-      return buildResult({ operation: op, target, steps, summary: press.status === "unknown" ? `the press got no reply: whether ${JSON.stringify(button)} was clicked is unknown; read the dialog again` : `nothing was pressed: ${press.error}`, extra: { dialog: d } });
+    if (press.status === "failed") {
+      return buildResult({ operation: op, target, steps, summary: `nothing was pressed: ${press.error}`, extra: { dialog: d } });
     }
 
     // The outcome from a re-read: closed, replaced by another dialog, or still open.
@@ -147,13 +149,14 @@ export async function pressDialog(ctx: ToolContext, raw: PressArgs): Promise<Ope
       steps,
       verification,
       summary:
-        state === "closed"
+        (press.status === "unknown" ? `The click was not confirmed (${press.error}). ` : "") +
+        (state === "closed"
           ? `Pressed ${JSON.stringify(button)} on ${describeDialog(d)}; the dialog closed (last command: ${after?.lastCommand ?? "unknown"}). The last command does not name the button: check the effect on the object the dialog was about.`
           : state === "replaced"
             ? `Pressed ${JSON.stringify(button)} on ${describeDialog(d)}; another dialog opened: ${describeDialog(after!.modal as DialogRow)}.`
             : state === "still_open"
               ? `Clicked ${JSON.stringify(button)} on ${describeDialog(d)}, but the dialog is still open.`
-              : `Clicked ${JSON.stringify(button)}; the dialog could not be read afterwards.`,
+              : `Clicked ${JSON.stringify(button)}; the dialog could not be read afterwards.`),
       warnings: ["what a dialog button does has no undo from here"],
       extra: { dialog: d, after: lastOk ? (after?.modal ?? null) : null, state, lastCommand: lastOk ? (after?.lastCommand ?? null) : null },
     });

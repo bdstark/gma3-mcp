@@ -197,6 +197,9 @@ end
 Mouse = function(display, action, a, b)
   console.mouse = console.mouse or {}
   if action == "move" then console.mouse.x, console.mouse.y, console.mouse.display = a, b, display
+  elseif action == "release" and console.mouseFailRelease then
+    console.mouseFailRelease = console.mouseFailRelease - 1
+    if console.mouseFailRelease >= 0 then error("UI changed under the pointer") end
   elseif action == "release" and console.modal and console.modal.onButton then
     local x, y = console.mouse.x, console.mouse.y
     local function find(h)
@@ -884,6 +887,10 @@ do
   check("dialog.press refuses a dialog that could only be read in part (PR #89 review)", r.ok == false and r.code == "modal-unknown" and console.confirmed == nil, J(r))
   table.remove(box.kids[1].kids)
 end
+console.mouseFailRelease = 1
+r = request("dialog.press", { button = "OK", expectTitle = "", exclusive = true })
+check("dialog.press: a release that fails after the press is press-uncertain, never 'nothing was clicked', and is released again (PR #89 review)", r.ok == false and r.code == "press-uncertain" and console.mouseFailRelease == -1, J(r))
+console.mouseFailRelease = nil
 r = request("dialog.press", { button = "OK", expectTitle = "", expectText = "Are you  sure you want to overwrite\npositions?", exclusive = true })
 check("dialog.press clicks OK (the message compared with whitespace collapsed)", r.ok and r.result.clicked == "OK" and console.confirmed == "OK" and console.modal == false, J(r))
 
@@ -908,6 +915,11 @@ check("patch.groupsOf: fixtures and cells, in every data pool, as pool.group", r
 grpC.pv.SELECTIONDATA = { { sf_index = 3 }, { sf_index = 42 }, { grid = {} } }
 r = request("patch.groupsOf", { fids = { 401, 501, 402 } })
 check("patch.groupsOf: a group with an entry that resolves to no (sub)fixture is unreadable, not empty (PR #89 review)", r.ok and J(r.result.unreadable) == '["1.11"]', J(r))
+local brokenCell = obj("SubFixture", "Cell X", 1, {}, {}, { Parent = function() error("parent not readable") end })
+SUBS[5] = brokenCell
+grpC.pv.SELECTIONDATA = { { sf_index = 5 } }
+r = request("patch.groupsOf", { fids = { 401, 501 } })
+check("patch.groupsOf: a selected cell whose Parent cannot be read makes the group unreadable (PR #89 review)", r.ok and J(r.result.unreadable) == '["1.11"]', J(r))
 ShowData = liveShowData
 
 print(string.format("%d passed, %d failed", passes, failures))
