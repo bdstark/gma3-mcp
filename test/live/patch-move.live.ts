@@ -1,5 +1,5 @@
 /**
- * Live console test for gma3_patch_move, gma3_dialog and the dialog report of gma3_run_macro (bridge 0.40.0).
+ * Live console test for gma3_patch_move, gma3_dialog and the dialog report of gma3_run_macro (bridge 0.42.0).
  *
  * Runs only with GMA3_LIVE=1 against a disposable show (see README.md in this folder), AND with GMA3_LIVE_EXCLUSIVE=1:
  * patch changes are committed with no undo. Not part of `npm test`.

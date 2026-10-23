@@ -18,8 +18,8 @@ the live test procedure on a disposable show.
 | Patch (KB-26, bridge 0.19.0; changes need `exclusive: true`) | `gma3_patch_types`, `gma3_patch_list`, `gma3_patch_add`, `gma3_patch_set`, `gma3_patch_remove` | [patch.md](patch.md) |
 | Fixture-type library (SU-03, bridge 0.26.0; changes need `exclusive: true`) | `gma3_patch_library`, `gma3_patch_import`, `gma3_patch_remove_type` | [patch.md](patch.md) |
 | Fixture-type files into the user library (SU-22, bridge 0.38.0) | `gma3_patch_library_add` | [patch.md](patch.md#gma3_patch_library_add) |
-| Fixtures under a grouping fixture, retyping (bridge 0.40.0 / 0.29.0; need `exclusive: true`) | `gma3_patch_move`, `gma3_patch_retype` | [patch.md](patch.md#gma3_patch_move) |
-| Console dialogs (KB-27 in part, bridge 0.40.0; pressing needs `exclusive: true`) | `gma3_dialog` | [dialog.md](dialog.md) |
+| Fixtures under a grouping fixture, retyping (bridge 0.42.0 / 0.29.0; need `exclusive: true`) | `gma3_patch_move`, `gma3_patch_retype` | [patch.md](patch.md#gma3_patch_move) |
+| Console dialogs (KB-27 in part, bridge 0.42.0; pressing needs `exclusive: true`) | `gma3_dialog` | [dialog.md](dialog.md) |
 | Fixture-type structure (SU-07, bridge 0.28.0; read-only) | `gma3_patch_type_structure` (and cell counts in `gma3_patch_types`, `gma3_patch_list`) | [patch.md](patch.md) |
 | Fixture positions in 3D (SU-04; no undo, refused while the patch copy is open) | `gma3_fixture_positions`, `gma3_place_fixtures` | [positions.md](positions.md) |
 | Cell layouts (SU-08, bridge 0.29.0; no undo, need `exclusive: true`) | `gma3_layout_cells`, `gma3_assign_cell_layout` | [positions.md](positions.md#cell-layouts-su-08) |

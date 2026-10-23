@@ -5,8 +5,9 @@
 `gma3_patch_remove_type` (fixture types, [SETUP.md](../../SETUP.md) SU-03): bridge 0.26.0. The design and its evidence
 are in [DIALOG.md](../../DIALOG.md) ("KB-25", "KB-26"), the [KB-25 record](../probes/kb-25-dialogs-macos-2.5.1.md) and
 the [SU-03 record](../probes/su-03-import-macos-2.5.1.md). `gma3_patch_library_add` (a file into the user library,
-SU-22): bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md). `gma3_patch_move` (fixtures under a
-grouping fixture) and `gma3_patch_retype` (fixtures to another type of the same mode): bridge 0.40.0 and 0.29.0.
+SU-22): bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md). Imports name the library folder
+from bridge 0.41.0 ([record](../probes/import-library-listing-macos-2.5.1.md)). `gma3_patch_move` (fixtures under a
+grouping fixture) and `gma3_patch_retype` (fixtures to another type of the same mode): bridge 0.42.0 and 0.29.0.
 
 ## Common behaviour
 
@@ -205,7 +206,7 @@ paste without a reply may still have been queued: the tool waits for its dialog 
 console pastes without asking, the result says `dialog: "not_shown"` and the read-back still checks the pose.
 
 The isolation check leaves out the moved FIDs and compares fixtures without their number in their list
-(`fixturePositions: false`, bridge 0.40.0): taking fixtures out of a list renumbers the ones after them. The order of
+(`fixturePositions: false`, bridge 0.42.0): taking fixtures out of a list renumbers the ones after them. The order of
 every other fixture is still compared.
 
 Read-back, against the state before the session: each fixture's parent, address (every DMX break) and name (`patch.list`), its groups
@@ -217,7 +218,7 @@ considered), `relative` the pose relative to the parent, within 1 mm and by quat
 makes the verification `unavailable` and names it; the result's `fixtures` lists each fixture's parent, address,
 groups and poses.
 
-**Live** (onPC 2.5.1, bridge 0.40.0, 2026-10-23, `test/live/patch-move.live.ts` 1/1 in 71 s on a disposable show):
+**Live** (onPC 2.5.1, bridge 0.42.0, 2026-10-23, `test/live/patch-move.live.ts` 1/1 in 71 s on a disposable show):
 two fixtures moved into a grouping fixture placed at x = 1 m (absolute), then back to the top level (relative), every
 step succeeded and both read-backs matched. What the run established:
 - `ChangeDestination ..` leaves a grouping fixture for the stage's list, and `Paste <count + 1>` appends at the end.
@@ -293,8 +294,8 @@ pool:
 | --- | --- |
 | `check_library` | The file is in exactly one library (`Import Library` names the file only, so a name in two libraries is refused); the show has no type matching it unless `allow_duplicate` (the console would silently add a second type with the same name) |
 | `enter` | `patch.enter` with target `fixturetypes`: the copy, then its `FixtureTypes` |
-| `import` | `Import Library "<file>" /Path ""` with `CmdIndirect` (no dialog). The console keeps the path of an earlier import command and resolves the next `Import Library` against it, so without `/Path ""` every library import answered "Object not found" (bridge 0.38.2, live 2026-10-22); an empty path is the library's own folders |
-| `wait_import` | Poll until exactly one type is appended. Claimed only when its name or manufacturer matches the file (ignoring case; an underscore matches a space); two new types, or an error answer from the console, fail the step |
+| `import` | `Import <no> /File "<file>" /Path "<the library's folder>"` with `CmdIndirect` (no dialog). `<no>` is the number after the highest type in the copy; there is no `/NoConfirmation`, so a taken number would open the console's overwrite question instead of overwriting the type. The file is read from its folder: `Import Library "<file>"` (before bridge 0.41.0) looked the name up in the console's cached library listing, which an import can rebuild without the user library, so a user `.gdtf` after a grandMA2 import answered "Object not found" ([record](../probes/import-library-listing-macos-2.5.1.md)) |
+| `wait_import` | Poll until exactly one type is appended. Claimed only when its name or manufacturer matches the file (ignoring case; an underscore matches a space); two new types, an error answer from the console, or a dialog open with no type added (bridge 0.41.0 reports it; press Cancel there) fail the step |
 | `isolation_check` | Everything compared in full except the import's appends (the new type; new attributes and features) |
 | `commit`, read-back | The type in the live patch by GUID, with the same modes |
 

@@ -1,6 +1,6 @@
 # Console dialogs (KB-27, in part)
 
-`gma3_dialog`: bridge 0.40.0 (`dialog.read`, `dialog.press`). The design is [DIALOG.md](../../DIALOG.md) "KB-27"; the
+`gma3_dialog`: bridge 0.42.0 (`dialog.read`, `dialog.press`). The design is [DIALOG.md](../../DIALOG.md) "KB-27"; the
 evidence is the [KB-25 record](../probes/kb-25-dialogs-macos-2.5.1.md).
 
 For a dialog no structured tool answers. The case it was built for: the MA Show Start's Position Wizard (macro 5002)
@@ -43,7 +43,7 @@ effect is checked on the object the dialog was about.
 
 ## Live
 
-onPC 2.5.1, bridge 0.40.0, 2026-10-23 (`test/live/patch-move.live.ts`): a macro line `Lua "Confirm(nil, '…', nil, true)"`
+onPC 2.5.1, bridge 0.42.0, 2026-10-23 (`test/live/patch-move.live.ts`): a macro line `Lua "Confirm(nil, '…', nil, true)"`
 opened a `MessageBox` without a title and with OK and Cancel. `gma3_run_macro` reported it in `execution.dialog`;
 a press with another `expect_text` was refused before anything was clicked; Cancel closed it (`state: "closed"`).
 

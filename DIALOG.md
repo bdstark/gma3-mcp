@@ -255,7 +255,7 @@ hooks. Live patch fixtures also accept `Set()` outside patch mode.
   returns its inspection.
 - Respect the input ownership / busy model: a dialog action is an input action.
 
-### KB-27 results (in part, bridge 0.40.0, 2026-10-23)
+### KB-27 results (in part, bridge 0.42.0, 2026-10-23)
 
 The Halloween 2026 show build needed two dialogs answered and had no tool for either: Show Start's Position Wizard
 (macro 5002) opens a Lua `Confirm()`, and moving fixtures under a grouping fixture opens "Move Fixtures". The agent
@@ -269,6 +269,6 @@ walked `GetTopModal()` and clicked with `Mouse()` in about 40 raw `gma3_lua` cal
 | Commands that open dialogs | `gma3_patch_move` answers its own Move Fixtures dialog (`patch.moveAnswer`, only that title and message); `gma3_run_macro` reports a dialog a macro line opened |
 | Input ownership | `dialog.press`, `patch.moveStep` and `patch.moveAnswer` are refused with `[busy]` while input is owned, like other mutations |
 
-Live on onPC 2.5.1 (bridge 0.40.0, 2026-10-23, `test/live/patch-move.live.ts` 1/1): both moves (absolute into a
+Live on onPC 2.5.1 (bridge 0.42.0, 2026-10-23, `test/live/patch-move.live.ts` 1/1): both moves (absolute into a
 grouping fixture, relative back) and a macro's `Confirm()` answered with Cancel. Details:
 [docs/tools/dialog.md](docs/tools/dialog.md), [docs/tools/patch.md](docs/tools/patch.md#gma3_patch_move).

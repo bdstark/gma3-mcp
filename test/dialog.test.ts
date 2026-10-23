@@ -133,7 +133,7 @@ test("gma3_dialog press on an older bridge says so", async () => {
   const h = await startHarness(registerDialogTools);
   try {
     const { result } = await h.callJson("gma3_dialog", { action: "press", button: "OK", expect_title: "", exclusive: true });
-    assert.match(result.summary, /older bridge plugin without dialog ops \(bridge 0\.40\.0\)/);
+    assert.match(result.summary, /older bridge plugin without dialog ops \(bridge 0\.42\.0\)/);
   } finally {
     await h.close();
   }

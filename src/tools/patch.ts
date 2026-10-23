@@ -835,7 +835,7 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
   const v = new Validator();
   const file = typeof raw.file === "string" && raw.file.trim() !== "" ? raw.file : undefined;
   if (!file) v.fail("file is required: a library file name, as gma3_patch_library lists it");
-  else if (/["\u0000-\u001f]/.test(file)) v.fail("file must not contain a quote or a control character (it is sent as Import Library \"<file>\")");
+  else if (/["\u0000-\u001f]/.test(file)) v.fail("file must not contain a quote or a control character (it is sent as Import /File \"<file>\")");
   if (raw.source !== undefined && !LIBRARY_SOURCES.includes(raw.source as LibrarySource)) v.fail(`source must be one of ${LIBRARY_SOURCES.join(", ")}`);
   requireExclusive(v, raw.exclusive);
   const verify = raw.verify !== false;
@@ -843,7 +843,7 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
   if (!v.ok) return validationFailure(op, target, v.errors);
   const t = ctx.requestTimeoutMs;
   let entry: LibraryEntry | undefined;
-  let queued: { typesBefore: number; attributesBefore?: number; verified?: boolean } | undefined;
+  let queued: { typesBefore: number; attributesBefore?: number; verified?: boolean; command?: string } | undefined;
   let imported: TypeRow | undefined;
   let attributesAfter: number | undefined;
 
@@ -877,14 +877,17 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
         queued = detail as typeof queued;
         const before = queued?.typesBefore;
         if (typeof before !== "number") return asRead({ name: "wait_import", status: "unknown", op: "patch.importState", error: "patch.import did not report the type count before the import" });
-        let last: { added: TypeRow[]; lastCommand?: string; attributes?: number } | undefined;
+        let last: { added: TypeRow[]; lastCommand?: string; attributes?: number; modal?: { name?: string } | false } | undefined;
+        // The command the bridge sent: Import <no> /File "<file>" /Path "<folder>" since bridge 0.41.0, Import Library
+        // "<file>" before; the console's answer quotes it.
+        const sent = typeof queued?.command === "string" ? queued.command : `Import Library "${file}"`;
         for (let i = 0; i < IMPORT_POLL_TRIES; i++) {
           try {
             last = (await ctx.bridge.request("patch.importState", { typesBefore: before }, t)) as typeof last;
           } catch (err) {
             return asRead(stepFromError("wait_import", err, { op: "patch.importState" }));
           }
-          const answered = typeof last?.lastCommand === "string" && last.lastCommand.includes(`Import Library "${file}"`);
+          const answered = typeof last?.lastCommand === "string" && last.lastCommand.includes(sent);
           if (last && last.added.length > 1) {
             return asRead({ name: "wait_import", status: "failed", op: "patch.importState", error: `${last.added.length} types appeared instead of one (${last.added.map((x) => x.name).join(", ")}); the import cannot be told apart from another change`, detail: last });
           }
@@ -898,6 +901,9 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
             imported = got;
             attributesAfter = last.attributes;
             return asRead({ name: "wait_import", status: "succeeded", op: "patch.importState", detail: { added: got, polls: i + 1, lastCommand: last.lastCommand } });
+          }
+          if (last?.modal && last.added.length === 0) {
+            return asRead({ name: "wait_import", status: "failed", op: "patch.importState", error: `a dialog (${last.modal.name ?? "?"}) is open on the console and no type was added; the import may be asking to overwrite an existing type. Press Cancel there`, detail: last });
           }
           if (answered && !String(last?.lastCommand).startsWith("OK")) {
             return asRead({ name: "wait_import", status: "failed", op: "patch.importState", error: `the console answered "${last?.lastCommand}" and added no type`, detail: last });
@@ -1153,7 +1159,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
       description:
         "Import one fixture type from the console's library into the show, so gma3_patch_add can patch it. file is a file name exactly as gma3_patch_library lists it. " +
         "Pre-checks (nothing sent on failure): the file is in exactly one library, and the show has no type with the same manufacturer and name (the console would silently add a second one) unless allow_duplicate. " +
-        "Runs one patch session at the copy's fixture-type pool: Import Library \"<file>\" /Path \"\" (no dialog; the empty path stops a path left by an earlier import command being used), then waits for exactly one new type and claims it only when its name or manufacturer matches the file. " +
+        "Runs one patch session at the copy's fixture-type pool: Import <next type number> /File \"<file>\" /Path \"<its library folder>\" (no dialog; it reads the file from its folder, where Import Library looked the name up in a cached listing that could lack the user library), then waits for exactly one new type and claims it only when its name or manufacturer matches the file. " +
         "The isolation check compares everything the live patch already has; the new type and the attributes it brings are appended and left out. Then commit and read back: the result has the new type's number, name, GUID and DMX modes with footprints, and attributesAdded. " +
         "Imports of user-library .xml and WorldServer files are not verified on the console yet (the result warns); user-library .gdtf is (bridge 0.38.0). " +
         "Requires exclusive: true (see gma3_patch_add for what the patch session means). A committed import has NO UNDO; gma3_patch_remove_type removes an unused type again, but the attributes it brought stay. Needs bridge 0.26.0.",

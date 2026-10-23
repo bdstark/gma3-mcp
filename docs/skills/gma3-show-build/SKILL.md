@@ -17,7 +17,7 @@ ask for 3D placement, for haze in the beam check, for the universe budget and fo
 
 - **Use the structured tools.** Use `gma3_command` and `gma3_lua` only for what no tool covers. Lua is off by default,
   and only the operator turns it on. Before you fall back to Lua, check the server's tool list: newer builds may have
-  a tool for the gap: `gma3_patch_move` (a fixture move) and `gma3_dialog` (a dialog tool) need bridge 0.40.0.
+  a tool for the gap: `gma3_patch_move` (a fixture move) and `gma3_dialog` (a dialog tool) need bridge 0.42.0.
 - **Check the show before every write.** The user may load another show mid-session. Read the show file from
   `gma3_status` before each step. If the bridge restarted, a show may have been loaded.
 - **Check the bridge before every step.** onPC can quit without a crash report. In the Halloween build nobody noticed

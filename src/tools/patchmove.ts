@@ -306,7 +306,7 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
         check = (await bridge.request("patch.moveCheck", { fids, parent }, t)) as MoveCheck;
       } catch (err) {
         const s = asRead(stepFromError("check_move", err, { op: "patch.moveCheck" }));
-        if (err instanceof BridgeError && /unknown op/.test(err.message)) s.error = `${s.error}: the console runs an older bridge plugin without patch.moveCheck (bridge 0.40.0); update the plugin`;
+        if (err instanceof BridgeError && /unknown op/.test(err.message)) s.error = `${s.error}: the console runs an older bridge plugin without patch.moveCheck (bridge 0.42.0); update the plugin`;
         return s;
       }
       // The before-state is only for the read-back: without verify it is neither read nor required.
@@ -426,7 +426,7 @@ export const registerPatchMoveTools: RegisterTools = (server, ctx) => {
         "Pre-checks (nothing sent on failure): every FID exists, holds no fixtures itself, all share one parent (the top level or one top-level grouping fixture) in one stage, and the target is another top-level grouping fixture of that stage (type Grouping) or the top level. Move fixtures with different parents in one call each. " +
         "In the copy: Cut, ChangeDestination, Paste, and the console's \"Move Fixtures\" dialog answered by the bridge, each step checked before the next (a failure cancels the dialog). The isolation check compares fixtures without their list positions, because a move renumbers the fixtures after the moved ones. " +
         SESSION_DESC +
-        " verify compares each fixture with its state before the session: parent, address, name, its groups, and its 3D pose (absolute: in the world; relative: to the parent). Needs bridge 0.40.0.",
+        " verify compares each fixture with its state before the session: parent, address, name, its groups, and its 3D pose (absolute: in the world; relative: to the parent). Needs bridge 0.42.0.",
       inputSchema: {
         fids: z.array(z.number()).describe(`Fixture IDs to move (1-${MAX_MOVE}), all with the same parent.`),
         parent: z.union([z.number(), z.literal("root")]).describe('FID of the target grouping fixture, or "root" for the top level of the stage.'),
