@@ -560,6 +560,16 @@ r = request("patch.library", { query = "headeronly" })
 check("an .xml file is found by a manufacturer only its header names", r.ok and r.result.total == 1 and r.result.entries[1].file == "custom.xml" and r.result.entries[1].manufacturer == "HeaderOnly" and r.result.entries[1].name == "Custom Thing" and r.result.entries[1].modes[1] == "Basic", J(r))
 r = request("patch.library", { query = "custom thing" })
 check("an .xml file is found by its header name", r.ok and r.result.total == 1 and r.result.entries[1].file == "custom.xml", J(r))
+-- Compact (headers = false) still matches show types by the header's identity, not the file name (review of PR #87).
+do
+  local types = console.live.FixtureTypes.kids
+  types[#types + 1] = ftype(99, "Custom Thing", { MODE1 }, "HeaderOnly")
+  r = request("patch.library", { query = "headeronly", headers = false })
+  local e = r.ok and r.result.entries[1]
+  check("patch.library headers = false: inShow matches a type only the .xml header names, without sending the header",
+    r.ok and e.file == "custom.xml" and e.name == nil and e.modes == nil and #e.inShow == 1 and e.inShow[1].name == "Custom Thing", J(r))
+  table.remove(types)
+end
 r = request("patch.library", { query = "cthing" })
 check("an .xml file is found by its header short name", r.ok and r.result.total == 1, J(r))
 r = request("patch.library", { includeSets = true, query = "truss" })

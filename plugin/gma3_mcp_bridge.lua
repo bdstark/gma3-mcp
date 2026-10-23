@@ -4415,7 +4415,14 @@ do
     end
     out.set = out.set or lower(out.manufacturer) == "set"
     out.modesKnown = out.modes ~= nil
-    local inShow = typesMatching(p, out.manufacturer, out.name or out.model)
+    -- Without the header in the output (compact), the show types still match by the header's identity: the light,
+    -- cached read the search uses, since a file name need not name the fixture.
+    local manufacturer, name = out.manufacturer, out.name or out.model
+    if not withHeader and e.format == "xml" then
+      local h = readXmlHeader(e, false)
+      if h then manufacturer = h.manufacturer or manufacturer; name = h.name or name end
+    end
+    local inShow = typesMatching(p, manufacturer, name)
     out.inShow = emptyArray(inShow)
     return out
   end
