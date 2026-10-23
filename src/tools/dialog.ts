@@ -128,6 +128,11 @@ export async function pressDialog(ctx: ToolContext, raw: PressArgs): Promise<Ope
         readError = err instanceof Error ? err.message : String(err);
         continue;
       }
+      // A dialog read only in part cannot be told apart from the one pressed: not a closed, replaced or unchanged dialog.
+      if (after.modal && after.modal.incomplete) {
+        readError = `the dialog could only be read in part (${after.modal.incomplete})`;
+        continue;
+      }
       if (!after.modal || !sameDialog(after.modal, d)) break;
     }
     // Only the last poll counts: an earlier snapshot followed by failed reads is stale (the dialog may have closed since).

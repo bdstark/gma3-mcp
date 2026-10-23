@@ -202,7 +202,7 @@ to 3 s) before the next one:
 
 Any other dialog stops the move and is left alone, and so does a poll that cannot read whether a dialog is open. When a step fails after the paste and the Move Fixtures dialog is
 still open, the tool clicks Cancel (`cancel_dialog`), which moves nothing, so the copy can be closed unchanged. When
-it cannot read whether that dialog is open, it clicks nothing and leaves the copy open (`copyLeftOpen: true`, outcome
+it cannot read whether that dialog is open (or cannot see it close after Cancel), it leaves the copy open (`copyLeftOpen: true`, outcome
 `unknown`). A paste without a reply may still have been queued: its dialog, or a completed paste (every fixture under
 the target and `OK: Paste …`), confirms it, and the move goes on (`move_paste` detail `replyLost`). If the
 console pastes without asking, the result says `dialog: "not_shown"` and the read-back still checks the pose.

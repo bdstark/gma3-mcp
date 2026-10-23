@@ -38,7 +38,8 @@ named `Text`), `display`, and `buttons` with their `text` and `enabled`, in scre
 | `read_after` | read | `dialog.read` | Polls (100 ms, up to 1.5 s) until the dialog closed or another took its place |
 
 `state` is `closed`, `replaced` (another dialog is open now: read it again), `still_open` (verification `mismatched`) or
-`unknown` (the last read after the click failed; an earlier snapshot is kept only as `staleSnapshot` in the step). The console's last command afterwards (`OK: …`, `User Canceled Command: …`) does not name the button, so the
+`unknown` (the last read after the click failed or saw only part of a dialog; an earlier snapshot is kept only as
+`staleSnapshot` in the step). The console's last command afterwards (`OK: …`, `User Canceled Command: …`) does not name the button, so the
 effect is checked on the object the dialog was about.
 
 ## Live

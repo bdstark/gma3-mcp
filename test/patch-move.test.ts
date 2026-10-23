@@ -58,6 +58,8 @@ class MoveWorld {
   noDialog = false;
   /** After a refused answer the top modal can no longer be read. */
   unknownAfterAnswerError = false;
+  /** After Cancel the top modal can no longer be read. */
+  unknownAfterCancel = false;
   /** The grouping fixtures' poses cannot be read. */
   parentPoseUnreadable = false;
   answered: string[] = [];
@@ -176,6 +178,7 @@ class MoveWorld {
       this.modal = false;
       this.moveDialog = false;
       if (args.button === "Cancel") {
+        if (this.unknownAfterCancel) this.modalUnknown = true;
         this.last = `User Canceled Command: ${this.pasteCmd}`;
         return { clicked: "Cancel" };
       }
@@ -489,6 +492,20 @@ test("gma3_patch_move: verify false reads no before-state; relative needs no par
     assert.equal(rel.result.verification.status, "matched", JSON.stringify(rel.result.verification));
   } finally {
     await b.h.close();
+  }
+});
+
+test("gma3_patch_move: a Cancel whose closing cannot be read leaves the copy open (PR #89 review)", async () => {
+  const { h, w, ops } = await setup();
+  try {
+    w.answerError = true;
+    w.unknownAfterCancel = true;
+    const { result } = await h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true });
+    assert.equal(result.copyLeftOpen, true);
+    assert.ok(stepNames(result).includes("cancel_dialog:failed"), JSON.stringify(stepNames(result)));
+    assert.ok(!ops().includes("patch.commit"));
+  } finally {
+    await h.close();
   }
 });
 

@@ -104,6 +104,14 @@ test("gma3_dialog press: a dialog read only in part is refused; failed reads aft
     });
     const stale = await h.callJson("gma3_dialog", { action: "press", button: "OK", expect_title: "", exclusive: true });
     assert.equal(stale.result.state, "unknown");
+    // A post-click read of only part of a dialog is unknown too, never "replaced" (PR #89 review).
+    reads = 0;
+    h.fake.on("dialog.read", () => {
+      reads += 1;
+      return reads === 1 ? { open: true, modal: CONFIRM } : { open: true, modal: { class: "MessageBox", buttons: [{ text: "OK", enabled: true }], incomplete: "the text of Text cannot be read" } };
+    });
+    const partAfter = await h.callJson("gma3_dialog", { action: "press", button: "OK", expect_title: "", exclusive: true });
+    assert.equal(partAfter.result.state, "unknown");
     assert.equal(stale.result.verification.status, "unavailable");
     assert.equal(stale.result.after, null);
   } finally {

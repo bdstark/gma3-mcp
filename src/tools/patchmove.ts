@@ -250,10 +250,13 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
       if (!open) return;
       try {
         await bridge.request("patch.moveAnswer", { button: "Cancel", exclusive: true }, t);
-        const w = await poll("cancel_dialog", "closing the Move Fixtures dialog", (s) => !s.modal);
+        // An unreadable modal state is never "closed": the copy is then left open rather than closed over a dialog.
+        const w = await poll("cancel_dialog", "closing the Move Fixtures dialog", (s) => (s.modalKnown === false ? "whether the Move Fixtures dialog closed cannot be read (GetTopModal failed)" : !s.modal));
         steps.push({ ...w.step, kind: "mutation", detail: { why, ...(w.step.detail as object) } });
+        if (w.step.status !== "succeeded") leaveOpen = `the Move Fixtures dialog was not seen closing after Cancel (${w.step.error ?? w.step.status}); answer it at the console if it is still open`;
       } catch (err) {
         steps.push(stepFromError("cancel_dialog", err, { op: "patch.moveAnswer" }));
+        leaveOpen = "Cancel could not be clicked on the Move Fixtures dialog; answer it at the console";
       }
     };
     // move_paste: the dialog, or (if the console asks nothing) the fixtures under the target
