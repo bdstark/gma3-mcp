@@ -1227,7 +1227,8 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
       const limit = args.limit ?? (args.compact ? 500 : undefined);
       const page = (await ctx.bridge.request(
         "patch.library",
-        { ...(args.query !== undefined ? { query: args.query } : {}), ...(args.sources ? { sources: args.sources } : {}), ...(args.include_sets ? { includeSets: true } : {}), ...(limit !== undefined ? { limit } : {}), ...(args.offset !== undefined ? { offset: args.offset } : {}) },
+        // compact: no .xml header data from the bridge (0.42.0; an older one sends it and it is dropped here).
+        { ...(args.query !== undefined ? { query: args.query } : {}), ...(args.sources ? { sources: args.sources } : {}), ...(args.include_sets ? { includeSets: true } : {}), ...(limit !== undefined ? { limit } : {}), ...(args.offset !== undefined ? { offset: args.offset } : {}), ...(args.compact ? { headers: false } : {}) },
         ctx.requestTimeoutMs,
       )) as LibraryPage;
       return json(shapeLibraryPage(page, args.compact === true));

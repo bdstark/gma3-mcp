@@ -4468,7 +4468,10 @@ do
     local page = paginate(rows, limit, offset)
     local live = ShowData().LivePatch
     local items = {}
-    for _, e in ipairs(page.items) do items[#items + 1] = entryOut(e, live, true) end
+    -- headers = false (gma3_patch_library compact, bridge 0.42.0): no .xml header reads for names and modes, which can
+    -- be large; the search above still reads the first bytes of each to match.
+    local withHeader = args.headers ~= false
+    for _, e in ipairs(page.items) do items[#items + 1] = entryOut(e, live, withHeader) end
     return { total = page.total, offset = page.offset, count = page.count, entries = emptyArray(items), paths = paths, scanned = #all }
   end
 

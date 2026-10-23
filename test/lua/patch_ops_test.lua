@@ -546,6 +546,10 @@ check("patch.library reads a grandMA3 file's header: name, manufacturer, descrip
   r.ok and r.result.total == 2 and spot.source == "grandma3" and spot.name == "Spot One" and spot.manufacturer == "Acme" and spot.description == "Acme & Co spot"
   and spot.modesKnown and spot.modes[1] == "Standard" and spot.modes[2] == "Extended (16 ch)" and #spot.inShow == 0, J(r))
 check("a user-library copy of the same file is listed and marked unverified", r.ok and r.result.entries[2].source == "user" and r.result.entries[2].verified == false, J(r))
+r = request("patch.library", { query = "spot", headers = false })
+spot = r.ok and r.result.entries[1]
+check("patch.library headers = false (compact, bridge 0.42.0) still finds by the header but sends no header fields or modes",
+  r.ok and r.result.total == 2 and spot.file == "acme@spot one.xml" and spot.name == nil and spot.description == nil and spot.modes == nil and spot.modesKnown == false, J(r))
 r = request("patch.library", { file = "solo@user only@rev2.gdtf" })
 check("a user-library .gdtf is marked verified (SU-22)", r.ok and r.result.entries[1].source == "user" and r.result.entries[1].verified == true, J(r))
 r = request("patch.library", {})

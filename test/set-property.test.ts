@@ -1,19 +1,35 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
-import { sameValue, setPropertyChecked } from "../src/tools/setproperty.js";
+import { consoleForm, sameValue, setPropertyChecked } from "../src/tools/setproperty.js";
 
 /**
  * gma3_set_property's read-back check against a fake bridge. A locked object keeps its value and the Set() raises
  * nothing (live 2026-10-22: HazeEnabled on the Show Start's locked RenderQuality "Gobo Animated" stayed "No").
  */
 
+/** The console's form of commands, as SB-07 recorded them. */
+const CONSOLE_FORM: Record<string, string> = { "go+ seq 1": "Go+ Sequence 1", "store cue 5 /merge /nc": "Store Cue 5 /Merge /NoConfirmation", "fixture 1 thru 5 at 50": "Fixture 1 Thru 5 At 50" };
+/** A duration in the console's display text: "2.000", "1h00m00.00", "1d03h46m40.00" (SB-07). */
+const waitText = (s: number) => {
+  if (s < 3600) return s.toFixed(3);
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return `${d ? `${d}d` : ""}${String(h).padStart(d ? 2 : 1, "0")}h${String(m).padStart(2, "0")}m${sec.toFixed(2).padStart(5, "0")}`;
+};
+
 class Obj {
-  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000", Appearance: "1" };
+  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000", Appearance: "1", Command: "" };
   install(h: Harness) {
     h.fake.on("objects", (args) => {
       // An appearance resolves to itself, as a reference property's target (asText false: summaries).
       // Appearances 3 and 5 share the name "Red" (review of PR #87): only the address tells them apart.
+      // By name: Appearance "Blue" is Appearance 8. A bridge failure (not "not found") on "Appearance 66".
+      const named = String(args.ref).match(/^Appearance "(.+)"$/);
+      if (named) {
+        const nos = Object.keys(this.appNames).filter((n) => this.appNames[n] === named[1]);
+        return { total: nos.length, offset: 0, count: nos.length, items: nos.map((n) => ({ name: named[1], class: "Appearance", addr: `addr:app${n}` })) };
+      }
+      if (String(args.ref) === "Appearance 66") throw new Error("request timed out");
       const app = String(args.ref).match(/^Appearance (\d+)$/);
       if (app && Number(app[1]) > 50) throw new Error(`no objects found for '${args.ref}'`);
       if (app) return { total: 1, offset: 0, count: 1, items: [{ name: this.appName(app[1]), class: "Appearance", addr: `addr:app${app[1]}` }] };
@@ -33,16 +49,22 @@ class Obj {
       if (p === "Lock") this.props.Lock = /^(yes|on|true)$/i.test(v) ? "UL" : "";
       // A macro line's Wait coerces a value it does not take to Follow (review of PR #87).
       // An appearance that does not exist (above 50) is not taken: the old one stays.
-      else if (this.props.Lock === "" && p === "Appearance") { if (!(Number(v.replace(/^Appearance /, "")) > 50)) this.props[p] = v.replace(/^Appearance /, ""); }
+      else if (this.props.Lock === "" && p === "Appearance") {
+        const byName = v.match(/^Appearance "(.+)"$/);
+        const no = byName ? Object.keys(this.appNames).find((n) => this.appNames[n] === byName[1]) ?? "" : v.replace(/^Appearance /, "");
+        if (no !== "" && !(Number(no) > 50) || v === "") this.props[p] = no;
+      }
+      // A macro line's Command is stored in the console's form (SB-07).
+      else if (this.props.Lock === "" && p === "Command") this.props[p] = CONSOLE_FORM[v] ?? v;
       else if (this.props.Lock === "" && p === "AddToCmdline") this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
-      else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) ? Number(v).toFixed(3) : "Follow") : v;
+      else if (this.props.Lock === "") this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) ? waitText(Number(v)) : "Follow") : v;
       // Clearing a reference: the property reads nil, and the set op sends no value.
       if (p === "Appearance" && this.props.Appearance === "") return { ref: args.ref, property: p, readOk: true };
       return { ref: args.ref, property: p, value: p === "Appearance" ? this.appName(this.props[p]) : this.props[p] };
     });
   }
   /** The set op reads a reference back as the referenced object's name. */
-  appNames: Record<string, string> = { "3": "Red", "5": "Red", "6": "Appearance 7" };
+  appNames: Record<string, string> = { "3": "Red", "5": "Red", "6": "Appearance 7", "8": "Blue" };
   appName(no: string) {
     return this.appNames[no] ?? `App ${no}`;
   }
@@ -215,6 +237,37 @@ test("set_property: a write whose read-back has no value is not verified, an unl
   }
 });
 
+test("set_property: the console's form of a command and a duration's display text verify; a misspelled property cleared with \"\" does not; quoted names and bridge failures (review of PR #87)", async () => {
+  const { h, o } = await setup();
+  try {
+    for (const command of Object.keys(CONSOLE_FORM)) {
+      const r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Command", value: command });
+      assert.equal(r.failed, false, JSON.stringify(r.result));
+      assert.equal(r.result.value, CONSOLE_FORM[command]);
+    }
+    for (const [secs, shown] of [[3600, "1h00m00.00"], [100000, "1d03h46m40.00"]] as const) {
+      const r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: secs });
+      assert.equal(r.result.value, shown);
+      assert.equal(r.failed, false, JSON.stringify(r.result));
+    }
+    // A property the object does not have reads nothing before or after: a "" request proves nothing.
+    h.fake.on("set", (args) => ({ ref: args.ref, property: args.property, readOk: true }));
+    let r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Bogus", value: "" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    o.install(h);
+    // A reference by quoted name resolves to its object.
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: 'Appearance "Blue"' });
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    assert.equal(o.props.Appearance, "8");
+    // A bridge failure while resolving the requested object leaves the result unknown, never a match.
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 66" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.match(String(r.result.error), /read to verify Appearance of RenderQuality 2 by its object failed .*request timed out/);
+  } finally {
+    await h.close();
+  }
+});
+
 test("sameValue ignores case, spacing, number format and Yes/No spellings, not the value", () => {
   assert.ok(sameValue("Yes", true));
   assert.ok(sameValue("Off", "no"));
@@ -233,4 +286,8 @@ test("sameValue ignores case, spacing, number format and Yes/No spellings, not t
   assert.ok(sameValue("2.5", 2.5, "Name"));
   assert.ok(sameValue("Yes", true, "ForwardCommands"));
   assert.ok(sameValue("No", false, "AddToCmdline"));
+  assert.ok(!consoleForm("Go+ Sequence 1", "go+ seq 2"), "a different number is not the console's form");
+  assert.ok(!consoleForm('Echo "a b"', 'echo "A b"'), "quoted text compares exactly");
+  assert.ok(!consoleForm("Go+ Sequence 1", "go+ macro 1"), "another keyword is not an abbreviation");
+  assert.ok(!sameValue("1h00m00.00", 3599, "Wait"));
 });

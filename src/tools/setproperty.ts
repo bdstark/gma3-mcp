@@ -10,6 +10,7 @@
  */
 import type { Gma3Bridge } from "../bridge.js";
 import { readFields, readObjects } from "./common.js";
+import { displaySeconds, tokenize } from "./macros.js";
 
 const LOCK_FIELDS = ["Lock", "SystemLocked"];
 
@@ -36,6 +37,7 @@ const TEXTUAL = /^(name|note|label|text|description|comment|title|command|path|f
  */
 export function sameValue(got: unknown, want: unknown, property = ""): boolean {
   const exactA = text(got);
+  if (/^command$/i.test(property)) return exactA !== undefined && (exactA === String(want) || consoleForm(exactA, String(want)));
   if (TEXTUAL.test(property)) return exactA !== undefined && exactA === String(want);
   const exactB = typeof want === "boolean" || typeof want === "number" ? undefined : text(want);
   if (exactA !== undefined && exactA === exactB) return true;
@@ -50,7 +52,38 @@ export function sameValue(got: unknown, want: unknown, property = ""): boolean {
   const num = /^(-?\d+(?:\.\d+)?)\s*([a-z%°]*)$/;
   const x = a.match(num);
   const y = b.match(num);
-  return Boolean(x && y && Math.abs(Number(x[1]) - Number(y[1])) < 1e-6 && (!x[2] || !y[2] || x[2] === y[2]));
+  if (x && y && Math.abs(Number(x[1]) - Number(y[1])) < 1e-6 && (!x[2] || !y[2] || x[2] === y[2])) return true;
+  // A duration reads back as the console's duration text (a macro line's Wait 3600 reads "1h00m00.00", SB-07).
+  if (/^\d+[dhm]/.test(a)) {
+    const sa = displaySeconds(a);
+    const sb = typeof want === "number" ? want : displaySeconds(b);
+    if (sa !== null && sb !== null && Math.abs(sa - sb) < 1e-6) return true;
+  }
+  return false;
+}
+
+/**
+ * The console's form of a command line (SB-07: "go+ seq 1" is stored as "Go+ Sequence 1", "store cue 5 /merge /nc" as
+ * "Store Cue 5 /Merge /NoConfirmation"): the same statements and tokens, quoted text and numbers exactly, and each
+ * other word an abbreviation of the stored one (its letters in order, from the first).
+ */
+export function consoleForm(stored: string, sent: string): boolean {
+  const a = tokenize(stored);
+  const b = tokenize(sent);
+  if (a.length !== b.length) return false;
+  const abbreviates = (full: string, short: string) => {
+    const f = full.toLowerCase();
+    const s = short.toLowerCase();
+    if (!s || f[0] !== s[0]) return false;
+    let i = 0;
+    for (const ch of f) if (ch === s[i]) i++;
+    return i === s.length;
+  };
+  return a.every((st, i) => st.length === b[i].length && st.every((tok, j) => {
+    const want = b[i][j];
+    if (/^["']/.test(tok) || /^["']/.test(want) || /^[\d.]+$/.test(tok) || /^[\d.]+$/.test(want)) return tok === want;
+    return abbreviates(tok, want);
+  }));
 }
 
 /**
@@ -58,28 +91,22 @@ export function sameValue(got: unknown, want: unknown, property = ""): boolean {
  * the reference that was sent ("Appearance 3"): the request is resolved to its object and compared by address or name.
  */
 async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: unknown, property: string): Promise<boolean | undefined> {
-  // undefined: the request is not a reference to exactly one object, so the text comparison decides.
-  if (typeof want !== "string" || TEXTUAL.test(property) || got === null || got === undefined || !/^[A-Za-z][A-Za-z ]*\s+\d+(\.\d+)*$/.test(want.trim())) return undefined;
-  // The property's current object, as a handle summary (the read-back text is only a name).
-  const handle = async (): Promise<unknown> => {
-    if (typeof got === "object" && (got as { addr?: unknown }).addr !== undefined) return got;
-    const fields = await readFields(bridge, ref, [property], { asText: false }).catch(() => null);
-    return fields?.[property];
-  };
+  // undefined: not a reference (by its shape, or the property holds no object), so the text comparison decides.
+  // A reference is a keyword and a number or a quoted name: Appearance 3, Appearance "Red".
+  if (typeof want !== "string" || TEXTUAL.test(property) || got === null || got === undefined || !/^[A-Za-z][A-Za-z ]*\s+(\d+(\.\d+)*|"[^"]+")$/.test(want.trim())) return undefined;
+  // First, does the property hold an object? Its current one, as a handle summary (the read-back text is a name).
+  // Bridge errors propagate: a failed read must not decide either way (readFields / readObjects give null only for
+  // "not found").
   const isHandle = (v: unknown) => typeof v === "object" && v !== null && typeof (v as { addr?: unknown }).addr === "string";
-  const res = await readObjects(bridge, want.trim(), [], 2, { asText: false }).catch(() => null);
+  const current = isHandle(got) ? got : (await readFields(bridge, ref, [property], { asText: false }))?.[property];
+  if (!isHandle(current)) return undefined;
+  const res = await readObjects(bridge, want.trim(), [], 2, { asText: false });
   const items = res?.items ?? [];
-  if (items.length !== 1) {
-    // A request that names no single object, on a property that holds an object, is not applied, even when the
-    // current object happens to be named like it.
-    return isHandle(await handle()) ? false : undefined;
-  }
+  // A request that names no single object is not applied, even when the current object is named like it.
+  if (items.length !== 1) return false;
   const target = items[0] as { addr?: string };
-  if (typeof target.addr !== "string") return false;
-  // By address, never by name: two objects can share a name (Appearance 3 and 4 both "Red"), so a refused write
-  // would read back as the requested one.
-  const current = await handle();
-  return isHandle(current) && (current as { addr: string }).addr === target.addr;
+  // By address, never by name: two objects can share a name (Appearance 3 and 4 both "Red").
+  return typeof target.addr === "string" && (current as { addr: string }).addr === target.addr;
 }
 
 const isLocked = (v: unknown): boolean => typeof v === "string" ? v.trim() !== "" && !/^(no|off|false|0)$/i.test(v.trim()) : v === true;
@@ -102,16 +129,25 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   // a lock field's read-back counts as No or Yes.
   // No value at all stays unknown: the set op sends none when the read-back fails.
   const lockState = (v: unknown) => (v === undefined || v === null ? undefined : isLocked(v) ? "Yes" : "No");
-  // Clearing a reference ("") can read back as nothing at all: the bridge sends no value for a nil property. A failed
-  // read sends none either, so only a bridge that says the read worked (readOk, 0.42.0) proves the clear.
-  const got = lockField ? lockState(res.value) : value === "" && (res.value === undefined || res.value === null) && res.readOk === true ? "" : res.value;
   const old = lockField ? (before ? lockState(before[lockField]) : undefined) : before?.[property];
+  // Clearing a reference ("") can read back as nothing at all: the bridge sends no value for a nil property. A failed
+  // read, or a misspelled property, sends none either, so a clear counts only when the bridge says the read worked
+  // (readOk, 0.42.0) and the property held a value before.
+  const absent = res.value === undefined || res.value === null;
+  const cleared = value === "" && absent && res.readOk === true && old !== undefined && old !== null && text(old) !== "";
+  const got = lockField ? lockState(res.value) : cleared ? "" : res.value;
   // Unchanged means the very same text: any other read-back is a change the console made.
   const unchanged = old !== undefined && old !== null && text(got) === text(old);
   const locks = LOCK_FIELDS.filter((f) => f !== lockField && isLocked(before?.[f]));
   // A reference request is decided by the object it resolves to, before any text: a kept object can be named like the
   // requested reference (Appearance 3 named "Appearance 5").
-  const byObject = await sameObject(bridge, ref, got, value, property);
+  let byObject: boolean | undefined;
+  try {
+    byObject = await sameObject(bridge, ref, got, value, property);
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return { result: { ...res, requested: value, before: old ?? null, verified: false, error: `the write was sent, but the read to verify ${property} of ${ref} by its object failed (${why}); whether the console applied ${JSON.stringify(value)} is unknown` }, failed: true };
+  }
   if (byObject ?? sameValue(got, value, property)) {
     // Already the requested value: the end state is right, but on a locked object the write itself was refused.
     const note = unchanged && locks.length ? { note: `${property} already read ${JSON.stringify(old)}; ${ref} is locked (${locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ")}), so the console did not take the write itself`, locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {};
