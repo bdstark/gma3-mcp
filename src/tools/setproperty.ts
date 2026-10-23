@@ -106,12 +106,14 @@ export function consoleForm(stored: string, sent: string): boolean {
 }
 
 /**
- * A reference property (Appearance, Object, ...) reads back as the referenced object's name or a handle summary, not
- * the reference that was sent ("Appearance 3", 3): the request is resolved to its object and compared by address.
+ * The property's raw value (asText false) decides before its edit text. A reference property (Appearance, Object, ...)
+ * reads back as the referenced object's name or a handle summary, not the reference that was sent ("Appearance 3", 3):
+ * the request is resolved to its object and compared by address. A number is compared with a raw number, whose edit
+ * text can be in other units or rounded (SpeedFromX 60 reads "1.000000", docs/probes/sb-02-groups-macos-2.5.1.md).
  */
 async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: unknown, property: string): Promise<boolean | undefined> {
-  // undefined: the property holds no object, so the text comparison decides.
-  if (TEXTUAL.test(property) || got === null || got === undefined || text(got) === "") return undefined;
+  // undefined: the raw value does not decide (no object, not the requested number), so the text comparison does.
+  if (TEXTUAL.test(property) || got === null || got === undefined) return undefined;
   // A reference is a keyword and a number or a quoted name (Appearance 3, Appearance "Red"), or the number or quoted
   // name alone (3, "Red") in the class of the object the property holds.
   const w = String(want).trim();
@@ -124,10 +126,19 @@ async function sameObject(bridge: Gma3Bridge, ref: string, got: unknown, want: u
   const current = isHandle(got) ? got : (await readFields(bridge, ref, [property], { asText: false }))?.[property];
   // The bridge leaves out a field whose read raised (childSummary), so no raw value where the text read-back had one is
   // a failed read: unknown, never a fall back to the display name (a kept object can be named "Appearance 7").
-  if (current === undefined || current === null) throw new Error(`the raw read of ${property} returned no value`);
-  if (!isHandle(current)) return undefined;
-  // A reference property: a request that does not name one object (true, an unsupported form) is not applied, never
+  // Empty text and no raw value: an empty property.
+  if (current === undefined || current === null) {
+    if (text(got) !== "") throw new Error(`the raw read of ${property} returned no value`);
+    return undefined;
+  }
+  if (!isHandle(current)) {
+    const n = typeof want === "number" ? want : typeof want === "string" && /^-?\d+(\.\d+)?$/.test(w) ? Number(w) : NaN;
+    return typeof current === "number" && Number.isFinite(n) && Math.abs(current - n) < 1e-6 ? true : undefined;
+  }
+  // A reference property: an empty name does not mean no object (an appearance named "" or blanks), so a clear that
+  // still holds one is not applied; nor is a request that does not name one object (true, an unsupported form), never
   // compared with the display name (a kept appearance can be named "Yes").
+  if (want === "") return false;
   const cls = (current as { class?: unknown }).class;
   if (!keyed && !(bare && typeof cls === "string" && /^[A-Za-z]+$/.test(cls))) return false;
   const res = await readObjects(bridge, keyed ? w : `${cls} ${w}`, [], 2, { asText: false });
@@ -206,20 +217,16 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   // No value at all stays unknown: the set op sends none when the read-back fails.
   const lockState = (v: unknown) => (v === undefined || v === null ? undefined : isLocked(v) ? "Yes" : "No");
   const old = lockField ? (before ? lockState(before[lockField]) : undefined) : before?.[property];
-  // Clearing a reference ("") can read back as nothing at all: the bridge sends no value for a nil property. A failed
-  // read, or a misspelled property, sends none either, so a clear counts only when the bridge says the read worked
-  // (readOk, 0.44.0) and the property held a value before.
+  // An empty property (a cleared reference) reads back as nothing at all: the bridge sends no value for nil. A failed
+  // read, or a misspelled property, sends none either, so it counts as empty only when the bridge says the read worked
+  // (readOk, 0.44.0) and the property held a value before or is in the object's property list (a misspelled one reads
+  // empty too). Whatever the request: a refused write over an empty reference reads empty, not unknown.
   const absent = res.value === undefined || res.value === null;
-  let cleared = value === "" && absent && res.readOk === true && old !== undefined && old !== null && text(old) !== "";
-  // Empty before and after (a repeated clear): the property must exist, which the object's property list shows; a
-  // misspelled one reads empty too.
-  let repeatedClear = false;
-  if (value === "" && absent && res.readOk === true && !cleared && !lockField) {
-    cleared = await hasProperty(bridge, ref, property);
-    // Empty in a read that worked: unchanged, so a lock still shows in the note.
-    repeatedClear = cleared && before !== null && (old === undefined || old === null || text(old) === "");
-  }
-  const got = lockField ? lockState(res.value) : cleared ? "" : res.value;
+  const oldEmpty = old === undefined || old === null || text(old) === "";
+  const empty = !lockField && absent && res.readOk === true && (!oldEmpty || (await hasProperty(bridge, ref, property)));
+  // Empty before and after in reads that worked: unchanged, so a lock still shows.
+  const repeatedClear = empty && before !== null && oldEmpty;
+  const got = lockField ? lockState(res.value) : empty ? "" : res.value;
   // A text property compares with the text as stored: the read-back value is trimmed, exact (0.44.0) is not.
   const asStored = TEXTUAL.test(property) && typeof res.exact === "string" ? res.exact : got;
   // Unchanged means the very same text: any other read-back is a change the console made.
@@ -240,7 +247,13 @@ export async function setPropertyChecked(bridge: Gma3Bridge, args: SetPropertyAr
   const owner = owners.locked;
   const lockText = locks.map((f) => `${f} = ${JSON.stringify(before?.[f])}`).join(", ");
   const lockInfo = { ...(locks.length ? { locked: Object.fromEntries(locks.map((f) => [f, before?.[f]])) } : {}), ...(owner ? { lockedOwner: { ref: owner.ref, Lock: owner.lock } } : {}) };
-  if (byObject ?? sameValue(asStored, value, property, { consoleForm: false })) {
+  // A cleared Name reads the console's default, "<class> <index>" (a macro line's "MacroLine 1", SB-07).
+  let defaultName = false;
+  if (/^name$/i.test(property) && value === "" && typeof got === "string" && got !== "") {
+    const item = (await readObjects(bridge, ref, [], 1).catch(() => null))?.items?.[0] as { class?: unknown; index?: unknown } | undefined;
+    defaultName = typeof item?.class === "string" && typeof item.index === "number" && got === `${item.class} ${item.index}`;
+  }
+  if (defaultName || (byObject ?? sameValue(asStored, value, property, { consoleForm: false }))) {
     // Already the requested value: the end state is right, but on a locked object (or owner) the write itself was
     // refused.
     const by = locks.length ? `${ref} is locked (${lockText})` : owner ? `${owner.ref} is locked (Lock = ${JSON.stringify(owner.lock)}), which blocks writes to ${ref}` : "";

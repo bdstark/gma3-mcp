@@ -18,7 +18,7 @@ const waitText = (s: number) => {
 };
 
 class Obj {
-  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", StructureLocked: "No", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000", Appearance: "1", Command: "", CmdText: "Fixture 1" };
+  props: Record<string, string> = { HazeEnabled: "No", Name: "Gobo Animated", Lock: "", StructureLocked: "No", SystemLocked: "No", FadeTime: "0.000", Wait: "2.000", Appearance: "1", Command: "", CmdText: "Fixture 1", SpeedFromX: "1.000000" };
   install(h: Harness) {
     // The object's property list (object op with schema).
     h.fake.on("object", () => ({ name: this.props.Name, schema: Object.keys(this.props).map((name, index) => ({ name, index })) }));
@@ -42,9 +42,11 @@ class Obj {
         if (!(f in this.props)) continue;
         // asText false: a reference property comes back as the referenced object's summary.
         if (f === "Appearance" && (this.props.Appearance === "" || (this.rawFails && args.asText === false))) continue;
-        fields[f] = typeof this.props[f] === "string" && f !== "Appearance" ? this.props[f].trim() : f === "Appearance" && args.asText === false ? { name: this.appName(this.props.Appearance), class: "Appearance", addr: `addr:app${this.props.Appearance}` } : f === "Appearance" ? this.appName(this.props.Appearance) : this.props[f];
+        fields[f] = args.asText === false && f in this.raw ? this.raw[f] : typeof this.props[f] === "string" && f !== "Appearance" ? this.props[f].trim() : f === "Appearance" && args.asText === false ? { name: this.appName(this.props.Appearance), class: "Appearance", addr: `addr:app${this.props.Appearance}` } : f === "Appearance" ? this.appName(this.props.Appearance) : this.props[f];
       }
-      return { total: 1, offset: 0, count: 1, items: [{ name: this.props.Name, class: "RenderQuality", fields }] };
+      // A macro line's class and index give its default name (SB-07: "MacroLine 1").
+      const line = /^Macro \d+\.(\d+)$/.exec(String(args.ref));
+      return { total: 1, offset: 0, count: 1, items: [{ name: this.props.Name, class: line ? "MacroLine" : "RenderQuality", index: line ? Number(line[1]) : 2, fields }] };
     });
     h.fake.on("set", (args) => {
       const p = String(args.property);
@@ -63,14 +65,25 @@ class Obj {
       // A macro line's Command is stored in the console's form (SB-07).
       else if (this.writable && p === "Command") this.props[p] = CONSOLE_FORM[v] ?? v;
       else if (this.writable && p === "AddToCmdline") this.props[p] = /^(yes|true)$/i.test(v) ? "Yes" : "No";
+      // A cleared macro line name reads its default again (SB-07).
+      else if (this.writable && p === "Name" && v === "" && /^Macro \d+\.\d+$/.test(String(args.ref))) this.props.Name = `MacroLine ${String(args.ref).split(".")[1]}`;
+      // SpeedFromX 60 reads "1.000000" in the edit role and 60 raw (SB-02).
+      else if (this.writable && p === "SpeedFromX") {
+        this.raw.SpeedFromX = Number(v);
+        this.props.SpeedFromX = (Number(v) / 60).toFixed(6);
+      }
       else if (this.writable) this.props[p] = p === "FadeTime" ? Number(v).toFixed(3) : p === "HazeEnabled" ? (/^(yes|true)$/i.test(v) ? "Yes" : "No") : p === "Wait" ? (/^\d/.test(v) && Number(v) > 0 ? waitText(Number(v)) : "Follow") : v;
       // Clearing a reference: the property reads nil, and the set op sends no value.
       if (p === "Appearance" && this.props.Appearance === "") return { ref: args.ref, property: p, readOk: true };
+      // A wait's raw value is its seconds; the display rounds them.
+      if (this.writable && p === "Wait" && Number(v) > 0) this.raw.Wait = Number(v);
       // As getProp: the value trimmed, and exact (0.44.0) with the text as stored when trimming changed it.
       const stored = p === "Appearance" ? this.appName(this.props[p]) : this.props[p];
       return { ref: args.ref, property: p, value: stored.trim(), ...(stored.trim() !== stored ? { exact: stored } : {}) };
     });
   }
+  /** Raw (asText false) values where they differ from the edit text. */
+  raw: Record<string, number> = { SpeedFromX: 60 };
   /** The owner's read fails at the bridge. */
   ownerFails = false;
   /** The raw (asText false) read of Appearance raises, so the bridge leaves the field out. */
@@ -458,6 +471,35 @@ test("set_property: StructureLocked, an owner's lock, a repeated clear on a lock
       r = await setPropertyChecked(h.bridge, { ref: "CmdLine", property: "CmdText", value: cmd });
       assert.equal(r.failed, true, JSON.stringify(r.result));
     }
+    // An appearance with a blank name still is an object: a clear that keeps it is not applied (review of PR #92).
+    o.appNames["11"] = "  ";
+    o.props.Appearance = "11";
+    o.props.Lock = "UL";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    // An empty appearance that a lock keeps reads nil, which is empty, not unknown: the error names the lock.
+    o.props.Appearance = "";
+    r = await setPropertyChecked(h.bridge, { ref: "RenderQuality 2", property: "Appearance", value: "Appearance 3" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    assert.match(String(r.result.error), /RenderQuality 2 is locked \(Lock = "UL"\)/);
+    o.props.Lock = "";
+    // The raw value decides a number: SpeedFromX 120 reads "2.000000" in the edit role; a short wait rounds.
+    r = await setPropertyChecked(h.bridge, { ref: "MAtricks 1", property: "SpeedFromX", value: 120 });
+    assert.equal(r.result.value, "2.000000");
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 2.0001 });
+    assert.equal(r.result.value, "2.000");
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    // A cleared macro line name reads its default "MacroLine 1"; a kept custom name does not pass for a clear.
+    o.props.Name = "Gobo";
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Name", value: "" });
+    assert.equal(r.result.value, "MacroLine 1");
+    assert.equal(r.failed, false, JSON.stringify(r.result));
+    o.props.Name = "Gobo";
+    o.props.Lock = "UL";
+    r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Name", value: "" });
+    assert.equal(r.failed, true, JSON.stringify(r.result));
+    o.props.Lock = "";
     // A long wait reads in hundredths: 3600.001 reads "1h00m00.00" and is applied.
     r = await setPropertyChecked(h.bridge, { ref: "Macro 1.1", property: "Wait", value: 3600.001 });
     assert.equal(r.result.value, "1h00m00.00");
