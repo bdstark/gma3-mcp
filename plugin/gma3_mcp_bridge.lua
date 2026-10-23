@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.39.0"
+local VERSION      = "0.42.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4075,7 +4075,7 @@ end
 -- opts (SU-03):
 --   excludeGuids  types (by GUID) left out with their subtree: the type a removal deletes, on the live side
 --   excludeTypes  { [position] = GUID }: the same, but only the type at that position of the list and with that GUID,
---                 so another import of the same GDTF (same GUID) is still compared; replaces excludeGuids (0.39.0)
+--                 so another import of the same GDTF (same GUID) is still compared; replaces excludeGuids (0.42.0)
 --   guide         the live patch, for the copy of an import session. An import appends its type to the
 --                 fixture-type list and its attributes and features to the attribute-definition lists (live
 --                 2026-10-15), so at exactly those levels (PATCH_FP_APPEND below) a container hashes only as many
@@ -4230,8 +4230,8 @@ end
 --   patch.library     read-only: the library files (DirList over the console's own library paths), parsed
 --                     from the file name (grandMA2 .pxml, GDTF) or the XML header (grandMA3 / user .xml)
 --   patch.typeInfo    read-only: one show type, its GUID and which fixtures use it
---   patch.import      queues Import Library "<file>" /Path "" in the copy's FixtureTypes (CmdIndirect: it lands
---                     on a later frame); the client polls patch.importState for the new type
+--   patch.import      queues Import <next no> /File "<file>" /Path "<library folder>" in the copy's FixtureTypes
+--                     (CmdIndirect: it lands on a later frame); the client polls patch.importState for the new type
 --   patch.removeType  deletes an unused type from the copy; the types after it are renumbered
 -------------------------------------------------------------------------------
 do
@@ -4718,7 +4718,7 @@ do
 
   -- The fixtures whose FixtureType is this type object. Two imports of one GDTF share a GUID (a rebuilt file
   -- imported with allow_duplicate, live 2026-10-22), so a type is matched by its number as well as its GUID: a
-  -- fixture moved to the newer import no longer counts as a user of the older one (bridge 0.39.0).
+  -- fixture moved to the newer import no longer counts as a user of the older one (bridge 0.42.0).
   local function typeUsers(p, t)
     local guid, no = displayProp(t, "Guid"), safeProp(t, "no")
     local users = {}
@@ -5074,7 +5074,8 @@ do
     local chosen
     for _, e in ipairs(matches) do if source == nil or e.source == source then chosen = chosen or e end end
     if not chosen then raise("[no-file] " .. file .. " is not in the " .. tostring(source) .. " library") end
-    -- Import Library names a file only, so a name in two libraries cannot be told apart.
+    -- A name in two libraries is still refused: Import Library named the file only (until bridge 0.41.0), and the
+    -- console's own listing cannot tell the two apart.
     if #matches > 1 then
       local where = {}
       for _, e in ipairs(matches) do where[#where + 1] = e.source end
@@ -5090,22 +5091,35 @@ do
     local e = resolveFile(args.source, args.file)
     local before = p.FixtureTypes:Count()
     local attrs = p.AttributeDefinitions and p.AttributeDefinitions.Attributes and p.AttributeDefinitions.Attributes:Count() or nil
-    -- /Path "": the console keeps the path of an earlier import command and resolves Import Library against it, so
-    -- every user-library import answered "Object not found" until one was sent with /Path "" (bridge 0.38.2, live
-    -- 2026-10-22). An empty path is the library's own folders.
-    local command = 'Import Library "' .. e.file .. '" /Path ""'
+    -- Import <no> /File /Path reads the file from its folder (bridge 0.41.0, live 2026-10-23,
+    -- docs/probes/import-library-listing-macos-2.5.1.md). Import Library "<file>" looked the name up in the console's
+    -- cached library listing instead, and once an import had rebuilt that listing from the shipped library's cache
+    -- (after a grandMA2 import that followed a bridge reload) the user library was missing from it: every user .gdtf
+    -- answered "Object not found" whatever /Path or /Type was given, until the Patch menu's import dialog rebuilt it.
+    -- /Path is an absolute folder here; with Import Library it was relative to the shipped library.
+    local folder
+    for _, src in ipairs(LIB_SOURCES) do if src.id == e.source then folder = sourcePath(src) end end
+    if not folder then raise("[no-library] the folder of the " .. e.source .. " library cannot be read") end
+    if folder:find('"') or folder:find("[%c]") then raise("[bad-file] the " .. e.source .. " library folder contains a quote or a control character and cannot be named by command") end
+    -- The number after the highest, never a taken one: Import onto a taken type asks Overwrite / Merge / Insert /
+    -- Cancel, and with /NoConfirmation overwrites it (live 2026-10-23), so the command carries no /NoConfirmation.
+    local no = before
+    for _, t in ipairs(p.FixtureTypes:Children()) do no = math.max(no, tonumber(safeProp(t, "no")) or 0) end
+    no = no + 1
+    local command = 'Import ' .. no .. ' /File "' .. e.file .. '" /Path "' .. folder .. '"'
     CmdIndirect(command)
     return { queued = true, command = command, source = e.source, file = e.file, verified = e.verified, typesBefore = before, attributesBefore = attrs }
   end
 
-  -- args: { typesBefore }. The types appended to the copy since patch.import, and the console's last command.
+  -- args: { typesBefore }. The types appended to the copy since patch.import, the console's last command, and a
+  -- dialog the import opened (the overwrite question, bridge 0.41.0).
   ops["patch.importState"] = function(args)
     local p = requireCopy(nil)
     local before = integerArg(args.typesBefore, "typesBefore", 0, 100000)
     local kids = p.FixtureTypes:Children()
     local added = {}
     for i = before + 1, #kids do added[#added + 1] = typeRow(kids[i]) end
-    local res = { destination = patchDestination(), types = #kids, added = emptyArray(added) }
+    local res = { destination = patchDestination(), types = #kids, added = emptyArray(added), modal = patchModal() }
     pcall(function() res.attributes = p.AttributeDefinitions.Attributes:Count() end)
     pcall(function() res.lastCommand = tostring(CmdObj():Get("LastCommand")) end)
     return res
@@ -5131,7 +5145,7 @@ do
     local removed, countBefore = typeRow(t), #kids
     local okD, err = pcall(function() p.FixtureTypes:Delete(index) end)
     if not okD then raise("[remove-failed] deleting the type raised: " .. tostring(err)) end
-    -- By position, not GUID: another import of the same GDTF shares it (bridge 0.39.0). The types after the
+    -- By position, not GUID: another import of the same GDTF shares it (bridge 0.42.0). The types after the
     -- removed one move up one place, in order.
     local left = p.FixtureTypes:Children()
     if #left ~= countBefore - 1 then raise("[remove-failed] the type is still in the copy after Delete") end

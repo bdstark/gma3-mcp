@@ -5,7 +5,8 @@
 `gma3_patch_remove_type` (fixture types, [SETUP.md](../../SETUP.md) SU-03): bridge 0.26.0. The design and its evidence
 are in [DIALOG.md](../../DIALOG.md) ("KB-25", "KB-26"), the [KB-25 record](../probes/kb-25-dialogs-macos-2.5.1.md) and
 the [SU-03 record](../probes/su-03-import-macos-2.5.1.md). `gma3_patch_library_add` (a file into the user library,
-SU-22): bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md).
+SU-22): bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md). Imports name the library folder
+from bridge 0.41.0 ([record](../probes/import-library-listing-macos-2.5.1.md)).
 
 ## Common behaviour
 
@@ -223,8 +224,8 @@ pool:
 | --- | --- |
 | `check_library` | The file is in exactly one library (`Import Library` names the file only, so a name in two libraries is refused); the show has no type matching it unless `allow_duplicate` (the console would silently add a second type with the same name). The match is the bridge's `inShow` plus the server's own comparison of the live types (an underscore matches a space), which also records the type list before the import |
 | `enter` | `patch.enter` with target `fixturetypes`: the copy, then its `FixtureTypes` |
-| `import` | `Import Library "<file>" /Path ""` with `CmdIndirect` (no dialog). The console keeps the path of an earlier import command and resolves the next `Import Library` against it, so without `/Path ""` every library import answered "Object not found" (bridge 0.38.2, live 2026-10-22); an empty path is the library's own folders |
-| `wait_import` | Poll until exactly one type is appended. Claimed only when its name or manufacturer matches the file (ignoring case; an underscore matches a space); two new types, or an error answer from the console, fail the step |
+| `import` | `Import <no> /File "<file>" /Path "<the library's folder>"` with `CmdIndirect` (no dialog). `<no>` is the number after the highest type in the copy; there is no `/NoConfirmation`, so a taken number would open the console's overwrite question instead of overwriting the type. The file is read from its folder: `Import Library "<file>"` (before bridge 0.41.0) looked the name up in the console's cached library listing, which an import can rebuild without the user library, so a user `.gdtf` after a grandMA2 import answered "Object not found" ([record](../probes/import-library-listing-macos-2.5.1.md)) |
+| `wait_import` | Poll until exactly one type is appended. Claimed only when its name or manufacturer matches the file (ignoring case; an underscore matches a space); two new types, an error answer from the console, or a dialog open with no type added (bridge 0.41.0 reports it; press Cancel there) fail the step |
 | `isolation_check` | Everything compared in full except the import's appends (the new type; new attributes and features) |
 | `commit`, read-back | The type in the live patch at the number the copy gave it, with the same name, GUID and modes, and one type more than before. Not looked up by GUID: a rebuilt GDTF imported with `allow_duplicate` shares its GUID with the older import, and the GUID lookup found that one (live 2026-10-22: type 16 instead of 19) |
 
@@ -234,12 +235,12 @@ The result has `type` (number, name, manufacturer, GUID, and the DMX modes with 
 ## gma3_patch_remove_type
 
 `type` by number or name (a number when two types share a name). Pre-flight (`patch.typeInfo`): the type exists, has a
-GUID, and no fixture uses it: the fixtures whose type is this object (bridge 0.39.0), so after a retype to a newer import
+GUID, and no fixture uses it: the fixtures whose type is this object (bridge 0.42.0), so after a retype to a newer import
 of the same GDTF (same GUID) the older one counts as unused (live 2026-10-22: `usedBy: [101, 102]` with `realUsed: 0`
 on bridge 0.38). The change (`patch.removeType`) deletes it by number in the copy, checking its GUID. The types after it
 move down one number; fixtures keep their type and only the displayed number changes. The result's `renumbered` lists
 `{name, from, to}`. The isolation check leaves the type out of the live side by position and GUID (`excludeTypes`,
-bridge 0.39.0; an older bridge leaves out every type with the GUID). Read-back checks the live patch has one type fewer,
+bridge 0.42.0; an older bridge leaves out every type with the GUID). Read-back checks the live patch has one type fewer,
 and one fewer with the GUID. **The attributes the type brought stay in the show**, unused: the
 console keeps them, and they cannot be told apart from its own unused attributes.
 

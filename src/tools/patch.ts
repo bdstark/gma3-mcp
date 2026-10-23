@@ -189,7 +189,7 @@ async function waitStep(bridge: Gma3Bridge, name: string, t: number, pred: (s: P
  * import adds, SU-03) are left out; the bridge compares every other container and collection in full, so an
  * unrelated addition still differs. excludeGuidsLive: fixture types left
  * out of the live side, the type a removal deletes (fixture types are compared by identity, so the renumbering
- * that follows is not a difference). excludeTypesLive: the same type by its position and GUID; a bridge from 0.39.0
+ * that follows is not a difference). excludeTypesLive: the same type by its position and GUID; a bridge from 0.42.0
  * uses it instead, so another import of the same GDTF (same GUID) is still compared.
  */
 interface IsolationSpec {
@@ -890,7 +890,7 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
   const v = new Validator();
   const file = typeof raw.file === "string" && raw.file.trim() !== "" ? raw.file : undefined;
   if (!file) v.fail("file is required: a library file name, as gma3_patch_library lists it");
-  else if (/["\u0000-\u001f]/.test(file)) v.fail("file must not contain a quote or a control character (it is sent as Import Library \"<file>\")");
+  else if (/["\u0000-\u001f]/.test(file)) v.fail("file must not contain a quote or a control character (it is sent as Import /File \"<file>\")");
   if (raw.source !== undefined && !LIBRARY_SOURCES.includes(raw.source as LibrarySource)) v.fail(`source must be one of ${LIBRARY_SOURCES.join(", ")}`);
   requireExclusive(v, raw.exclusive);
   const verify = raw.verify !== false;
@@ -898,7 +898,7 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
   if (!v.ok) return validationFailure(op, target, v.errors);
   const t = ctx.requestTimeoutMs;
   let entry: LibraryEntry | undefined;
-  let queued: { typesBefore: number; attributesBefore?: number; verified?: boolean } | undefined;
+  let queued: { typesBefore: number; attributesBefore?: number; verified?: boolean; command?: string } | undefined;
   let imported: TypeRow | undefined;
   let attributesAfter: number | undefined;
   let typesBefore: TypeRow[] | undefined;
@@ -939,14 +939,17 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
         queued = detail as typeof queued;
         const before = queued?.typesBefore;
         if (typeof before !== "number") return asRead({ name: "wait_import", status: "unknown", op: "patch.importState", error: "patch.import did not report the type count before the import" });
-        let last: { added: TypeRow[]; lastCommand?: string; attributes?: number } | undefined;
+        let last: { added: TypeRow[]; lastCommand?: string; attributes?: number; modal?: { name?: string } | false } | undefined;
+        // The command the bridge sent: Import <no> /File "<file>" /Path "<folder>" since bridge 0.41.0, Import Library
+        // "<file>" before; the console's answer quotes it.
+        const sent = typeof queued?.command === "string" ? queued.command : `Import Library "${file}"`;
         for (let i = 0; i < IMPORT_POLL_TRIES; i++) {
           try {
             last = (await ctx.bridge.request("patch.importState", { typesBefore: before }, t)) as typeof last;
           } catch (err) {
             return asRead(stepFromError("wait_import", err, { op: "patch.importState" }));
           }
-          const answered = typeof last?.lastCommand === "string" && last.lastCommand.includes(`Import Library "${file}"`);
+          const answered = typeof last?.lastCommand === "string" && last.lastCommand.includes(sent);
           if (last && last.added.length > 1) {
             return asRead({ name: "wait_import", status: "failed", op: "patch.importState", error: `${last.added.length} types appeared instead of one (${last.added.map((x) => x.name).join(", ")}); the import cannot be told apart from another change`, detail: last });
           }
@@ -960,6 +963,9 @@ export async function patchImport(ctx: ToolContext, raw: ImportArgs): Promise<Op
             imported = got;
             attributesAfter = last.attributes;
             return asRead({ name: "wait_import", status: "succeeded", op: "patch.importState", detail: { added: got, polls: i + 1, lastCommand: last.lastCommand } });
+          }
+          if (last?.modal && last.added.length === 0) {
+            return asRead({ name: "wait_import", status: "failed", op: "patch.importState", error: `a dialog (${last.modal.name ?? "?"}) is open on the console and no type was added; the import may be asking to overwrite an existing type. Press Cancel there`, detail: last });
           }
           if (answered && !String(last?.lastCommand).startsWith("OK")) {
             return asRead({ name: "wait_import", status: "failed", op: "patch.importState", error: `the console answered "${last?.lastCommand}" and added no type`, detail: last });
@@ -1031,7 +1037,7 @@ export async function patchRemoveType(ctx: ToolContext, raw: RemoveTypeArgs): Pr
         const res = (await ctx.bridge.request("patch.typeInfo", { type }, t)) as { type: typeof info };
         info = res.type;
         if (!info?.guid) return asRead({ name: "check_type", status: "failed", op: "patch.typeInfo", error: "the type has no readable GUID, so it cannot be removed safely", detail: res });
-        // The bridge counts the fixtures whose type is this object (0.39.0), not every type with its GUID: after a
+        // The bridge counts the fixtures whose type is this object (0.42.0), not every type with its GUID: after a
         // retype to a newer import of the same GDTF the older one is unused (live 2026-10-22).
         if (info.usedBy.length > 0 || (info.realUsed ?? 0) > 0) {
           const n = info.usedBy.length || info.realUsed;
@@ -1235,7 +1241,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
       description:
         "Import one fixture type from the console's library into the show, so gma3_patch_add can patch it. file is a file name exactly as gma3_patch_library lists it. " +
         "Pre-checks (nothing sent on failure): the file is in exactly one library, and the show has no type with the same manufacturer and name (the console would silently add a second one) unless allow_duplicate. " +
-        "Runs one patch session at the copy's fixture-type pool: Import Library \"<file>\" /Path \"\" (no dialog; the empty path stops a path left by an earlier import command being used), then waits for exactly one new type and claims it only when its name or manufacturer matches the file. " +
+        "Runs one patch session at the copy's fixture-type pool: Import <next type number> /File \"<file>\" /Path \"<its library folder>\" (no dialog; it reads the file from its folder, where Import Library looked the name up in a cached listing that could lack the user library), then waits for exactly one new type and claims it only when its name or manufacturer matches the file. " +
         "The isolation check compares everything the live patch already has; the new type and the attributes it brings are appended and left out. Then commit and read back: the result has the new type's number, name, GUID and DMX modes with footprints, and attributesAdded. " +
         "Imports of user-library .xml and WorldServer files are not verified on the console yet (the result warns); user-library .gdtf is (bridge 0.38.0). " +
         "Requires exclusive: true (see gma3_patch_add for what the patch session means). A committed import has NO UNDO; gma3_patch_remove_type removes an unused type again, but the attributes it brought stay. Needs bridge 0.26.0.",
@@ -1256,7 +1262,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
       title: "Remove an unused fixture type from the show",
       description:
         "Delete a fixture type no fixture uses, e.g. one imported by mistake. Pre-check (nothing sent on failure): the type exists and no fixture uses it. " +
-        "Runs one patch session; the type is deleted by its number, checked against its GUID. A type counts as used only by the fixtures whose type is that object (bridge 0.39.0; an older bridge also counts fixtures on another import of the same GDTF, which shares the GUID). Every type after it moves down one number (fixtures keep their type; only the number changes), and the result lists the renumbered types. " +
+        "Runs one patch session; the type is deleted by its number, checked against its GUID. A type counts as used only by the fixtures whose type is that object (bridge 0.42.0; an older bridge also counts fixtures on another import of the same GDTF, which shares the GUID). Every type after it moves down one number (fixtures keep their type; only the number changes), and the result lists the renumbered types. " +
         "The attributes the type brought into the show stay, unused: the console keeps them and they cannot be told apart from its own unused attributes. " +
         "Requires exclusive: true. NO UNDO. Needs bridge 0.26.0.",
       inputSchema: {

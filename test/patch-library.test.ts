@@ -26,7 +26,7 @@ class LibraryWorld {
   dest = "Root";
   pending: string[] = [];
   usedBy: Record<string, number[]> = { "G-1": [101, 102] };
-  /** Fixtures per type number, as a bridge from 0.39.0 counts them (by type object); overrides usedBy when set. */
+  /** Fixtures per type number, as a bridge from 0.42.0 counts them (by type object); overrides usedBy when set. */
   usedByNo: Record<number, number[]> | null = null;
   /** What an import of a file creates: [manufacturer, name], or "error" (the console answers with an error). */
   creates: Record<string, Array<[string, string]> | "error"> = {
@@ -40,6 +40,11 @@ class LibraryWorld {
     "other@thing.pxml": [["Else", "Different"]],
   };
   lastCommand = "";
+  /** The command form of the bridge: Import <no> /File /Path (0.41.0) or Import Library (older bridges). */
+  legacy = false;
+  /** A dialog the next import opens instead of importing (the overwrite question). */
+  opensDialog = false;
+  modal: { name: string; class: string } | false = false;
   attributes = 100;
   attributesBefore = 100;
   library = [
@@ -70,11 +75,15 @@ class LibraryWorld {
         this.copy = null;
         this.dest = "Root";
       } else if (cmd.startsWith("import:")) {
-        const file = cmd.slice(7);
+        const [, sent, file] = cmd.split("\n");
         const what = this.creates[file];
-        this.lastCommand = `Import Library "${file}"`;
+        if (this.opensDialog) {
+          this.modal = { name: "MsgBox", class: "MessageBox" };
+          continue;
+        }
+        this.lastCommand = sent;
         if (!this.copy || what === "error" || what === undefined) {
-          this.lastCommand = `Error: Object not found (${this.lastCommand})`;
+          this.lastCommand = `Object not found: ${this.lastCommand}`;
           continue;
         }
         for (const [m, n] of what) this.copy.push(ty(this.copy.length + 1, n, m, `G-new-${n}`));
@@ -111,15 +120,17 @@ class LibraryWorld {
     });
     f.on("patch.import", (args) => {
       if (!this.copy || this.dest !== "FixtureTypes") throw new BridgeReplyError("[wrong-destination] not at FixtureTypes", "wrong-destination");
-      this.pending.push(`import:${args.file}`);
+      const entry = this.library.find((e) => e.file === args.file);
+      const command = this.legacy ? `Import Library "${args.file}"` : `Import ${this.copy.length + 1} /File "${args.file}" /Path "/lib/${entry?.source}"`;
+      this.pending.push(`import:\n${command}\n${args.file}`);
       this.attributesBefore = this.attributes;
-      return { queued: true, command: `Import Library "${args.file}"`, typesBefore: this.copy.length, attributesBefore: this.attributes };
+      return { queued: true, command, typesBefore: this.copy.length, attributesBefore: this.attributes };
     });
     f.on("patch.importState", (args) => {
       this.frame();
       if (!this.copy) throw new BridgeReplyError("[copy-closed] not open", "copy-closed");
       const before = args.typesBefore as number;
-      return { destination: this.dest, types: this.copy.length, added: this.copy.slice(before), attributes: this.attributes, lastCommand: this.lastCommand };
+      return { destination: this.dest, types: this.copy.length, added: this.copy.slice(before), attributes: this.attributes, lastCommand: this.lastCommand, ...(this.legacy ? {} : { modal: this.modal }) };
     });
     f.on("patch.typeInfo", (args) => {
       const t = this.live.find((x) => x.no === args.type || x.name === args.type);
@@ -141,7 +152,7 @@ class LibraryWorld {
       // FixtureTypes hashed by identity (GUIDs) in order; prefixOfLive limits the copy to the live count,
       // excludeGuids leaves types out of the live side; AttributeDefinitions by count, prefix-limited the same way.
       const side = args.side === "copy" ? this.copy ?? [] : this.live;
-      // excludeTypes (bridge 0.39.0) leaves out only the type at that position with that GUID, and replaces excludeGuids.
+      // excludeTypes (bridge 0.42.0) leaves out only the type at that position with that GUID, and replaces excludeGuids.
       const excl = new Set((args.excludeGuids as string[]) ?? []);
       const byPos = args.excludeTypes as Array<{ index: number; guid: string }> | undefined;
       let list = side.filter((x, i) => (byPos ? !byPos.some((e) => e.index === i + 1 && e.guid === x.guid) : !excl.has(x.guid)));
@@ -316,11 +327,39 @@ test("gma3_patch_import: an import the console refuses closes the unchanged copy
   try {
     const { result } = await h.callJson("gma3_patch_import", { file: "broken@file.pxml", exclusive: true });
     assert.equal(result.outcome, "failed");
-    assert.match(result.summary, /answered "Error: Object not found/);
+    assert.match(result.summary, /answered "Object not found: Import 4 \/File "broken@file\.pxml" \/Path "\/lib\/grandma2""/);
     assert.equal(result.copyLeftOpen, false);
     assert.equal(result.committed, false);
     assert.equal(w.copy, null);
     assert.equal(w.live.length, 3);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_import: an older bridge's Import Library answer is still recognised (bridge 0.41.0 names the command)", async () => {
+  const { h, w } = await setup();
+  w.legacy = true;
+  try {
+    const { result } = await h.callJson("gma3_patch_import", { file: "broken@file.pxml", exclusive: true });
+    assert.equal(result.outcome, "failed");
+    assert.match(result.summary, /answered "Object not found: Import Library "broken@file\.pxml""/);
+    assert.equal(w.copy, null);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_import: a dialog the import opens fails the wait at once and says to cancel it", async () => {
+  const { h, w } = await setup();
+  w.opensDialog = true;
+  try {
+    const { result } = await h.callJson("gma3_patch_import", { file: "oppsk@36pcs 4in1 led wall washer.pxml", exclusive: true });
+    assert.equal(result.outcome, "failed");
+    const step = result.steps.find((s: { name: string }) => s.name === "wait_import");
+    assert.equal(step.status, "failed");
+    assert.match(step.error, /dialog \(MsgBox\) is open .* Press Cancel there/);
+    assert.equal(w.live.length, 3, "nothing was imported");
   } finally {
     await h.close();
   }

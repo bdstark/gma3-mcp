@@ -48,7 +48,17 @@ DirList = function(path, filter)
   return {}
 end
 -- What an Import Library of each file creates (manufacturer, name), as the console names it.
-local LIBTYPES = { ["test@mega hex par.pxml"] = { "Test", "Mega Hex Par" }, ["generic@dimmer.pxml"] = { "Generic", "Dimmer" }, ["acme@wash two.pxml"] = { "Acme", "Wash Two" } }
+local LIBTYPES = { ["test@mega hex par.pxml"] = { "Test", "Mega Hex Par" }, ["generic@dimmer.pxml"] = { "Generic", "Dimmer" }, ["acme@wash two.pxml"] = { "Acme", "Wash Two" },
+  ["solo@user only@rev2.gdtf"] = { "Solo", "User Only" } }
+-- The folders the console's cached library listing holds (CmdObj().Library), which Import Library looks a name up in.
+-- Live 2026-10-23: built with the user library, but an import that rebuilds it (the first after a bridge reload's
+-- Import Plugin Library) takes it from the shipped library's cache, which has the grandMA2 and grandMA3 folders only.
+local function fullListing() return { [LIBPATHS[2]] = true, [LIBPATHS[3]] = true, [LIBPATHS[4]] = true } end
+local function shippedListing() return { [LIBPATHS[2]] = true, [LIBPATHS[3]] = true } end
+local function inFolder(path, file)
+  for pt, base in pairs(LIBPATHS) do if base == path then for _, n in ipairs(LIBFILES[pt]) do if n == file then return true end end end end
+  return false
+end
 Keyboard = function() end
 CurrentProfile = function() return { name = "Default", KeyboardShortCuts = { Get = function() return "true" end, Count = function() return 0 end } } end
 GetDisplayByIndex = function() return nil end
@@ -165,7 +175,7 @@ end
 
 local console
 local function reset()
-  console = { live = buildLive(), copyOpen = false, dest = "Root", queue = {}, modal = false, last = "", addMode = "ok", addCalls = {}, importPath = "" }
+  console = { live = buildLive(), copyOpen = false, dest = "Root", queue = {}, modal = false, last = "", addMode = "ok", addCalls = {}, listing = fullListing() }
   console.copy = obj("Patch", "Patch", 10, {}, {}); console.copy.addr = "14.10"
 end
 reset()
@@ -175,6 +185,28 @@ Patch = function() return console.copyOpen and console.copy or console.live end
 CmdObj = function() return { Get = function(_, k) if k == "Destination" then return console.dest elseif k == "LastCommand" then return console.last end end } end
 GetTopModal = function() return console.modal or nil end
 CmdIndirect = function(cmd) console.queue[#console.queue + 1] = cmd end
+
+-- The number after the highest fixture type in the copy (the mock's types have gaps: 1, 2, 6, 7, 8).
+local function nextTypeNo()
+  local n = 0
+  for _, t in ipairs(console.copy.FixtureTypes.kids) do n = math.max(n, t.no) end
+  return n + 1
+end
+-- A fixture type the import of a library file appends to the copy, with what it brings.
+local function addImported(file, no)
+  local spec = LIBTYPES[file]
+  local ft = console.copy.FixtureTypes
+  local t = ftype(no or nextTypeNo(), spec[2], { MODE1 }, spec[1])
+  t.pv.GUID = "G-imported-" .. file .. "-" .. (#ft.kids + 1)
+  ft.kids[#ft.kids + 1] = t
+  -- An import appends the attributes the show lacks (live 2026-10-15).
+  local attrs = console.copy.AttributeDefinitions.kids[1]
+  attrs.kids[#attrs.kids + 1] = obj("Attribute", "NEW" .. #attrs.kids, #attrs.kids + 1, { { "PRETTY", "New" }, { "ATTRIBUTEINDEXOLD", 4294967295 } })
+  -- ... raises an existing feature's attribute count and appends a feature to its group.
+  local group = console.copy.AttributeDefinitions.kids[2].kids[1]
+  group.kids[1].pv.ATTRIBCOUNT = group.kids[1].pv.ATTRIBCOUNT + 1
+  group.kids[#group.kids + 1] = obj("Feature", "FIXTURE", #group.kids + 1, { { "ATTRIBCOUNT", 1 } })
+end
 
 local function frame()
   local q = console.queue
@@ -188,23 +220,24 @@ local function frame()
     elseif cmd == 'ChangeDestination "FixtureTypes"' and console.copyOpen then
       console.dest = "FixtureTypes"
     elseif cmd:match('^Import Library "') then
-      -- The console keeps the /Path of an earlier import command and resolves an Import Library without one
-      -- against it (live 2026-10-22: "Object not found" until an import was sent with /Path "").
-      local file, path = cmd:match('^Import Library "(.-)" /Path "(.-)"$')
-      if file then console.importPath = path else file = cmd:match('^Import Library "(.-)"$') end
-      local spec = LIBTYPES[file]
-      if console.dest ~= "FixtureTypes" or not spec or console.importPath ~= "" then console.last = "Error: Object not found"; goto continue end
-      local ft = console.copy.FixtureTypes
-      local t = ftype(#ft.kids + 1, spec[2], { MODE1 }, spec[1])
-      t.pv.GUID = "G-imported-" .. file .. "-" .. (#ft.kids + 1)
-      ft.kids[#ft.kids + 1] = t
-      -- An import appends the attributes the show lacks (live 2026-10-15).
-      local attrs = console.copy.AttributeDefinitions.kids[1]
-      attrs.kids[#attrs.kids + 1] = obj("Attribute", "NEW" .. #attrs.kids, #attrs.kids + 1, { { "PRETTY", "New" }, { "ATTRIBUTEINDEXOLD", 4294967295 } })
-      -- ... raises an existing feature's attribute count and appends a feature to its group.
-      local group = console.copy.AttributeDefinitions.kids[2].kids[1]
-      group.kids[1].pv.ATTRIBCOUNT = group.kids[1].pv.ATTRIBCOUNT + 1
-      group.kids[#group.kids + 1] = obj("Feature", "FIXTURE", #group.kids + 1, { { "ATTRIBCOUNT", 1 } })
+      -- Import Library "<file>" looks the name up in the cached listing, whatever /Path or /Type follows (live
+      -- 2026-10-23: /Path is relative to the shipped library, /Type "User" changes the path but not the listing). A
+      -- successful one here stands for the import that rebuilt the listing from the shipped library's cache.
+      local file = cmd:match('^Import Library "(.-)"')
+      local listed = false
+      for path in pairs(console.listing) do if inFolder(path, file) then listed = true end end
+      if console.dest ~= "FixtureTypes" or not LIBTYPES[file] or not listed then console.last = "Object not found: " .. cmd; goto continue end
+      addImported(file)
+      console.listing = shippedListing()
+    elseif cmd:match('^Import %d+ /File "') then
+      -- Import <no> /File "<file>" /Path "<folder>" reads the file from that folder, not the listing (live 2026-10-23).
+      -- A taken number opens the overwrite question (Overwrite / Merge / Insert / Cancel); the type stays as it was.
+      local no, file, path = cmd:match('^Import (%d+) /File "(.-)" /Path "(.-)"$')
+      if console.dest ~= "FixtureTypes" or not file or not LIBTYPES[file] or not inFolder(path, file) then console.last = "Object not found: " .. cmd; goto continue end
+      for _, t in ipairs(console.copy.FixtureTypes.kids) do if t.no == tonumber(no) then console.modal = obj("MessageBox", "MsgBox", 1, {}); goto continue end end
+      -- Only a number after the highest is modelled (it appends; live 2026-10-23 with consecutive numbers).
+      if tonumber(no) < nextTypeNo() then console.last = "Illegal: " .. cmd; goto continue end
+      addImported(file, tonumber(no))
     elseif cmd == "ChangeDestination Root" then
       if console.copyOpen then local l = deepcopy(console.copy); l.addr = "14.9"; l.name = "LivePatch"; console.live = l end
       console.copy = obj("Patch", "Patch", 10, {}, {}); console.copy.addr = "14.10"; console.copyOpen = false; console.dest = "Root"
@@ -311,7 +344,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.39.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.42.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -556,10 +589,9 @@ r = request("patch.import", with({ file = 'bad"name.pxml' }))
 check("a file name with a quote is refused", r.ok == false and r.code == "bad-file", J(r))
 r = request("patch.import", with({ file = "acme@spot one.xml", source = "grandma3" }))
 check("a file name in two libraries is refused (Import Library names the file only)", r.ok == false and r.code == "ambiguous-file" and #console.queue == 0, J(r))
--- A path left over from an earlier import command (bridge 0.38.2): the import names /Path "" and still lands.
-console.importPath = "/Users/someone/old-gdtfs"
 r = request("patch.import", with({ file = "generic@dimmer.pxml" }))
-check("patch.import queues Import Library with /Path \"\" and reports the counts before", r.ok and r.result.typesBefore == 5 and r.result.attributesBefore == 2 and console.queue[1] == 'Import Library "generic@dimmer.pxml" /Path ""' and r.result.command == console.queue[1] and r.result.source == "grandma2", J(r))
+check("patch.import queues Import <next no> /File /Path <library folder> and reports the counts before", r.ok and r.result.typesBefore == 5 and r.result.attributesBefore == 2
+  and console.queue[1] == 'Import 9 /File "generic@dimmer.pxml" /Path "' .. LIBPATHS[3] .. '"' and r.result.command == console.queue[1] and r.result.source == "grandma2", J(r))
 local beforeTypes = r.ok and r.result.typesBefore
 r = request("patch.importState", { typesBefore = beforeTypes })
 check("before the frame nothing was added", r.ok and #r.result.added == 0 and r.result.types == 5, J(r))
@@ -567,7 +599,7 @@ frame()
 r = request("patch.importState", { typesBefore = beforeTypes })
 local imported = r.ok and r.result.added[1]
 check("after the frame the new type is reported with GUID and modes", r.ok and #r.result.added == 1 and imported.name == "Dimmer" and imported.manufacturer == "Generic" and imported.guid ~= nil
-  and imported.modes[1].footprint == 1 and r.result.attributes == 3 and r.result.lastCommand:find("Import Library"), J(r))
+  and imported.modes[1].footprint == 1 and r.result.attributes == 3 and r.result.lastCommand == "OK: " .. 'Import 9 /File "generic@dimmer.pxml" /Path "' .. LIBPATHS[3] .. '"' and r.result.modal == false, J(r))
 check("the copy differs from the live patch after the import", fpAll("copy") ~= fpAll("live"))
 check("the copy guided by the live patch (prefixOfLive) hashes like the live patch", fpAll("copy", { prefixOfLive = true }) == fpAll("live"), fpAll("copy", { prefixOfLive = true }) .. " | " .. fpAll("live"))
 r = request("patch.fingerprint", { side = "live", collection = "FixtureTypes", prefixOfLive = true })
@@ -642,7 +674,7 @@ check("after the commit the type is gone and the ones after it renumbered", r.ok
 
 -- Two imports of one GDTF share its GUID (a rebuilt file imported with allow_duplicate, live 2026-10-22: the
 -- Halloween build's 180W Beam, types 16 and 19). After the fixtures move to the newer import the older one is
--- unused, and only it is removed and left out of the check (bridge 0.39.0).
+-- unused, and only it is removed and left out of the check (bridge 0.42.0).
 do
   local types = console.live.FixtureTypes
   local old
@@ -674,6 +706,50 @@ do
   for _, t in ipairs(console.live.FixtureTypes.kids) do if t.name == "Two Break" then left = left + 1 end end
   check("after the commit one Two Break is left, the one the fixture uses", left == 1 and #console.live.FixtureTypes.kids == count - 1, tostring(left))
 end
+-- Bridge 0.41.0 (live 2026-10-23, docs/probes/import-library-listing-macos-2.5.1.md): a user-library .gdtf after a
+-- grandMA2 import, and the reverse, in one copy.
+r = request("patch.enter", { exclusive = true, target = "fixturetypes" }); frame()
+check("(a new copy at FixtureTypes)", r.ok and console.dest == "FixtureTypes", J(r))
+-- The mock reproduces the live failure of Import Library: after an import rebuilt the listing, the user library is
+-- missing from it, with /Path "" or /Type "User".
+console.listing = fullListing()
+CmdIndirect('Import Library "generic@dimmer.pxml" /Path ""'); frame()
+local typesNow = console.copy.FixtureTypes:Count()
+CmdIndirect('Import Library "solo@user only@rev2.gdtf" /Path ""'); frame()
+check("(mock) Import Library of a user .gdtf after a grandMA2 import is not found", console.last:find("^Object not found") and console.copy.FixtureTypes:Count() == typesNow, console.last)
+CmdIndirect('Import Library "solo@user only@rev2.gdtf" /Path "" /Type "User"'); frame()
+check("(mock) ... and /Type \"User\" does not bring it back", console.last:find("^Object not found") and console.copy.FixtureTypes:Count() == typesNow, console.last)
+local function importAndWait(file)
+  local no = nextTypeNo()
+  local res = request("patch.import", with({ file = file }))
+  local sent = console.queue[1]
+  frame()
+  local st = request("patch.importState", { typesBefore = res.ok and res.result.typesBefore or 0 })
+  return res, sent, st, no
+end
+local r1, sent, st, no = importAndWait("solo@user only@rev2.gdtf")
+check("patch.import of a user .gdtf names its folder and the next number", r1.ok and r1.result.source == "user" and sent == 'Import ' .. no .. ' /File "solo@user only@rev2.gdtf" /Path "' .. LIBPATHS[4] .. '"' and r1.result.command == sent, J(r1))
+check("the user .gdtf lands after the grandMA2 import", st.ok and #st.result.added == 1 and st.result.added[1].name == "User Only" and st.result.added[1].no == no and st.result.lastCommand == "OK: " .. sent, J(st))
+r1, sent, st, no = importAndWait("acme@wash two.pxml")
+check("a grandMA2 import after the user one names the grandMA2 folder and lands", sent == 'Import ' .. no .. ' /File "acme@wash two.pxml" /Path "' .. LIBPATHS[3] .. '"'
+  and st.ok and #st.result.added == 1 and st.result.added[1].name == "Wash Two", J(st))
+r1, sent, st, no = importAndWait("solo@user only@rev2.gdtf")
+check("and a user .gdtf again after that", st.ok and #st.result.added == 1 and st.result.added[1].name == "User Only" and st.result.added[1].no == no, J(st))
+-- What the console does with a taken number: the overwrite question, which patch.importState reports. The bridge
+-- never sends one (the number after the highest), and sends no /NoConfirmation, which would overwrite the type.
+typesNow = console.copy.FixtureTypes:Count()
+local third = console.copy.FixtureTypes.kids[3]
+CmdIndirect('Import ' .. third.no .. ' /File "generic@dimmer.pxml" /Path "' .. LIBPATHS[3] .. '"'); frame()
+r = request("patch.importState", { typesBefore = typesNow })
+check("(mock) an import onto a taken number opens a dialog and changes nothing; patch.importState reports it", r.ok and #r.result.added == 0 and r.result.modal and r.result.modal.class == "MessageBox"
+  and console.copy.FixtureTypes.kids[3] == third, J(r))
+console.modal = false
+check("(the bridge's import commands carry no /NoConfirmation)", not sent:find("NoConfirmation"), sent)
+local userDir = LIBPATHS[4]
+LIBPATHS[4] = LIBDIR .. '/us"er'
+r = request("patch.import", with({ file = "solo@user only@rev2.gdtf" }))
+check("a library folder with a quote is refused", r.ok == false and r.code == "bad-file" and #console.queue == 0, J(r))
+LIBPATHS[4] = userDir
 
 print(string.format("%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) end
