@@ -407,8 +407,10 @@ server.registerTool(
     description:
       "Set a property of a show object via the Lua Set() API, e.g. ref 'Sequence 1', property 'Name' or 'Tracking'; ref 'Sequence 1 Cue 2', property 'TrigTime'. " +
       "Values are passed as text the way they would be typed in the editor (e.g. 'Yes', 'No', '2.5', 'Follow'). This modifies the show file. " +
-      "The property (and the object's Lock) is read before the write and compared with the read-back: the console keeps the old value without an error when it does not take a value, " +
-      "so a read-back that is still the old value is an error that names the lock when the object is locked (Unlock, set, Lock again; StructureLocked and SystemLocked are read-only) or its owner is (a page, for its executors). A value the console spells differently (2.5 as 2.500, true as Yes) counts as applied; any other read-back, even a changed one (the console coerces values it does not take), is an error. Text properties (Name, Note, ...) compare exactly, spaces included. A macro line's Command that reads in the console's form of the request but did not change is not an error, but it is not verified either (a warning: a repeated request and a refused one read the same).",
+      "The property and the object's Lock and SystemLocked are read before the write; the console keeps the old value without an error when it does not take one. " +
+      "The result's verification is 'verified' only for plain values that read back as requested: Yes/No (its spellings only on a Yes/No property), enums, numbers (by the raw value), and text compared exactly, spaces included. " +
+      "'failed' (an error): the value is still the old one (naming the lock, Unlock then set then Lock again, or saying the lock state is unknown), another plain value, or the read-back failed. " +
+      "'unverified' (not an error): object references (Appearance, ...), a macro line's Command and Wait, Tags, durations and other values the console reformats are not judged; the read-back is returned with a hint naming the typed tool that checks it (gma3_get_object, gma3_macros / gma3_edit_macro_line, gma3_tags).",
     inputSchema: {
       ref: refSchema,
       property: z.string(),

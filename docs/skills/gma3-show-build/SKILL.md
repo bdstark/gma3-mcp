@@ -210,7 +210,7 @@ Do this without being asked. The narrow beams (2.5°) of the Halloween build's m
 
 1. **Turn haze on.** Show Start keeps its render qualities in `ShowData.UserProfiles.Default.RenderQualities`. They
    are locked, with haze off. The 3D window uses one of them by handle (`View3DSettings.RenderQuality`). In the
-   Halloween build it was "Gobo Animated". On builds before gma3-mcp #87, `gma3_set_property` on a locked object
+   Halloween build it was "Gobo Animated". On builds before gma3-mcp #92, `gma3_set_property` on a locked object
    returns the unchanged value with no error. Use three command lines:
    `Unlock RenderQuality "Gobo Animated"`, then
    `Set RenderQuality "Gobo Animated" Property "HazeEnabled" "Yes"`, then
