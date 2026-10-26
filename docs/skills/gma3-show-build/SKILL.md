@@ -151,7 +151,8 @@ minutes, stored 68 groups in 5 and placed 93 fixtures in 76 seconds.
 
 ## 3. Patch
 
-1. Run the patch plan through a subagent, as in section 1. Read back with `gma3_patch_list`.
+1. Make the plan's stages first with `gma3_patch_stages` (rename Stage 1, create the others), never with `gma3_lua`.
+   Then run the patch plan through a subagent, as in section 1. Read back with `gma3_patch_list`.
 2. Rename the grouping fixtures at FIDs 1 to 8 to the slot names with `gma3_patch_set`. Leave the rig at the top level
    for now: section 8 moves it under them, after the 3D work.
 3. Save.

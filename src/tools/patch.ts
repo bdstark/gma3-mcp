@@ -230,6 +230,12 @@ interface IsolationSpec {
   excludeTypesLive?: Array<{ index: number; guid: string }>;
   /** false: fixtures are compared without their position in their list (a move renumbers the fixtures after the moved ones). */
   fixturePositions?: false;
+  /**
+   * Stage sessions (#97, bridge 0.48.0), by stage position per side: excludeStages leaves a stage out with its content
+   * (one the session appended, copy side, or removed, live side); bareStages hashes a stage without its number and Name
+   * but its content in full (a renamed stage, and the stages after a removed one, which move up a place).
+   */
+  stages?: { excludeLive?: number[]; excludeCopy?: number[]; bareLive?: number[]; bareCopy?: number[] };
 }
 
 /** Collections an import appends to (the bridge applies prefixOfLive only there either way). */
@@ -244,17 +250,21 @@ async function fingerprints(bridge: Gma3Bridge, iso: IsolationSpec, t: number): 
   let complete = true;
   const reasons: string[] = [];
   if (JSON.stringify(cols.live) !== JSON.stringify(cols.copy)) mismatched.push(`collections differ: live ${cols.live.join(", ")} / copy ${cols.copy.join(", ")}`);
+  const st = iso.stages;
+  const stageArgs = (exclude: number[] | undefined, bare: number[] | undefined) => ({ ...(exclude?.length ? { excludeStages: exclude } : {}), ...(bare?.length ? { bareStages: bare } : {}) });
   for (const collection of cols.live) {
     const positions = iso.fixturePositions === false ? { fixturePositions: false } : {};
-    const live = (await bridge.request("patch.fingerprint", { side: "live", collection, excludeFids, ...positions, ...(iso.excludeGuidsLive?.length ? { excludeGuids: iso.excludeGuidsLive } : {}), ...(iso.excludeTypesLive?.length ? { excludeTypes: iso.excludeTypesLive } : {}) }, ft)) as Fingerprint;
+    const stagesLive = st && collection === "Stages" ? stageArgs(st.excludeLive, st.bareLive) : {};
+    const stagesCopy = st && collection === "Stages" ? stageArgs(st.excludeCopy, st.bareCopy) : {};
+    const live = (await bridge.request("patch.fingerprint", { side: "live", collection, excludeFids, ...positions, ...stagesLive, ...(iso.excludeGuidsLive?.length ? { excludeGuids: iso.excludeGuidsLive } : {}), ...(iso.excludeTypesLive?.length ? { excludeTypes: iso.excludeTypesLive } : {}) }, ft)) as Fingerprint;
     const prefix = iso.prefixOfLive && PREFIX_COLLECTIONS.has(collection);
-    const copy = (await bridge.request("patch.fingerprint", { side: "copy", collection, excludeFids, ...positions, ...(prefix ? { prefixOfLive: true } : {}) }, ft)) as Fingerprint;
+    const copy = (await bridge.request("patch.fingerprint", { side: "copy", collection, excludeFids, ...positions, ...stagesCopy, ...(prefix ? { prefixOfLive: true } : {}) }, ft)) as Fingerprint;
     if (!live.complete || !copy.complete) {
       complete = false;
       reasons.push(`${collection}: ${live.reason ?? copy.reason ?? "incomplete"}`);
     } else if (live.objects !== copy.objects || live.hash !== copy.hash) mismatched.push(collection);
   }
-  const leftOut = { ...(iso.prefixOfLive ? { prefixOfLive: true } : {}), ...(iso.excludeGuidsLive?.length ? { excludeGuidsLive: iso.excludeGuidsLive } : {}), ...(iso.excludeTypesLive?.length ? { excludeTypesLive: iso.excludeTypesLive } : {}), ...(iso.fixturePositions === false ? { fixturePositions: false } : {}) };
+  const leftOut = { ...(st ? { stages: st } : {}), ...(iso.prefixOfLive ? { prefixOfLive: true } : {}), ...(iso.excludeGuidsLive?.length ? { excludeGuidsLive: iso.excludeGuidsLive } : {}), ...(iso.excludeTypesLive?.length ? { excludeTypesLive: iso.excludeTypesLive } : {}), ...(iso.fixturePositions === false ? { fixturePositions: false } : {}) };
   return { equal: complete && mismatched.length === 0, complete, mismatched, detail: { collections: cols.live, excludeFids, ...leftOut, ...(reasons.length ? { incomplete: reasons } : {}) } };
 }
 
