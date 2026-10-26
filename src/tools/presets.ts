@@ -37,6 +37,7 @@
  */
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
+import { ON_NAME_TAKEN, nameHolder, nameOrSuffixed, readPoolNames as readNames, recordLeftName, type OnNameTaken, type PoolName, type PoolNameCache } from "./poolnames.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
 import { BATCH_NOTE, batchItems, batchOptionShape, batchRefused } from "../batch.js";
 import { storePresetsFromContent } from "./presetbatch.js";
@@ -496,60 +497,18 @@ export async function inspectDependencies(bridge: Gma3Bridge, root: PresetRead, 
 // Pool names (#102)
 // ---------------------------------------------------------------------------
 
-/** What a store does when another preset of the pool already has the requested name. */
-export const ON_NAME_TAKEN = ["refuse", "allow_suffix"] as const;
-export type OnNameTaken = (typeof ON_NAME_TAKEN)[number];
-
-export interface PoolName {
-  name: string;
-  /** Stored by an earlier item of the same call. */
-  thisCall?: boolean;
-}
+export { ON_NAME_TAKEN, nameHolder, nameOrSuffixed, sameName, type OnNameTaken, type PoolName } from "./poolnames.js";
 
 /**
  * The names of the presets of each target pool (pool -> preset number -> name), read once per pool and call and
  * shared by the items of one call; every store of the call records the name it left, so a later item asking for the
  * same name sees it taken.
  */
-export type PoolNames = Map<number, Map<number, PoolName>>;
-
-/** Trimmed and case-insensitive: whether the console's uniqueness is case-sensitive is not established. */
-export const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
-
-/** The name exactly, or the console's rename of a taken one ("Orange#2"). */
-export const nameOrSuffixed = (got: string, name: string) => {
-  const g = got.trim();
-  return g === name || (g.startsWith(`${name}#`) && /^\d+$/.test(g.slice(name.length + 1)));
-};
+export type PoolNames = PoolNameCache<number>;
 
 /** The names of Preset pool `pool`, from the cache or read with the bridge's children op (No and Name per preset). */
-export async function readPoolNames(bridge: Gma3Bridge, pool: number, t: number, cache: PoolNames): Promise<Map<number, PoolName>> {
-  const hit = cache.get(pool);
-  if (hit) return hit;
-  const out = new Map<number, PoolName>();
-  const PAGE = 10000;
-  for (let offset = 0; ; ) {
-    const r = (await bridge.request("children", { ref: `Preset ${pool}`, fields: ["No", "Name"], limit: PAGE, offset }, t)) as { total?: unknown; items?: Array<{ name?: string; addr?: string; invalid?: boolean; fields?: Record<string, unknown> }> };
-    const items = r?.items ?? [];
-    for (const it of items) {
-      if (it.invalid) continue;
-      const no = Number.parseInt(String(it.fields?.No ?? ""), 10);
-      if (!Number.isInteger(no)) throw new Error(`a preset of pool ${pool} (${it.addr ?? it.name ?? "?"}) has no readable number`);
-      const name = String(it.fields?.Name ?? it.name ?? "").trim();
-      if (name) out.set(no, { name });
-    }
-    offset += items.length;
-    if (typeof r?.total !== "number" || offset >= r.total) break;
-    if (!items.length) throw new Error(`preset pool ${pool} lists ${r.total} presets but only ${offset} could be read`);
-  }
-  cache.set(pool, out);
-  return out;
-}
-
-/** Another preset of the pool (not `number`) with the name, or undefined. */
-export function nameHolder(names: Map<number, PoolName>, number: number, name: string): ({ no: number } & PoolName) | undefined {
-  for (const [no, e] of names) if (no !== number && sameName(e.name, name)) return { no, ...e };
-  return undefined;
+export function readPoolNames(bridge: Gma3Bridge, pool: number, t: number, cache: PoolNames): Promise<Map<number, PoolName>> {
+  return readNames(bridge, pool, `Preset ${pool}`, { one: `a preset of pool ${pool}`, all: `preset pool ${pool}`, plural: "presets" }, t, cache);
 }
 
 const presetLabel = (p: PresetRead) => (p.pool?.no !== undefined && p.no !== undefined ? `Preset ${p.pool.no}.${p.no}` : p.addr ?? p.ref);
@@ -933,13 +892,7 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs, share
     ]);
     const steps = [...inspect.steps, ...main.steps];
     const stored = main.steps[0]?.status === "succeeded";
-    // The pool now holds this preset under the name it was left with: later items of the call check against it.
     const setRead = (main.steps[1]?.detail as { readBack?: unknown } | undefined)?.readBack;
-    const recordName = (left: unknown) => {
-      const cached = names.get(id.pool);
-      const n = typeof left === "string" && left.trim() ? left.trim() : undefined;
-      if (cached && n) cached.set(id.number, { name: n, thisCall: true });
-    };
     let readName: unknown;
     let verification: Verification = notRequested();
     let resulting: unknown = null;
@@ -982,17 +935,9 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs, share
       else if (ok) verification = { status: "matched", checked };
       else verification = unavailable(`the preset or the preferences could not be read back: ${[...steps].reverse().find((s) => s.status !== "succeeded")?.error ?? "unknown"}`, ref);
     }
-    // Later items of the call check against the name the preset was left with (review of #108): the read-back name;
-    // else the requested name after a confirmed name write, or the console's read-back of a write that did not take
-    // it; else an existing preset stored without a name keeps its own. Any other store (an unnamed create gets a
-    // default name such as "Preset 102", a failed or unknown store or name write) may have changed a name nobody
-    // read, so the pool is read again by the next item.
-    const storeStatus = main.steps[0]?.status;
+    // Later items of the call check against the name the preset was left with (review of #108; poolnames.ts).
     const nameStep = main.steps[1];
-    if (typeof readName === "string" && readName.trim()) recordName(readName);
-    else if (storeStatus === "succeeded" && name !== undefined && nameStep?.status === "succeeded") recordName(setRead ?? name);
-    else if (storeStatus === "succeeded" && name !== undefined && typeof setRead === "string") recordName(setRead);
-    else if (!(storeStatus === "succeeded" && name === undefined && cur)) names.delete(id.pool);
+    recordLeftName(names, id.pool, id.number, { store: main.steps[0]?.status, requested: name, write: name !== undefined && nameStep ? { status: nameStep.status, read: setRead } : undefined, readBack: readName, existed: !!cur });
     return buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, resulting } });
   };
   return { preview, body };

@@ -67,6 +67,7 @@ import {
 } from "../results.js";
 import { ValidationError, Validator, describe, finiteNumber, objectName, objectNumber } from "../validate.js";
 import { dataPoolShape, inDataPool } from "./datapool.js";
+import { ON_NAME_TAKEN, checkPoolName, nameOrSuffixed, recordLeftName, type NamePool, type OnNameTaken, type PoolNameCache } from "./poolnames.js";
 
 // ---------------------------------------------------------------------------
 // Fixture ids and grid items
@@ -456,6 +457,7 @@ export async function selectionGrid(ctx: ToolContext, raw: { group?: number }): 
 interface StoreGroupArgs {
   group: number;
   name?: string;
+  on_name_taken?: OnNameTaken;
   items?: unknown;
   arrangement?: Arrangement;
   overwrite?: boolean;
@@ -509,9 +511,18 @@ function setStep(ctx: ToolContext, name: string, ref: string, property: string, 
  * SU-19: resolve {cells_of} entries (a fixture's cells in DMX or cell-number order) through the console, then store.
  * The result says what each entry stood for.
  */
-export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise<OperationResult> {
+/**
+ * The group pool's names (#102): no probe shows whether the console renames a duplicate group name, but two groups
+ * under one name make every lookup by name ambiguous, so a taken name is refused before the store all the same.
+ */
+export const GROUP_NAMES: NamePool = { ref: "DataPool.Groups", noun: "group", plural: "groups", label: (no) => `Group ${no}` };
+/** The MAtricks pool's names (#102), as for groups: whether the console renames a duplicate is not verified. */
+export const MATRICKS_NAMES: NamePool = { ref: "DataPool.MAtricks", noun: "MAtricks", plural: "MAtricks", label: (no) => `MAtricks ${no}` };
+
+/** `shared.names` is the call's pool-name cache when several groups are stored in one call (#102). */
+export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs, shared: { names?: PoolNameCache<string> } = {}): Promise<OperationResult> {
   const hasCellsOf = (x: unknown): boolean => (Array.isArray(x) ? x.some(hasCellsOf) : !!x && typeof x === "object" && ("cells_of" in x || Object.values(x).some((v) => Array.isArray(v) && hasCellsOf(v))));
-  if (!raw.arrangement || !hasCellsOf(raw.arrangement)) return storeGroupResolved(ctx, raw);
+  if (!raw.arrangement || !hasCellsOf(raw.arrangement)) return storeGroupResolved(ctx, raw, shared);
   const resolveAndStore = async (c: ToolContext): Promise<OperationResult> => {
     let resolved: Awaited<ReturnType<typeof resolveCellLists>>;
     try {
@@ -519,7 +530,7 @@ export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise
     } catch (err) {
       return validationFailure("store_group", { group: raw.group }, [`cells_of: ${err instanceof Error ? err.message : String(err)}`]);
     }
-    const result = await storeGroupResolved(c, { ...raw, arrangement: resolved.arrangement as Arrangement });
+    const result = await storeGroupResolved(c, { ...raw, arrangement: resolved.arrangement as Arrangement }, shared);
     return { ...result, cellLists: resolved.resolved };
   };
   // A preview only reads. A store reads the cell order in the same lock span as its writes, so a queued retype or
@@ -529,11 +540,14 @@ export async function storeGroup(ctx: ToolContext, raw: StoreGroupArgs): Promise
   return ctx.mutations.run(() => resolveAndStore({ ...ctx, mutations: new HeldLock() }));
 }
 
-async function storeGroupResolved(ctx: ToolContext, raw: StoreGroupArgs): Promise<OperationResult> {
+async function storeGroupResolved(ctx: ToolContext, raw: StoreGroupArgs, shared: { names?: PoolNameCache<string> }): Promise<OperationResult> {
   const op = "store_group";
   const v = new Validator();
   const group = v.check(() => objectNumber("group", raw.group, { max: 9999 }));
   const name = v.check(() => objectName("name", raw.name, { optional: true }));
+  const onNameTaken = raw.on_name_taken ?? "refuse";
+  if (!(ON_NAME_TAKEN as readonly string[]).includes(onNameTaken)) v.fail(`on_name_taken must be ${ON_NAME_TAKEN.join(" or ")}`);
+  const allowSuffix = onNameTaken === "allow_suffix";
   let items: GridItem[] | undefined;
   if ((raw.items === undefined) === (raw.arrangement === undefined)) v.fail("give exactly one of items (explicit coordinates) or arrangement (row, rectangle, mirror or rows helper)");
   else items = v.check(() => (raw.items !== undefined ? explicitItems(raw.items) : expandArrangement(raw.arrangement!)));
@@ -564,6 +578,7 @@ async function storeGroupResolved(ctx: ToolContext, raw: StoreGroupArgs): Promis
   if (analysis.sharedCells.length) warnings.push(`shared cells kept (allow_shared_cells): ${analysis.sharedCells.map((c) => c.cell).join(", ")}`);
   if (!preserve && (analysis.gaps > 0 || analysis.offsetFromOrigin)) warnings.push("preserve_grid_positions is false: a recall at the grid origin removes the gaps and the offset from 0/0/0, so only the fixtures are checked on recall");
   const plan = { items, gaps: analysis.gaps, offsetFromOrigin: analysis.offsetFromOrigin, bounds: analysis.bounds, sharedCells: analysis.sharedCells, preserveGridPositions: preserve, note: "x/y/z are selection-grid coordinates, not physical stage positions" };
+  const names = shared.names ?? new Map();
 
   const body = async (): Promise<OperationResult> => {
     let existing: { name?: string; locked: boolean } | null = null;
@@ -591,6 +606,17 @@ async function storeGroupResolved(ctx: ToolContext, raw: StoreGroupArgs): Promis
           }
         },
       },
+      ...(name !== undefined
+        ? [{
+            name: "check_name",
+            run: async (): Promise<StepResult> => {
+              // #102: a name another group has is refused before the store; renaming a group to its own name is none.
+              const own = (existing as { name?: string } | null)?.name;
+              if (typeof own === "string" && own.trim() === name) return asRead({ name: "check_name", status: "succeeded", op: "children", detail: { unchanged: true } });
+              return asRead({ name: "check_name", op: "children", ...(await checkPoolName({ bridge, t, pool: GROUP_NAMES, cache: names, number: group, name, onNameTaken, warnings })) });
+            },
+          }]
+        : []),
       {
         name: "check_fixtures",
         run: async () => {
@@ -645,10 +671,15 @@ async function storeGroupResolved(ctx: ToolContext, raw: StoreGroupArgs): Promis
       { name: "check_selection", run: selectionCheck("check_selection", bridge, items, true, t, addrs) },
       { name: "store", run: () => commandStep(bridge, "store", storeCmd, t) },
       { name: "set_preserve_grid_positions", run: setStep(ctx, "set_preserve_grid_positions", ref, "PreserveGridPositions", preserve ? "Yes" : "No", (got) => yesNo(got) === preserve) },
-      ...(name !== undefined ? [{ name: "set_name", run: setStep(ctx, "set_name", ref, "Name", name, (got) => String(got).trim() === name) }] : []),
+      ...(name !== undefined ? [{ name: "set_name", run: setStep(ctx, "set_name", ref, "Name", name, (got) => String(got).trim() === name || (allowSuffix && nameOrSuffixed(String(got), name))) }] : []),
     ]);
     const steps = [...inspect.steps, ...main.steps];
     const stored = main.steps.find((s) => s.name === "store")?.status === "succeeded";
+    const nameStep = main.steps.find((s) => s.name === "set_name");
+    const nameRead = (nameStep?.detail as { value?: unknown; readBack?: unknown } | undefined)?.value ?? (nameStep?.detail as { readBack?: unknown } | undefined)?.readBack;
+    const suffixedName = (got: unknown) => name !== undefined && typeof got === "string" && got.trim() !== name && nameOrSuffixed(got, name);
+    if (allowSuffix && nameStep?.status === "succeeded" && suffixedName(nameRead)) warnings.push(`the console stored the name as ${JSON.stringify(String(nameRead).trim())}: another group has ${JSON.stringify(name)} (on_name_taken "allow_suffix")`);
+    let readName: unknown;
 
     let verification: Verification = notRequested();
     let resulting: unknown = null;
@@ -660,7 +691,8 @@ async function storeGroupResolved(ctx: ToolContext, raw: StoreGroupArgs): Promis
         resulting = { name: res.name, preserveGridPositions: yesNo(res.preserveGridPositions), count: res.count, items: presentItems(res.items) };
         const diff = compareGrid(items, res.items, true, addrs);
         if (yesNo(res.preserveGridPositions) !== preserve) diff.push(`PreserveGridPositions reads ${JSON.stringify(res.preserveGridPositions)}`);
-        if (name !== undefined && String(res.name ?? "").trim() !== name) diff.push(`name reads ${JSON.stringify(res.name)}`);
+        readName = res.name;
+        if (name !== undefined && String(res.name ?? "").trim() !== name && !(allowSuffix && suffixedName(res.name))) diff.push(`name reads ${JSON.stringify(res.name)}`);
         steps.push(asRead({ name: "read_back", status: "succeeded", op: "group.read", detail: { count: res.count } }));
         checks.push(...diff.map((d) => `stored: ${d}`));
         readOk = true;
@@ -692,6 +724,8 @@ async function storeGroupResolved(ctx: ToolContext, raw: StoreGroupArgs): Promis
     const cleanupFailed = cleanup.filter((s) => s.status !== "succeeded");
     if (cleanupFailed.length) warnings.push(`cleanup did not complete (${cleanupFailed.map((s) => `${s.command}: ${s.error}`).join("; ")}); fixtures may still be selected`);
     if (!stored && main.steps.find((s) => s.name === "check_selection")?.status === "failed") warnings.push("nothing was stored: the selection built on the console did not match the plan");
+    // Later groups of the call check against the name this one was left with (#102; poolnames.ts).
+    recordLeftName(names, GROUP_NAMES.ref, group, { store: main.steps.find((s) => s.name === "store")?.status, requested: name, write: nameStep ? { status: nameStep.status, read: nameRead } : undefined, readBack: readName, existed: ex !== null });
     const result = buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, resulting } });
     return result;
   };
@@ -829,6 +863,7 @@ interface AxisSpec {
 interface ConfigureMatricksArgs {
   matricks: number;
   name?: string;
+  on_name_taken?: OnNameTaken;
   create?: boolean;
   x?: AxisSpec;
   y?: AxisSpec;
@@ -907,6 +942,9 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
   const v = new Validator();
   const matricks = v.check(() => objectNumber("matricks", raw.matricks, { max: 9999 }));
   const name = v.check(() => objectName("name", raw.name, { optional: true }));
+  const onNameTaken = raw.on_name_taken ?? "refuse";
+  if (!(ON_NAME_TAKEN as readonly string[]).includes(onNameTaken)) v.fail(`on_name_taken must be ${ON_NAME_TAKEN.join(" or ")}`);
+  const allowSuffix = onNameTaken === "allow_suffix";
   const wanted = v.check(() => matricksWanted({ x: raw.x, y: raw.y, z: raw.z })) ?? [];
   for (const k of ["create", "reset_unspecified", "preview", "verify"] as const) if (raw[k] !== undefined && typeof raw[k] !== "boolean") v.fail(`${k} must be true or false`);
   const preview = raw.preview === true;
@@ -922,6 +960,7 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
 
   const body = async (): Promise<OperationResult> => {
     let current: Record<string, unknown> | null = null;
+    const warnings: string[] = [];
     const inspect = await runSteps([
       {
         name: "read_matricks",
@@ -945,9 +984,20 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
           }
         },
       },
+      ...(name !== undefined
+        ? [{
+            name: "check_name",
+            run: async (): Promise<StepResult> => {
+              // #102: a name another MAtricks has is refused before anything is sent; keeping its own name is none.
+              const own = (current as Record<string, unknown> | null)?.Name;
+              if (typeof own === "string" && own.trim() === name) return asRead({ name: "check_name", status: "succeeded", op: "children", detail: { unchanged: true } });
+              return asRead({ name: "check_name", op: "children", ...(await checkPoolName({ bridge, t, pool: MATRICKS_NAMES, cache: new Map(), number: matricks, name, onNameTaken, warnings })) });
+            },
+          }]
+        : []),
     ]);
     if (inspect.outcome !== "succeeded") {
-      return buildResult({ operation: op, target, steps: inspect.steps, summary: `${op} was not performed; nothing was sent: ${inspect.steps[0]?.error ?? "inspection failed"}` });
+      return buildResult({ operation: op, target, steps: inspect.steps, summary: `${op} was not performed; nothing was sent: ${inspect.steps.find((s) => s.status !== "succeeded")?.error ?? "inspection failed"}`, warnings });
     }
     const cur = current as Record<string, unknown> | null;
     const creating = cur === null;
@@ -987,7 +1037,7 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
       }
       if (name !== undefined) {
         if (values && String(values.Name ?? "").trim() === name) unchanged.push("name");
-        else writes.push({ key: "name", property: "Name", from: values?.Name ?? null, to: name, expect: (got) => String(got).trim() === name });
+        else writes.push({ key: "name", property: "Name", from: values?.Name ?? null, to: name, expect: (got) => String(got).trim() === name || (allowSuffix && nameOrSuffixed(String(got), name)) });
       }
       writes.sort((a, b) => Number(WRITE_FIRST.has(b.property)) - Number(WRITE_FIRST.has(a.property)));
       return { writes, unchanged };
@@ -1002,7 +1052,7 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
       ? { create: true, settings: wanted.map((w) => ({ key: w.key, property: w.property, to: sendValue(w) })), resetsEverythingElse: true, note: "a new MAtricks is created with Store MAtricks, which copies the programmer's selection MAtricks; the tool then reads the new object and writes every property that differs from the request (the selection MAtricks itself is not changed)" }
       : { create: false, ...describePlan(first) };
     if (preview || (!creating && first.writes.length === 0)) {
-      return buildResult({ operation: op, target, steps: inspect.steps, summary: preview ? `Preview only; nothing was sent. ${creating ? `${ref} would be created` : `${first.writes.length} propert${first.writes.length === 1 ? "y" : "ies"} of ${ref} would change`}.` : `Every requested setting is already set on ${ref}; nothing was sent.`, extra: { intended, preview, noop: !preview } });
+      return buildResult({ operation: op, target, steps: inspect.steps, warnings, summary: preview ? `Preview only; nothing was sent. ${creating ? `${ref} would be created` : `${first.writes.length} propert${first.writes.length === 1 ? "y" : "ies"} of ${ref} would change`}.` : `Every requested setting is already set on ${ref}; nothing was sent.`, extra: { intended, preview, noop: !preview } });
     }
     const main = { steps: [] as StepResult[] };
     let writes = first.writes;
@@ -1048,7 +1098,10 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
           for (const w of full) if (!near(matricksValue(w.kind, f[w.property]), w.value)) bad.push(`${w.property}: expected ${sendValue(w)}, read ${JSON.stringify(f[w.property] ?? null)}`);
           // A property missing from the read is unverified, never taken as its default ("" for SpeedMasterOverride).
           if (reset) for (const [p, d] of Object.entries(MATRICKS_OTHER_DEFAULTS)) if (f[p] === undefined || f[p] === null || String(f[p]).trim().toLowerCase() !== d.toLowerCase()) bad.push(`${p}: expected ${JSON.stringify(d)}, read ${JSON.stringify(f[p] ?? null)}`);
-          if (name !== undefined && String(f.Name ?? "").trim() !== name) bad.push(`Name: expected ${JSON.stringify(name)}, read ${JSON.stringify(f.Name ?? null)}`);
+          if (name !== undefined && String(f.Name ?? "").trim() !== name) {
+            if (allowSuffix && nameOrSuffixed(String(f.Name ?? ""), name)) warnings.push(`the console stored the name as ${JSON.stringify(String(f.Name).trim())}: another MAtricks has ${JSON.stringify(name)} (on_name_taken "allow_suffix")`);
+            else bad.push(`Name: expected ${JSON.stringify(name)}, read ${JSON.stringify(f.Name ?? null)}`);
+          }
           const checked = `${reset ? "every MAtricks property" : "the requested settings"} of ${ref}`;
           verification = bad.length ? { status: "mismatched", checked, detail: bad.slice(0, 10).join("; ") } : { status: "matched", checked };
         } else verification = unavailable(`${ref} could not be read back`, ref);
@@ -1057,7 +1110,7 @@ export async function configureMatricks(ctx: ToolContext, raw: ConfigureMatricks
         verification = unavailable(err instanceof Error ? err.message : String(err), ref);
       }
     }
-    return buildResult({ operation: op, target, steps, verification, extra: { intended, resulting } });
+    return buildResult({ operation: op, target, steps, verification, warnings, extra: { intended, resulting } });
   };
   return preview ? body() : ctx.mutations.run(body);
 }
@@ -1156,6 +1209,7 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
         "Create or overwrite Group <n> from a fixture list with explicit selection-grid cells. The cells are the order: the console stores a group in patch order and MAtricks, phasers and At a Thru b distribute along the grid, not along the list. Give either items ([{fixture, x, y, z}]) or an arrangement helper that expands into such a list: " +
         "row (along one axis), rectangle (row by row, optional serpentine), mirror (left and right halves listed outside-in, right[i] mirrors left[i], optional centre gap), rows (one row per list, each spread over width cells). preview: true returns the expanded list, bounds, gaps and shared cells without sending anything. " +
         "Rules: duplicate fixtures are refused (the console silently ignores a second selection); shared cells are refused unless allow_shared_cells: true; gaps and offsets are kept (preserve_grid_positions, default true; false lets a recall at the origin compact them); a fixture and its own cells (501, 501.1) are separate items; missing fixtures are refused. An existing group needs overwrite: true (its name is kept unless name is given); a locked group is refused. " +
+        "A name another group already has is refused before anything is sent, naming the holder (the pool's names are read once per call, compared case-insensitively; a duplicate makes lookups by name ambiguous, and whether the console would store \"<name>#2\" is not verified for groups); on_name_taken: refuse (default) | allow_suffix (store anyway; a \"<name>#<n>\" read-back is a warning, not a mismatch). In the batch form a name an earlier group of the call was stored under counts as taken. " +
         "Requires exclusive: true (not for preview): the tool clears the console's fixture selection (programmer values are kept), selects each fixture after its own 'Grid x/y/z' command, checks that the selection is exactly the plan before 'Store Group', sets PreserveGridPositions and the name, " +
         "then (verify, default true) reads the stored group back and recalls it at Grid 0/0/0 to check order and cells (a one-fixture group is recalled at the cursor, so its recall checks the fixture and the read-back its cell), and finally clears the selection and returns the cursor to 0/0/0. Grid cells are not physical stage positions. Needs bridge 0.21.0. " +
         "rows: rows of different lengths spread over one width (align spread, start or center); ranges run in their own direction (\"402.36 Thru 402.1\"). " +
@@ -1164,6 +1218,7 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
         ...dataPoolShape,
         group: z.number().optional().describe("Group number (1-9999). Required unless groups is given."),
         name: z.string().optional().describe("Group name (a new group is otherwise named by the console)."),
+        on_name_taken: z.enum(ON_NAME_TAKEN).optional().describe('When another group has the name: refuse (default, nothing is sent) or allow_suffix (store anyway).'),
         items: z.array(z.object({ fixture: fixtureEntry.describe('Fixture id: 401 or "501.1".'), x: z.number(), y: z.number(), z: z.number().optional() })).optional().describe("Explicit list; each fixture once. The cells define the order distributions follow (the console stores the group in patch order)."),
         arrangement: arrangementSchema.describe("Helper that expands into the explicit list (see preview)."),
         overwrite: z.boolean().optional().describe("Replace an existing group (default false: refuse)."),
@@ -1173,27 +1228,28 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
         preview: z.boolean().optional().describe("Only expand, analyse and check; send nothing (default false)."),
         verify: z.boolean().optional().describe("Read back and recall-check the stored group (default true)."),
         groups: z
-          .array(z.object({ group: z.number(), name: z.string().optional(), items: z.array(z.object({ fixture: fixtureEntry, x: z.number(), y: z.number(), z: z.number().optional() })).optional(), arrangement: arrangementSchema, overwrite: z.boolean().optional(), preserve_grid_positions: z.boolean().optional(), allow_shared_cells: z.boolean().optional() }))
+          .array(z.object({ group: z.number(), name: z.string().optional(), on_name_taken: z.enum(ON_NAME_TAKEN).optional(), items: z.array(z.object({ fixture: fixtureEntry, x: z.number(), y: z.number(), z: z.number().optional() })).optional(), arrangement: arrangementSchema, overwrite: z.boolean().optional(), preserve_grid_positions: z.boolean().optional(), allow_shared_cells: z.boolean().optional() }))
           .optional()
           .describe("Batch form: several groups, each {group, name, items | arrangement, overwrite, ...}, stored one after the other."),
         ...batchOptionShape,
       },
     },
     async (args) =>
-      operation(() =>
-        (args as Record<string, unknown>).groups !== undefined
-          ? runBatchCall(args as Record<string, unknown>, {
-              ctx: inDataPool(ctx, args),
-              operation: "store_group",
-              listKey: "groups",
-              identityKeys: ["group", "items", "arrangement", "name"],
-              label: (it) => `Group ${String(it.group)}`,
-              key: (it) => `Group ${String(it.group)}`,
-              check: (items) => duplicates(items.map((it) => String(it.group))).map((g) => `Group ${g} appears more than once in groups`),
-              run: (it, c) => storeGroup(c, it as unknown as StoreGroupArgs),
-            })
-          : storeGroup(inDataPool(ctx, args), args as StoreGroupArgs),
-      ),
+      operation(() => {
+        if ((args as Record<string, unknown>).groups === undefined) return storeGroup(inDataPool(ctx, args), args as StoreGroupArgs);
+        // The group pool's names are read once for the whole call; a group stored earlier in the call holds its name (#102).
+        const names: PoolNameCache<string> = new Map();
+        return runBatchCall(args as Record<string, unknown>, {
+          ctx: inDataPool(ctx, args),
+          operation: "store_group",
+          listKey: "groups",
+          identityKeys: ["group", "items", "arrangement", "name"],
+          label: (it) => `Group ${String(it.group)}`,
+          key: (it) => `Group ${String(it.group)}`,
+          check: (items) => duplicates(items.map((it) => String(it.group))).map((g) => `Group ${g} appears more than once in groups`),
+          run: (it, c) => storeGroup(c, it as unknown as StoreGroupArgs, { names }),
+        });
+      }),
   );
 
   server.registerTool(
@@ -1220,10 +1276,11 @@ export const registerGroupTools: RegisterTools = (server, ctx) => {
       description:
         "Set MAtricks <n> per axis (x, y, z): wings, blocks, groups, width, shift, shuffle (null or 0 = None) and fade/delay (seconds), phase (degrees), speed (BPM) distributions as {from, to}. With wings, a distribution runs from the outer edges (from) to the centre (to), so a centre-out delay is wings 2 with delay {from: <outer>, to: 0}. " +
         "create: true creates a missing object with 'Store MAtricks <n>' and then writes EVERY property (Store copies the programmer's selection MAtricks), so the new object holds exactly the request; reset_unspecified: true does the same for an existing one. Otherwise only the given settings change; values already set are not sent. " +
-        "Each value is one 'set' whose reply must read back the requested value (the console silently ignores values it does not accept); the first failure stops the rest. A locked MAtricks is refused. Does not touch the selection or the programmer; apply it with 'Recall MAtricks <n>'. preview: true reports the planned changes.",
+        "Each value is one 'set' whose reply must read back the requested value (the console silently ignores values it does not accept); the first failure stops the rest. A locked MAtricks is refused, and so is a name another MAtricks has, before anything is sent, naming the holder (a duplicate makes lookups by name ambiguous; whether the console would store \"<name>#2\" is not verified for MAtricks): on_name_taken refuse (default) | allow_suffix. Does not touch the selection or the programmer; apply it with 'Recall MAtricks <n>'. preview: true reports the planned changes.",
       inputSchema: {
         matricks: z.number().describe("MAtricks pool number (1-9999)."),
         name: z.string().optional().describe("MAtricks name."),
+        on_name_taken: z.enum(ON_NAME_TAKEN).optional().describe("When another MAtricks has the name: refuse (default, nothing is sent) or allow_suffix (write it anyway)."),
         create: z.boolean().optional().describe("Create the object when it does not exist (default false: refuse)."),
         x: axisSchema.describe("X-axis settings."),
         y: axisSchema.describe("Y-axis settings."),

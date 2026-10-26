@@ -372,8 +372,12 @@ Two read-only ops (not guarded, usable with Lua disabled):
 
 A named store (`gma3_store_preset`, `gma3_build_phaser`) also lists the target pool with the base `children` op
 (`ref: "Preset <pool>"`, fields `No` and `Name`), once per pool and call: the console keeps names unique within a pool
-and stores a taken name as `"<name>#2"`, so a name another preset has is refused before the store (#102). No bridge
-change.
+and stores a taken name as `"<name>#2"`, so a name another preset has is refused before the store (#102).
+`gma3_store_group`, `gma3_configure_matricks`, `gma3_store_macro` and `gma3_store_cues` (`sequence_name`) list
+`DataPool.Groups`, `DataPool.MAtricks`, `DataPool.Macros` and `DataPool.Sequences` the same way. For those pools the
+console's handling of a duplicate name is not verified; a duplicate is refused anyway, because it makes every lookup by
+name ambiguous. A listing with `enumerationError`, or an item with `No` or `Name` in `fieldErrors` (bridge 0.47.0),
+counts as unreadable, never as a pool without that name. No bridge change.
 
 Tools: [tools/presets.md](tools/presets.md).
 
