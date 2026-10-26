@@ -72,6 +72,7 @@ liveTest("SU-04 position tools: line in feet, renormalized rotation, mesh mirror
       unit: "ft",
       layouts: [{ kind: "line", fids: FIDS, from: { x: -5, y: -10, z: 7 }, to: { x: 5, y: -10, z: 7 }, rotation: { x: 30, y: 100, z: 20 } }],
       placements: [],
+      detail: true,
     }),
     "line in feet with a rotation the console renormalizes",
   );
@@ -80,11 +81,11 @@ liveTest("SU-04 position tools: line in feet, renormalized rotation, mesh mirror
   assert.ok(Math.abs(a.rotation.y - 80) < 0.01, `the console renormalized Y to 80 (got ${JSON.stringify(a.rotation)})`);
 
   ok(await call("gma3_place_fixtures", { placements: [{ fid: FIDS[0], mirror_mesh: true }] }), "mirror_mesh on");
-  const mirrored = ok(await call("gma3_place_fixtures", { layouts: [{ kind: "mirror", pairs: [[FIDS[0], FIDS[1]]] }] }), "mirror pair");
+  const mirrored = ok(await call("gma3_place_fixtures", { layouts: [{ kind: "mirror", pairs: [[FIDS[0], FIDS[1]]] }], detail: true }), "mirror pair");
   const m = mirrored.fixtures.find((f: any) => f.fid === FIDS[1]).after;
   assert.ok(Math.abs(m.position.x - 1.524) < 1e-4 && Math.abs(m.position.y + 3.048) < 1e-4, `mirrored to +5 ft (got ${JSON.stringify(m.position)})`);
 
-  const arc = ok(await call("gma3_place_fixtures", { layouts: [{ kind: "arc", fids: FIDS, center: { x: 0, y: 2, z: 4 }, radius: 3, start_deg: 0, end_deg: 90, follow: true }] }), "arc");
+  const arc = ok(await call("gma3_place_fixtures", { layouts: [{ kind: "arc", fids: FIDS, center: { x: 0, y: 2, z: 4 }, radius: 3, start_deg: 0, end_deg: 90, follow: true }], detail: true }), "arc");
   const arcEnd = arc.fixtures.find((f: any) => f.fid === FIDS[1]).after;
   assert.ok(Math.abs(arcEnd.position.x) < 1e-4 && Math.abs(arcEnd.position.y - 5) < 1e-4, `the arc's end is upstage of the centre (got ${JSON.stringify(arcEnd.position)})`);
 

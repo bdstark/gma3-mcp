@@ -94,7 +94,7 @@ const toolContext: ToolContext = {
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
 function text(value: unknown): ToolResult {
-  const t = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const t = typeof value === "string" ? value : JSON.stringify(value);
   return { content: [{ type: "text", text: t }] };
 }
 
