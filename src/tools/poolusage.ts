@@ -322,35 +322,62 @@ function assigned(v: unknown): { class?: string; name?: string } | "empty" | "un
 }
 
 /** The executors of one page (by reference or address): assigned ones, and those without an object. */
+/**
+ * The executor numbers an assigned executor's Width covers after its own: the following numbers of its row (KB-21,
+ * docs/probes/kb-21-executors-macos-2.5.1.md: 180 with Width 2 covers 181, which reads as a Proxy with no Object; the
+ * feedback module's layout rule). A missing Width is 1; anything but a positive integer is null (coverage unknown).
+ */
+function coveredBy(n: number, width: unknown): number[] | null {
+  if (width === undefined || width === null || width === "") return [];
+  const w = leadingInt(width);
+  if (w === undefined || w < 1 || (typeof width === "number" && !Number.isInteger(width))) return null;
+  const row = EXECUTOR_ROWS.find((r) => n >= r.first && n <= r.last);
+  const last = Math.min(n + w - 1, row ? row.last : n + w - 1);
+  return numbersFrom(n + 1, last);
+}
+
+const numbersFrom = (from: number, to: number) => (to < from ? [] : Array.from({ length: to - from + 1 }, (_, i) => from + i));
+
 async function readExecutors(bridge: Gma3Bridge, ref: string, t: number) {
-  const read = await readAllChildren(bridge, ref, { fields: ["No", "Object"], asText: false }, t);
+  const read = await readAllChildren(bridge, ref, { fields: ["No", "Object", "Width"], asText: false }, t);
   const { byNo, unnumbered } = numbered(read.items, fieldNo);
   const used: Array<[number, string | null, string | null]> = [];
-  const empty: number[] = [];
+  const unassigned: number[] = [];
   const unknown: number[] = [];
+  const covered = new Set<number>();
+  const badWidth: number[] = [];
   for (const [n, it] of byNo) {
     const obj = assigned(it.fields?.Object);
-    if (obj === "empty") empty.push(n);
+    if (obj === "empty") unassigned.push(n);
     else if (obj === "unknown") unknown.push(n);
-    else used.push([n, obj.class ?? null, obj.name ?? null]);
+    else {
+      used.push([n, obj.class ?? null, obj.name ?? null]);
+      const span = coveredBy(n, it.fields?.Width);
+      if (span === null) badWidth.push(n);
+      else for (const c of span) covered.add(c);
+    }
   }
+  // A covered number (a Proxy without an Object, when listed at all) belongs to the wider executor: not free, not unassigned.
+  const empty = unassigned.filter((n) => !covered.has(n));
   const problems = [
     ...(unnumbered ? [`${unnumbered} executor(s) without a number`] : []),
     ...(unknown.length ? [`the assignment of executor(s) ${compressRanges(unknown)} could not be read`] : []),
+    ...(badWidth.length ? [`the Width of executor(s) ${compressRanges(badWidth)} could not be read, so the numbers they cover are unknown`] : []),
   ];
   if (problems.length) Object.assign(read, { complete: false, reason: read.complete ? problems.join("; ") : `${read.reason}; ${problems.join("; ")}` });
-  return { read, used, empty, unknown };
+  return { read, used, empty, unknown, covered: [...covered].sort((a, b) => a - b) };
 }
 
 const executorFree = (used: number[], size: number, from?: number) => firstFreeExecutors(used, size, from ?? 101);
 
 async function readPage(bridge: Gma3Bridge, spec: Extract<Spec, { kind: "page" }>, opts: Options, t: number): Promise<Row> {
-  const { read, used, empty, unknown } = await readExecutors(bridge, spec.ref, t);
+  const { read, used, empty, unknown, covered } = await readExecutors(bridge, spec.ref, t);
   const nos = used.map(([n]) => n);
   const row: Row = { pool: spec.label, stored: used.length, used: compressRanges(nos), executors: used };
+  if (covered.length) row.covered = compressRanges(covered);
   if (empty.length) row.unassigned = compressRanges(empty);
   if (unknown.length) row.unreadable = compressRanges(unknown);
-  return finish(row, nos, read, opts, executorFree);
+  return finish(row, [...nos, ...covered], read, opts, executorFree);
 }
 
 /**
@@ -432,7 +459,7 @@ const DESCRIPTION =
   "Read-only: which numbers a show already uses, per pool, before you store into it. For each pool: stored (the number of stored objects), used (their numbers as ranges, \"1-11, 5001-5534\"), " +
   "with names: true [no, name] pairs, and with free: {size, from?} the first free block of that size (\"21-40\"; null when there is none up to 9999 or the read is incomplete). " +
   'Pools: DataPool pools by name ("Groups", "Sequences", "Macros", "MAtricks", "Timecodes", "Layouts", ...); a preset pool as "Preset 4" or in preset_pools (stored presets, not the pool\'s 1000 slots); "PresetPools" (every preset pool as [no, name, stored, used]); ' +
-  '"Page 2" (its executors with an assigned object as [no, class, name]; an assignment that cannot be read is listed as unreadable and makes the page incomplete; free searches one row: 101-198, 201-298, 301-390, 401-490, from 101 by default); "Pages" (every page as [no, name, executors used, used]). ' +
+  '"Page 2" (its executors with an assigned object as [no, class, name]; covered: the numbers a wider executor (Width > 1) spans, never free; an assignment that cannot be read is listed as unreadable and makes the page incomplete; free searches one row: 101-198, 201-298, 301-390, 401-490, from 101 by default); "Pages" (every page as [no, name, executors used, used]). ' +
   "Every pool is read to its end page by page; complete: false with reason (keeping what was read) when a read fails, the pool changes during the read or an object has no number; the call is an error only when no pool could be read at all. Ranges such as \"Page 1.101 Thru 1.115\" are not accepted (executor ranges can hang onPC). " +
   "Use this instead of gma3_objects \"Macro Thru\" or a Lua walk of the pools.";
 

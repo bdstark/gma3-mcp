@@ -275,7 +275,7 @@ test("a page lists its used executors with the assigned object; free stays insid
   assert.equal(p.free, "101-110");
   assert.deepEqual(childReads(), [{ ref: "Page 1", offset: 0, limit: PAGE_SIZE }]);
   const req = h.fake.requests.find((r) => r.op === "children")!;
-  assert.deepEqual(req.args.fields, ["No", "Object"]);
+  assert.deepEqual(req.args.fields, ["No", "Object", "Width"]);
   assert.equal(req.args.asText, false, "handles keep their class");
 
   const from = await usage({ pools: ["Page 1"], free: { size: 12, from: 180 } });
@@ -305,6 +305,29 @@ test("an executor whose assignment reads as an invalid handle is not free and ma
   assert.equal(all.pool("Pages").complete, false);
   assert.match(all.pool("Pages").reason, /page 1: the assignment of executor\(s\) 102 could not be read/);
   assert.equal(all.pool("Pages").free, null);
+});
+
+test("a wider executor's covered numbers are neither unassigned nor free (KB-21: 180 with Width 2 covers 181)", async () => {
+  const wide = (no: number, width: unknown): Kid => ({ ...exec(no, { class: "Sequence", name: `Wide ${no}` }), fields: { No: no, Width: width, Object: { name: `Wide ${no}`, class: "Sequence", addr: `1.7.${no}`, index: 1 } } });
+  // 181 is listed as the covered Proxy without an Object; 186-187 (covered by 185) are not listed at all.
+  const proxy = (no: number): Kid => ({ index: no, name: `Proxy ${no}`, class: "Proxy", fields: { No: no, Object: null } });
+  show.set("Page 1", [wide(180, 2), proxy(181), exec(182), wide(185, 3), wide(197, 4)]);
+  const { result, pool } = await usage({ pools: ["Page 1"], free: { size: 1, from: 181 } });
+  assert.equal(result.complete, true);
+  const p = pool("Page 1");
+  assert.equal(p.used, "180, 185, 197");
+  assert.equal(p.covered, "181, 186-187, 198", "a span stops at the row's end");
+  assert.equal(p.unassigned, "182");
+  assert.equal(p.free, "182", "181 belongs to 180");
+  assert.equal((await usage({ pools: ["Page 1"], free: { size: 2, from: 181 } })).pool("Page 1").free, "182-183");
+  assert.equal((await usage({ pools: ["Page 1"], free: { size: 3, from: 186 } })).pool("Page 1").free, "188-190");
+
+  // An unreadable Width leaves the covered numbers unknown: incomplete, no free block.
+  show.set("Page 1", [wide(180, "wide"), exec(182)]);
+  const bad = await usage({ pools: ["Page 1"], free: { size: 1, from: 181 } });
+  assert.equal(bad.pool("Page 1").complete, false);
+  assert.match(bad.pool("Page 1").reason, /Width of executor\(s\) 180 could not be read/);
+  assert.equal(bad.pool("Page 1").free, null);
 });
 
 test("Pages lists every page with its used executor count, read per page by address", async () => {
