@@ -61,7 +61,7 @@ export const BATCH_TOOLS: ReadonlyArray<{ tool: string; list: string }> = [
 
 const BATCH_NOTE = `Many objects at once: ${BATCH_TOOLS.map((b) => `${b.tool} (${b.list})`).join(", ")} take a list per call, with per-item checks, read-back and one line per item; never loop over them in Lua.`;
 
-const OBSERVE_NOTE = `Watching over time: ${OBSERVING_TOOLS.map((o) => `${o.tool} (${o.what})`).join(", ")}. They sample on the server side; never write a Lua waiting or polling loop (gma3_lua has a 5 s budget).`;
+const OBSERVE_NOTE = `Watching over time: ${OBSERVING_TOOLS.map((o) => `${o.tool} (${o.what})`).join(", ")}. They sample server-side; never write a Lua waiting or polling loop (gma3_lua has a 5 s budget).`;
 
 /** The server instructions: sent on every start; a stale build's warning comes first. */
 export function serverInstructions(staleWarning?: string): string {
