@@ -23,8 +23,9 @@
 | `gma3_lua` | Evaluate Lua inside onPC and return the result as JSON. Off until the operator [enables it on the console](lua.md); uses a best-effort execution budget |
 | `gma3_lua_api` | Search the live Lua API descriptor (names, arguments, returns) |
 | `gma3_get_object` | Properties (and optionally children and schema) of any object |
-| `gma3_list_children` | Children of an object with selected property values, paginated |
-| `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)) |
+| `gma3_list_children` | Children of an object with selected property values, paginated; `truncated: true` when more follow, `compact: true` ([below](#pool-usage-and-truncated-listings)) |
+| `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)); `truncated: true` when more follow, `compact: true` |
+| `gma3_pool_usage` | Read-only: per pool, the stored count, the used numbers as ranges, optional `[no, name]` pairs and the first free block of a size; preset pools, a page's executors and every page ([below](#pool-usage-and-truncated-listings)) |
 | `gma3_dump` | Raw `Dump()` text of an object |
 | `gma3_set_property` | `Set()` a property and read it back: plain values (Yes/No, enums, numbers, exact text) are verified, a kept value is an error naming the lock (or saying its state is unknown); references, a macro line's Command and Wait, Tags and reformatted values are returned unverified with the typed tool that checks them |
 | `gma3_playback` | Go+, Go-, Pause, Off, Top, Flash, Load, ReSync, ... on a sequence, executor or tag; reads the playback state back a frame later (for a tag, every tagged sequence) ([docs](tools/live-reads.md), [resync](tools/tempo-sync.md#resync)) |
@@ -119,6 +120,34 @@ Object references accept command syntax (`Sequence 1 Cue 3`, `Page 1.201`), dott
 `ShowData`, `ShowSettings`, `DataPool`, `MasterPool`, `SelectedSequence`, `CurrentCue`, `Patch`, `Programmer`,
 `Selection`, `CurrentExecPage`. Property names are case-insensitive (`Name`, `TrigType`, `FID`); values come back
 as the display text the editor shows, and object references are resolved to the referenced object's name.
+
+### Pool usage and truncated listings
+
+`gma3_pool_usage` answers which numbers a show already uses before anything is stored (issue #96). It takes
+`pools` (names) and `preset_pools` (numbers), up to 30 per call, and returns compact JSON with one line per pool:
+
+| Pool | Read with | Per pool |
+| --- | --- | --- |
+| A DataPool pool: `Groups`, `Sequences`, `Macros`, `MAtricks`, `Timecodes`, `Layouts`, ... (any `gma3_pool` name) | `children` on `DataPool.<Pool>` | `stored`, `used` (`"1-11, 5001-5534"`), with `names: true` `names: [[no, name], ...]` |
+| `Preset 4`, or `preset_pools: [1, 4, 21]` | `children` on `Preset 4` | the same; `stored` counts the stored presets, not the pool's 1000 slots (its `No` reads `4 (1000)`) |
+| `PresetPools` | `DataPool.PresetPools`, then each pool | `presetPools: [[no, name, stored, used], ...]` |
+| `Page 2` | `children` on `Page 2` (`No`, `Object`, handles) | the executors with an object: `executors: [[no, class, name], ...]`; `unassigned` for executors without one |
+| `Pages` | `DataPool.Pages`, then each page by address | `pages: [[no, name, executors used, used], ...]` |
+
+`free: {size, from?}` adds each pool's first free block of `size` numbers from `from` (default 1) up to 9999,
+such as `"21-40"`. For a page it stays inside one executor row (101-198, 201-298, 301-390, 401-490) and starts at 101;
+an executor without an object counts as free. `free` is `null` with `freeNote` when there is no such block or the
+read is incomplete. `data_pool` reads another data pool.
+
+Every listing is read page by page (500 children per request) to its end. A failed request, a total that changes
+between requests or an object without a number makes that pool `complete: false` with `reason`, keeping what was
+read; the call is an error only when no pool could be read. Page and executor ranges are refused before any read:
+the tool reads a page's executors with `children` on the page, never with `ObjectList` over a range
+([above](#page-and-executor-ranges-plugin-v0200)).
+
+`gma3_objects` and `gma3_list_children` add `truncated: true` and a `note` with the next offset whenever the
+returned items stop before `total` (a read of `Macro Thru` stops at the default limit of 500). With `fields`,
+`compact: true` drops `addr` and `addrNative` from every item and returns minified JSON.
 
 ### Build staleness
 

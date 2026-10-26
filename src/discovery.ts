@@ -31,7 +31,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "OSC input and output", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
   { task: "save the show file (current or new name) and list the show files", tools: ["gma3_save_show", "gma3_show_files"] },
   { task: "tempo-sync plugin: status, configuration, ReSync of phasers", tools: ["gma3_tempo_sync_status", "gma3_configure_tempo_sync", "gma3_playback"] },
-  { task: "read show data and live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences"] },
+  { task: "read show data and live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences", "gma3_pool_usage"] },
 ];
 
 /** Tools that watch the console over time on the server side: no Lua loop, no Lua time budget. */
@@ -72,7 +72,7 @@ export function serverInstructions(staleWarning?: string): string {
     map,
     BATCH_NOTE,
     OBSERVE_NOTE,
-    "Fallbacks, only for what no structured tool covers: gma3_command (one command line; gma3_help has the syntax) and gma3_lua (off by default; short scripts only). gma3_status shows the bridge version and the build.",
+    "Fallbacks, only for what no structured tool covers: gma3_command (one command line; gma3_help has the syntax) and gma3_lua (off by default; short scripts only). gma3_status: bridge version and build.",
   ].join("\n");
 }
 
@@ -80,7 +80,7 @@ export function serverInstructions(staleWarning?: string): string {
 export const LUA_FALLBACK_NOTE =
   "FALLBACK: use a structured tool when one fits; they check, read back and need no Lua. Patch: gma3_patch_library, gma3_patch_import, gma3_patch_add, gma3_patch_set, gma3_patch_move, gma3_patch_retype, gma3_patch_type_structure, gma3_place_fixtures, gma3_layout_cells. Dialogs: gma3_dialog (never Mouse()). " +
   "Groups: gma3_store_group, gma3_configure_matricks. Presets: gma3_apply_preset, gma3_store_preset. Phasers: gma3_build_phaser. Looks: gma3_set_attributes. Cues: gma3_store_cues, gma3_edit_cues, gma3_build_chase, gma3_cue_contents. " +
-  "Playback: gma3_configure_sequence, gma3_configure_executor, gma3_playback, gma3_goto_cue. Reads: gma3_objects, gma3_get_object, gma3_list_children, gma3_programmer. " +
+  "Playback: gma3_configure_sequence, gma3_configure_executor, gma3_playback, gma3_goto_cue. Reads: gma3_objects, gma3_get_object, gma3_list_children, gma3_programmer; used and free pool numbers and executors: gma3_pool_usage. " +
   `${BATCH_NOTE} ` +
   `${OBSERVE_NOTE} `;
 
