@@ -470,13 +470,9 @@ local function presetRangePlan(ref)
     end
     return nil
   end
-  local function add(p, n)
-    local key = p .. "." .. n
-    if seen[key] then return true end
-    seen[key] = true
-    items[#items + 1] = { pool = p, no = n }
-    return #items <= MAX_EXPANDED_OBJECTS
-  end
+  -- Parse the whole reference first; only a form that needs the expansion is bounded and expanded, so a
+  -- console-native range ("Preset 4.1 Thru 2000") still goes to ObjectList unchanged.
+  local ranges = {}
   while true do
     local a = parse(toks[i], false)
     if not a then return nil end
@@ -489,16 +485,10 @@ local function presetRangePlan(ref)
       if b.pool ~= a.pool then
         error(string.format("'%s' is a preset range across pools (%d.%d to %d.%d); name one range per pool, joined with +", ref, a.pool, a.no, b.pool, b.no), 0)
       end
-      if math.abs(b.no - a.no) + 1 > MAX_EXPANDED_OBJECTS then
-        error(string.format("'%s' expands to more than %d presets", ref, MAX_EXPANDED_OBJECTS), 0)
-      end
-      local step = b.no >= a.no and 1 or -1
-      for v = a.no, b.no, step do
-        if not add(a.pool, v) then error(string.format("'%s' expands to more than %d presets", ref, MAX_EXPANDED_OBJECTS), 0) end
-      end
+      ranges[#ranges + 1] = { pool = a.pool, from = a.no, to = b.no }
       i = i + 2
-    elseif not add(a.pool, a.no) then
-      error(string.format("'%s' expands to more than %d presets", ref, MAX_EXPANDED_OBJECTS), 0)
+    else
+      ranges[#ranges + 1] = { pool = a.pool, from = a.no, to = a.no }
     end
     local t = toks[i]
     if t == nil then break end
@@ -507,6 +497,19 @@ local function presetRangePlan(ref)
     i = i + 1
   end
   if not (qualifiedEnd or plus) then return nil end
+  local function tooMany() error(string.format("'%s' expands to more than %d presets", ref, MAX_EXPANDED_OBJECTS), 0) end
+  for _, rg in ipairs(ranges) do
+    if math.abs(rg.to - rg.from) + 1 > MAX_EXPANDED_OBJECTS then tooMany() end
+    local step = rg.to >= rg.from and 1 or -1
+    for v = rg.from, rg.to, step do
+      local key = rg.pool .. "." .. v
+      if not seen[key] then
+        seen[key] = true
+        items[#items + 1] = { pool = rg.pool, no = v }
+        if #items > MAX_EXPANDED_OBJECTS then tooMany() end
+      end
+    end
+  end
   return items
 end
 
