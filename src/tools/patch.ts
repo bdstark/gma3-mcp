@@ -630,12 +630,19 @@ export async function patchAdd(ctx: ToolContext, raw: AddArgs): Promise<Operatio
   // #100: a block of fixtures on a clean success: per fixture its FID, name and address instead of every row.
   if (count === 1) return result;
   const c = checkDetail as { type?: unknown; mode?: unknown } | undefined;
+  // Without a read-back (verify: false): the name asked for (the bridge gives each fixture of the block that same
+  // name), else the console's own name from patch.add's reply (`created`, read in the copy right after AddFixtures),
+  // and the block address, which the bridge verified exactly in the copy before replying.
+  const created = new Map((((result.steps.find((st) => st.name === "add")?.detail as { created?: FixtureRow[] } | undefined)?.created) ?? []).map((r) => [r.fid, r]));
   return compactItems(result, raw.detail === true, {
     set: { check: { type: c?.type, mode: c?.mode } },
     drop: ["fixtures"],
     items: rows.length
       ? rows.map((r) => ({ fid: r.fid, name: r.name, address: r.patch ?? "" }))
-      : fids.map((f, i) => ({ fid: f, address: resolvedAddress ? blockAddress(resolvedAddress, footprint, i) : "" })),
+      : fids.map((f, i) => {
+          const n = name ?? created.get(f)?.name;
+          return { fid: f, ...(n !== undefined ? { name: n } : {}), address: resolvedAddress ? blockAddress(resolvedAddress, footprint, i) : "" };
+        }),
     hint: "detail: true returns every step's detail, the pre-check and the read-back rows",
   });
 }

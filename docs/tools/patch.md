@@ -131,7 +131,7 @@ paginate.
 | `stage` | Default: the first stage. Fixtures are added at the stage's top level |
 | `exclusive` | Must be `true` |
 | `verify` | Default `true` |
-| `detail` | Default `false`: with `count` above 1 a clean success lists `items` (`{fid, name, address}` per new fixture) and `check` as just the type and mode; `true` returns the rows (`fixtures`) and the full pre-check |
+| `detail` | Default `false`: with `count` above 1 a clean success lists `items` (`{fid, name, address}` per new fixture) and `check` as just the type and mode; `true` returns the rows (`fixtures`) and the full pre-check. With `verify: false` there is no read-back: `name` is the one asked for (every fixture of the block gets that same name), else the console's own name as `patch.add` reported it right after adding (left out when the reply has none), and `address` is the block address the bridge checked in the copy |
 
 With neither `address` nor `findFreeFrom` the fixtures are added unpatched.
 

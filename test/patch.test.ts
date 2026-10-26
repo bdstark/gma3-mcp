@@ -619,8 +619,15 @@ test("gma3_patch_add: a clean block of 50 lists fid, name and address per fixtur
     assert.equal(r.result.fixtures.length, 50);
     assert.equal(r.result.verification.actual.length, 50);
 
-    // A single fixture keeps the full result (it is small).
+    // verify: false: no read-back, so the names come from the request, or the console's names from patch.add's reply.
     h.fake.on("patch.add", orig);
+    r = await h.callJson("gma3_patch_add", { type: 6, mode: "Ch08", fid: 2401, count: 3, address: "7.001", name: "Wash", exclusive: true, verify: false });
+    assert.equal(r.result.verification.status, "not_requested");
+    assert.deepEqual(r.result.items, [{ fid: 2401, name: "Wash", address: "7.001" }, { fid: 2402, name: "Wash", address: "7.009" }, { fid: 2403, name: "Wash", address: "7.017" }]);
+    r = await h.callJson("gma3_patch_add", { type: 6, mode: "Ch08", fid: 2501, count: 2, exclusive: true, verify: false });
+    assert.deepEqual(r.result.items, [{ fid: 2501, name: "MHPar06 1", address: "" }, { fid: 2502, name: "MHPar06 2", address: "" }], "the console's own names, from the add reply");
+
+    // A single fixture keeps the full result (it is small).
     r = await h.callJson("gma3_patch_add", { type: 6, mode: "Ch08", fid: 2301, address: "6.001", exclusive: true });
     assert.equal(r.result.verification.status, "matched");
     assert.equal(r.result.items, undefined);
