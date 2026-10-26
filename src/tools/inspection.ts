@@ -116,7 +116,7 @@ function isToolResult(v: unknown): v is ToolResult {
 
 /** Render a validation failure as an MCP tool error with the collected messages. */
 function validationError(tool: string, errors: string[]): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify({ tool, error: "validation failed", validationErrors: errors }, null, 2) }], isError: true };
+  return { content: [{ type: "text", text: JSON.stringify({ tool, error: "validation failed", validationErrors: errors }) }], isError: true };
 }
 
 /** Run a read-only inspection: a thrown bridge error (op error, transport, unknown op) is an MCP tool error. */
@@ -130,7 +130,7 @@ async function inspection(tool: string, fn: () => Promise<unknown>): Promise<Too
     if (err instanceof BridgeError && /unknown op/i.test(message)) {
       message += ". The bridge plugin running in onPC predates the inspection ops (needs gma3_mcp_bridge 0.3.0 or later); re-import and restart the plugin (see docs/tools/inspection.md).";
     }
-    return { content: [{ type: "text", text: JSON.stringify({ tool, error: message }, null, 2) }], isError: true };
+    return { content: [{ type: "text", text: JSON.stringify({ tool, error: message }) }], isError: true };
   }
 }
 

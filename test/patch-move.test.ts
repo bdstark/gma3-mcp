@@ -265,7 +265,7 @@ test("pose helpers: world pose under a parent, and pose equality within 1 mm and
 test("gma3_patch_move: top level into a grouping fixture, every step in order, Absolute answered, committed and read back", async () => {
   const { h, w, ops } = await setup();
   try {
-    const { result, isError } = await h.callJson("gma3_patch_move", { fids: [101, 102], parent: 1, exclusive: true });
+    const { result, isError } = await h.callJson("gma3_patch_move", { fids: [101, 102], parent: 1, exclusive: true, detail: true });
     assert.equal(isError, false, JSON.stringify(result, null, 2));
     assert.equal(result.outcome, "succeeded");
     assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
@@ -399,7 +399,7 @@ test("gma3_patch_move: a paste without a reply that its Move Fixtures dialog con
   const { h, w } = await setup();
   try {
     w.pasteSilent = true;
-    const { result } = await h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true });
+    const { result } = await h.callJson("gma3_patch_move", { fids: [101], parent: 1, exclusive: true, detail: true });
     assert.equal(result.outcome, "succeeded", JSON.stringify(stepNames(result)));
     assert.deepEqual(w.answered, ["Absolute"]);
     assert.equal(result.steps.find((s: any) => s.name === "move_paste").detail.replyLost, true);
@@ -576,6 +576,108 @@ test("gma3_patch_retype: the read-back checks the type by number, so the old imp
       assert.equal(result.verification.status, expect, JSON.stringify(result.verification));
       if (!applies) assert.match(result.verification.detail, /not of type 19 180W Beam/);
       if (breakLost) assert.match(result.verification.detail, /FIDs 101 changed address or a DMX break/);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #100: compact results
+// ---------------------------------------------------------------------------
+
+test("gma3_patch_move: a clean move of 50 fixtures lists fid and [before, after] parent; detail: true and a mismatch are full (#100)", async (t) => {
+  const fids = Array.from({ length: 50 }, (_, i) => 301 + i);
+  const world = (w: MoveWorld) => {
+    for (const fid of fids) {
+      w.live.push({ fid, name: `Wash ${fid}`, patch: `3.${String(fid - 300).padStart(3, "0")}`, parent: null, pos: { x: fid / 100, y: 1, z: 2 } });
+      w.groups[fid] = ["1.7"];
+    }
+  };
+  for (const mode of ["compact", "detail", "mismatch"] as const) {
+    const { h, w } = await setup();
+    try {
+      world(w);
+      if (mode === "mismatch") w.dropGroup = true;
+      const { result, isError, text } = await h.callJson("gma3_patch_move", { fids, parent: 1, exclusive: true, ...(mode === "detail" ? { detail: true } : {}) });
+      assert.equal(result.outcome, "succeeded", text.slice(0, 2000));
+      if (mode === "compact") {
+        assert.equal(isError, false);
+        assert.equal(result.verification.status, "matched");
+        assert.equal(result.items.length, 50);
+        assert.deepEqual(result.items[0], { fid: 301, parent: ["root", 1] });
+        assert.equal(result.fixtures, undefined);
+        assert.ok(result.steps.every((s: any) => s.detail === undefined));
+        assert.equal(result.steps.length, 19, "every step keeps its name and status");
+        assert.deepEqual([result.from, result.to, result.dialog, result.position], [{ fid: "root" }, { fid: 1, type: "Grouping" }, "answered", "absolute"]);
+        assert.ok(text.length < 6_000, `${text.length} characters`);
+        t.diagnostic(`50 moved: ${text.length} characters`);
+      } else {
+        assert.equal(result.verification.status, mode === "detail" ? "matched" : "mismatched");
+        assert.equal(result.items, undefined);
+        assert.equal(result.fixtures.length, 50);
+        assert.ok(result.fixtures[0].before && result.fixtures[0].after, "poses before and after");
+        assert.ok(result.steps.find((s: any) => s.name === "read_back").detail.length === 50);
+        if (mode === "detail") t.diagnostic(`with detail: true: ${text.length} characters`);
+      }
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("gma3_patch_retype: a clean retype of 50 fixtures lists fid and [before, after] type; detail: true and a mismatch are full (#100)", async () => {
+  const fids = Array.from({ length: 50 }, (_, i) => 101 + i);
+  for (const mode of ["compact", "detail", "mismatch"] as const) {
+    const h = await startHarness(registerPatchMoveTools);
+    try {
+      let copy: Map<number, string> | null = null;
+      let live = new Map(fids.map((fid) => [fid, "16 180W Beam"]));
+      let pending: Array<() => void> = [];
+      const frame = () => {
+        const p = pending;
+        pending = [];
+        for (const f of p) f();
+      };
+      const f = h.fake;
+      f.on("patch.state", () => {
+        frame();
+        return { destination: copy === null ? "Root" : "Stage 1.Fixtures", copyOpen: copy !== null, atRoot: copy === null, modal: false, stages: ["Stage 1"] };
+      });
+      f.on("patch.types", () => ({ count: 2, types: [{ no: 16, name: "180W Beam", modes: [] }, { no: 19, name: "180W Beam", modes: [] }] }));
+      f.on("patch.list", () => ({ total: 50, offset: 0, count: 50, fixtures: fids.map((fid) => ({ fid, name: `Beam ${fid}`, type: live.get(fid), mode: "1 Mode", patch: `1.${String(fid).padStart(3, "0")}`, breaks: [{ break: 1, address: `1.${String(fid).padStart(3, "0")}` }] })) }));
+      f.on("patch.enter", () => {
+        pending.push(() => (copy = new Map(live)));
+        return { queued: true, stage: "Stage 1", expectDestination: "Stage 1.Fixtures" };
+      });
+      f.on("patch.retype", () => {
+        for (const fid of fids) if (!(mode === "mismatch" && fid === 120)) copy!.set(fid, "19 180W Beam");
+        return { retyped: fids.map((fid) => ({ fid })) };
+      });
+      f.on("patch.collections", () => ({ copyOpen: copy !== null, live: ["Stages"], copy: copy !== null ? ["Stages"] : false }));
+      f.on("patch.fingerprint", () => ({ objects: 1, hash: 1, complete: true }));
+      f.on("patch.commit", () => {
+        pending.push(() => {
+          live = copy!;
+          copy = null;
+        });
+        return { queued: true };
+      });
+      const { result, text } = await h.callJson("gma3_patch_retype", { fixtures: fids, type: 19, exclusive: true, ...(mode === "detail" ? { detail: true } : {}) });
+      assert.equal(result.outcome, "succeeded", text.slice(0, 2000));
+      if (mode === "compact") {
+        assert.equal(result.verification.status, "matched");
+        assert.equal(result.items.length, 50);
+        assert.deepEqual(result.items[0], { fid: 101, type: ["16 180W Beam", "19 180W Beam"] });
+        assert.ok(result.steps.every((s: any) => s.detail === undefined));
+        assert.ok(text.length < 5_000, `${text.length} characters`);
+      } else {
+        assert.equal(result.verification.status, mode === "detail" ? "matched" : "mismatched");
+        if (mode === "mismatch") assert.match(result.verification.detail, /FIDs 120 are not of type 19 180W Beam/);
+        assert.equal(result.items, undefined);
+        assert.equal(result.steps.find((s: any) => s.name === "read_back").detail.length, 50);
+        assert.ok(result.steps.find((s: any) => s.name === "retype").detail.retyped);
+      }
     } finally {
       await h.close();
     }

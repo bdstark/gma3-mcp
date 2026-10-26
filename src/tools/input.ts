@@ -630,7 +630,7 @@ export const registerInputTools: RegisterTools = (server, ctx) => {
 function errorJson(err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   const detail = err instanceof BridgeError ? { code: err.code, dispatched: err.dispatched, detail: err.detail } : undefined;
-  return { content: [{ type: "text" as const, text: detail ? JSON.stringify({ error: message, ...detail }, null, 2) : message }], isError: true };
+  return { content: [{ type: "text" as const, text: detail ? JSON.stringify({ error: message, ...detail }) : message }], isError: true };
 }
 
 /** Release attempts of a bridge release report (releaseAll, recover, end) as steps. */

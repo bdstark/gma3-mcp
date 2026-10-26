@@ -115,7 +115,7 @@ liveTest("gma3_patch_move into a grouping fixture (absolute) and back (relative)
   const before = Object.fromEntries((await listed()).map((f) => [f.fid, f]));
 
   // Into the grouping fixture, keeping the world position.
-  const into = ok(await call("gma3_patch_move", { fids: FIDS, parent: PARENT, position: "absolute", exclusive: true }), "move into the grouping fixture");
+  const into = ok(await call("gma3_patch_move", { fids: FIDS, parent: PARENT, position: "absolute", exclusive: true, detail: true }), "move into the grouping fixture");
   assert.equal(into.dialog, "answered", "the console asked Move Fixtures");
   for (const f of into.fixtures) {
     assert.equal(f.parentFid, PARENT);
@@ -128,7 +128,7 @@ liveTest("gma3_patch_move into a grouping fixture (absolute) and back (relative)
   assert.ok(Math.abs(p0.after.position.x - 1) < 0.001 && Math.abs(p0.world.position.x - 2) < 0.001, `absolute: local x 1 under a parent at x 1, world x 2: ${JSON.stringify(p0)}`);
 
   // Back to the top level, keeping the offset: the world position becomes the old local one.
-  const out = ok(await call("gma3_patch_move", { fids: FIDS, parent: "root", position: "relative", exclusive: true }), "move back to the top level");
+  const out = ok(await call("gma3_patch_move", { fids: FIDS, parent: "root", position: "relative", exclusive: true, detail: true }), "move back to the top level");
   t.diagnostic(`out: ${JSON.stringify({ steps: out.steps.map((s: any) => `${s.name}:${s.status}`), dialog: out.dialog, fixtures: out.fixtures })}`);
   const p1 = out.fixtures.find((f: any) => f.fid === FIDS[0]);
   assert.ok(Math.abs(p1.after.position.x - 1) < 0.001, `relative: the local x stays 1: ${JSON.stringify(p1)}`);
