@@ -35,6 +35,37 @@ ask for 3D placement, for haze in the beam check, for the universe budget and fo
 - **Ask before running a Show Start macro that overwrites,** such as the Position Wizard.
 - **Keep queries narrow.** Broad `gma3_patch_library` queries such as `"adj"` returned 95 to 145 KB. Query by the
   file name or the type name, and use `compact: true` where the server has it (gma3-mcp #87).
+- **Name your objects so they don't collide with Show Start's.** Show Start's pools already use the common names
+  (Color 4.2 CTO, 4.5 Orange; Position 2.4 Fan Out, 2.5 Cross; …), and the console renames a duplicate to
+  "Orange#2". Newer servers refuse a taken preset name before storing (#102). Give the show's own objects a prefix,
+  as the Halloween Creative build did with "CV ".
+- **Scripted builds use the same tools.** A build big enough to script (the Halloween Creative build had 184 recipe
+  cues) calls the structured tools from the script, as its `build_presets.py` and `verify.py` did. Its `build_cues.py`
+  sent about 180 `gma3_lua` calls through a second server it started itself, and none of them showed in the session
+  transcript. Lua in a script needs the same reason as Lua in the session, and the session's report lists it. Run one
+  script against the console at a time: two servers don't share the mutation lock or `exclusive`. Treat
+  `verification: mismatched` as a failure in the script; don't accept every `outcome: succeeded` to get past one
+  false mismatch.
+
+## Before Lua: the tool for the job
+
+The Halloween Creative build (2026-10-25) used `gma3_lua` or `gma3_command` for these, though a tool covers them:
+
+| The job | The tool |
+| --- | --- |
+| Attribute names, channel functions, channel sets of a fixture type | `gma3_fixture_attributes` (one fixture of the type) |
+| A recipe line's properties, a preset's recipe lines | `gma3_recipes` (`{sequence, cue}` or `{preset}`) |
+| A preset's mode, content and phaser layers | `gma3_preset` |
+| Which numbers a pool or a page already uses, a free block | `gma3_pool_usage` |
+| A pool's presets by number | `gma3_list_children` on `Preset P`, or `gma3_objects` `Preset P.1 Thru P.40` (bridge 0.46.0; older: `Preset P.1 Thru 40`) |
+| Stages: create, rename | `gma3_patch_stages` |
+| Recipe lines, their MAtricks and fade columns, cue notes for many cues | `gma3_store_recipe_cues`, `gma3_store_cues` `note` |
+| Go, Goto, Off of a sequence | `gma3_playback`, `gma3_goto_cue` (they read the state back) |
+| Run a macro | `gma3_run_macro` (it watches the running line and any dialog) |
+| One property of one object, e.g. a page name | `gma3_set_property` |
+
+Still raw in that build, for want of a tool: switching several sequence ranges off in one line, and renaming many
+objects at once.
 
 ## 0. Preflight
 
@@ -270,6 +301,9 @@ Bars, Specials, Nanoleaf and Deck. Fixtures outside any slot stay at the top lev
 Clear the programmer and save. Then write a note in the show's project folder with:
 - what is still open on the show and on the rig, such as node ports, fixture modes and addresses to set;
 - every place a tool fell short, with the evidence and a suggested fix, for gma3-mcp.
+
+Watching the build helps: in the Halloween Creative build a second session followed the transcript and the build
+scripts' logs and filed each gap as it appeared (gma3-mcp #96 to #104).
 
 ## Halloween 2026 timeline
 
