@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
-import { registerRecipeTools, parseTarget, parseScope, targetRef, lineRef, coverageOf, verifyCoverage, setReplyMatches } from "../src/tools/recipes.ts";
+import { registerRecipeTools, axisSelection, parseTarget, parseScope, targetRef, lineRef, coverageOf, verifyCoverage, setReplyMatches } from "../src/tools/recipes.ts";
 import { ValidationError } from "../src/validate.ts";
 
 // ---------------------------------------------------------------------------
@@ -137,7 +137,11 @@ class Console {
       if (!l.enabled || l.group === null || !l.preset || l.cls !== "StandardRecipe") continue;
       const p = this.presetOf(l.preset)?.[1];
       if (!p) continue;
-      for (const m of this.groups.get(l.group) ?? []) for (const a of p.attrs) out.push({ fixture: m.fixture, sfIndex: m.sfIndex, attribute: a, value: p.value, cooked: true });
+      // #101: the line's X column with XBlock gives values to the n-th block of the group only.
+      const x = Number(l.props?.X);
+      const block = Number(l.props?.XBlock) || 1;
+      const members = (this.groups.get(l.group) ?? []).filter((_, i) => !(x >= 1) || Math.floor(i / block) === x - 1);
+      for (const m of members) for (const a of p.attrs) out.push({ fixture: m.fixture, sfIndex: m.sfIndex, attribute: a, value: p.value, cooked: true });
     }
     return out;
   }
@@ -191,6 +195,7 @@ class Console {
             Values: l.preset ? { name: this.presetOf(l.preset)?.[0] ?? "?", class: "Preset", addr: l.preset } : "",
             MAtricks: l.matricks !== null ? { name: `M${l.matricks}`, class: "MAtrick", index: l.matricks } : "",
             Filter: l.filter ? { name: l.filter, class: "Filter" } : "", SelectionMode: l.mode, SelectionFromValue: false, FailedCookedPart: "None", EmptyLastCooking: false,
+            X: l.props?.X ?? "None", Y: l.props?.Y ?? "None", Z: l.props?.Z ?? "None",
           },
         })),
       };
@@ -826,4 +831,42 @@ test("values: a number or a quoted string is refused with the plain string form 
   const inBatch = await store({ mode: "append", cues: [{ cue: 1, lines: [{ selection: 908, values: 4.2 }] }] });
   assert.match(inBatch.result.validationErrors.join(), /cues\[0\]\.lines\[0\]\.values must be the plain string "4\.2"/);
   assert.equal(h.fake.requests.length, 0);
+});
+
+test("a line whose X column selects one block is not predicted, so the cook is not a false mismatch; an ordinary line still is", async () => {
+  con.groups.set(912, [401, 402, 403, 404].map((f, i) => ({ fixture: String(f), sfIndex: 63 + i })));
+  con.cue(9060, 1);
+  con.cue(9060, 2);
+  const { result, isError } = await store({ mode: "append", cook: "merge_low_priority", cues: [{ cue: 1, lines: [line(912, "4.4", { x: { blocks: 2, select: 1 } })] }, { cue: 2, lines: [line(912, "4.4")] }] });
+  assert.equal(isError, false, JSON.stringify(result.verification));
+  assert.equal(result.verification.status, "matched");
+  assert.deepEqual(result.cook.map((c: { verification: string }) => c.verification), ["matched", "matched"]);
+  assert.deepEqual(con.part(9060, 1).rows.map((r) => r.fixture), ["401", "402"], "the console cooked the first block only");
+  assert.ok(result.warnings.some((w: string) => /Cue 1 Part 0 line 1: the line's MAtricks selects part of its group \(X 1\); coverage not predicted/.test(w)), JSON.stringify(result.warnings));
+  // gma3_recipes and gma3_cook_recipes flag it the same way; the ordinary line is predicted and verified.
+  const read1 = await h.callJson("gma3_recipes", { target: { sequence: 9060, cue: 1 } });
+  assert.equal(read1.result.lines[0].axisSelect, "X 1");
+  assert.match(read1.result.lines[0].notPredicted, /selects part of its group \(X 1\); coverage not predicted/);
+  assert.equal(read1.result.expectedPairs, 0);
+  assert.equal(read1.result.unpredictedLines, 1);
+  const read2 = await h.callJson("gma3_recipes", { target: { sequence: 9060, cue: 2 } });
+  assert.equal(read2.result.lines[0].notPredicted, undefined);
+  assert.equal(read2.result.expectedPairs, 4);
+  const c1 = await h.callJson("gma3_cook_recipes", { target: { sequence: 9060, cue: 1 }, mode: "merge_low_priority" });
+  assert.equal(c1.result.verification.status, "matched", JSON.stringify(c1.result.verification));
+  assert.match(c1.result.affected[0].lines[0].notPredicted, /X 1/);
+  assert.match(c1.result.verification.checked, /1 line\(s\) not predicted/);
+  // A cook that loses the ordinary line's output is still caught.
+  con.cookNoop = true;
+  con.part(9060, 2).rows = [];
+  const c2 = await h.callJson("gma3_cook_recipes", { target: { sequence: 9060, cue: 2 }, mode: "merge_low_priority" });
+  assert.equal(c2.result.verification.status, "mismatched");
+  assert.match(c2.result.verification.detail, /expected cooked values missing/);
+});
+
+test("axisSelection: a set X / Y / Z column, None and 0 select nothing, an inherited one counts", () => {
+  assert.equal(axisSelection({ X: "None", Y: "", Z: 0 }), undefined);
+  assert.equal(axisSelection({}), undefined);
+  assert.equal(axisSelection({ X: 2 }), "X 2");
+  assert.equal(axisSelection({ X: "<3>", Z: "1" }), "X 3, Z 1");
 });

@@ -53,7 +53,7 @@ extends to cue parts (see [the bridge protocol](../reference.md#cue-part-data-pl
 | Capability | Supported |
 | --- | --- |
 | Standard lines: group selection, preset values, MAtricks reference, Enabled, Name, SelectionMode | read, add, set, move, remove; coverage predicted and verified |
-| Per-line MAtricks columns (XWings, XBlock, XGroup, XWidth, XShift, XShuffle, X, FadeFromX / FadeToX, DelayFromX / DelayToX, PhaseFromX / PhaseToX, SpeedFromX / SpeedToX, and the Y and Z ones) | written by `gma3_store_recipe_cues` and read back there; **not verified on a console** (see below); not edited by `gma3_edit_recipe` |
+| Per-line MAtricks columns (XWings, XBlock, XGroup, XWidth, XShift, XShuffle, X, FadeFromX / FadeToX, DelayFromX / DelayToX, PhaseFromX / PhaseToX, SpeedFromX / SpeedToX, and the Y and Z ones) | written by `gma3_store_recipe_cues` and read back there; **not verified on a console** (see below); not edited by `gma3_edit_recipe`. A line whose X, Y or Z column is set (also inherited, `<2>`) gives values to only part of its group: it is read (`axisSelect`) and its coverage is not predicted by `gma3_recipes` and `gma3_cook_recipes` |
 | Standard lines with a filter or world, SelectionFromValue | read and kept; not edited; coverage not predicted (named in the result; a merge treats what they reach as possibly replaced) |
 | Phaser recipe lines (PhaserRecipe), shapes | read and kept; not created or edited; coverage not predicted (likewise) |
 | Targets | presets and cue parts (edit, read); a preset, cue part, cue or whole sequence (cook) |
@@ -68,7 +68,8 @@ extends to cue parts (see [the bridge protocol](../reference.md#cue-part-data-pl
     `selectionMode`;
   - the console's last cooking state (`failedCookedPart`, `emptyLastCooking`);
   - `problems`: missing selection, missing or empty group, missing or empty preset, disabled;
-  - `notPredicted` where coverage is not modelled;
+  - `axisSelect` when its X / Y / Z column selects part of the group ("X 1");
+  - `notPredicted` where coverage is not modelled (phaser lines, filters, an axis selection);
 - `coverage`: per fixture the attributes the target holds `cooked` (from recipes) and `uncooked` (stored directly);
 - `expectedPairs`, the number of fixture/attribute pairs the lines should cook;
 - `dependencyNotes`.

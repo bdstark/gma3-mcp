@@ -132,10 +132,29 @@ export interface Line {
   filter: string | null;
   selectionMode?: string;
   selectionFromValue?: boolean | null;
+  /** The line's own X / Y / Z column when it is set ("X 1"): only part of the group gets values (#101). */
+  axisSelect?: string;
   status: { failedCookedPart?: string; emptyLastCooking?: boolean | null };
 }
 
-const LINE_FIELDS = ["Name", "Enabled", "Selection", "Values", "MAtricks", "Filter", "SelectionMode", "SelectionFromValue", "FailedCookedPart", "EmptyLastCooking"];
+const LINE_FIELDS = ["Name", "Enabled", "Selection", "Values", "MAtricks", "Filter", "SelectionMode", "SelectionFromValue", "FailedCookedPart", "EmptyLastCooking", "X", "Y", "Z"];
+
+/**
+ * The X / Y / Z columns of a line that select part of its group: a number from 1, as a number or text (also "<2>", the
+ * way a column inherited from a MAtricks reference reads). None, empty, 0 or an unread column select nothing; any
+ * other text is kept as set, so the line is not predicted rather than predicted wrongly.
+ */
+export function axisSelection(fields: Record<string, unknown>): string | undefined {
+  const set: string[] = [];
+  for (const a of ["X", "Y", "Z"]) {
+    const v = fields[a];
+    if (v === undefined || v === null || v === false) continue;
+    const text = String(v).trim().replace(/^<(.*)>$/, "$1").trim();
+    if (text === "" || /^none$/i.test(text) || /^0+(\.0+)?$/.test(text)) continue;
+    set.push(`${a} ${text}`);
+  }
+  return set.length ? set.join(", ") : undefined;
+}
 
 const bool = (v: unknown): boolean | null => (typeof v === "boolean" ? v : typeof v === "string" ? (/^(yes|true|on)$/i.test(v) ? true : /^(no|false|off)$/i.test(v) ? false : null) : null);
 const handle = (v: unknown): Handle | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Handle) : null);
@@ -176,6 +195,7 @@ export async function readLines(bridge: Gma3Bridge, t: Target, timeout: number):
       filter: flt ? flt.name ?? "?" : null,
       selectionMode: typeof f.SelectionMode === "string" ? f.SelectionMode : undefined,
       selectionFromValue: bool(f.SelectionFromValue),
+      ...(axisSelection(f) ? { axisSelect: axisSelection(f) } : {}),
       status: { failedCookedPart: typeof f.FailedCookedPart === "string" ? f.FailedCookedPart : undefined, emptyLastCooking: bool(f.EmptyLastCooking) },
     });
   });
@@ -282,6 +302,8 @@ export async function analyzeLines(bridge: Gma3Bridge, lines: Line[], t: number,
       if (g.unreadable || g.truncated) { expected.unknownReach = true; expected.unpredicted++; rep.notPredicted = `Group ${l.selection.group} was not read completely; its reach is unknown`; }
     }
     if (l.class !== "StandardRecipe") { unpredictable(`${l.class} lines are listed and kept, not modelled by this release`, g); continue; }
+    // The X / Y / Z column gives values to only part of the group (one element, one block): which part is not modelled.
+    if (l.axisSelect) { unpredictable(`the line's MAtricks selects part of its group (${l.axisSelect}); coverage not predicted`, g); continue; }
     if (!l.values) { rep.problems.push("no values: the preset is missing (deleted?) or was never assigned"); continue; }
     if (l.filter) { unpredictable(`a filter (${l.filter}) limits the attributes; coverage not predicted`, g); continue; }
     if (!g || !g.exists || !g.members.length) continue;
@@ -1181,6 +1203,8 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
     const cookSteps: StepResult[] = [];
     const cooked: Array<Record<string, unknown>> = [];
     const cookVerifications: Verification[] = [];
+    /** What each cook warned about (lines it did not predict, problems), so a matched cook says what it did not check. */
+    const cookWarnings: string[] = [];
     const lines = batch.items as Array<{ outcome: string; verification: string }>;
     if (cook) {
       const allWritten = lines.every((l) => l.outcome === "succeeded" && l.verification === "matched");
@@ -1199,11 +1223,12 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
           cookSteps.push({ name: `cook ${ref}`, status, op: "gma3_cook_recipes", ...(typeof r.command === "string" ? { command: r.command } : {}), ...(status === "succeeded" ? {} : { error: r.summary }) });
           cooked.push({ target: ref, outcome: r.outcome, verification: r.verification.status, ...(detail ? { result: r } : itemOk(r) ? {} : { summary: r.summary }) });
           cookVerifications.push(r.verification);
+          cookWarnings.push(...(r.warnings ?? []).map((w) => `cook: ${w}`));
           if (status === "unknown") halted = `not attempted: the cook of ${ref} got no reply, so the console's state is not known`;
         }
       }
     }
-    const result: OperationResult = { ...batch, operation: op, target, steps: [...inspect.steps, ...batch.steps, ...cookSteps], ...(warnings.length || batch.warnings?.length ? { warnings: [...warnings, ...(batch.warnings ?? [])] } : {}) };
+    const result: OperationResult = { ...batch, operation: op, target, steps: [...inspect.steps, ...batch.steps, ...cookSteps], ...(warnings.length || batch.warnings?.length || cookWarnings.length ? { warnings: [...warnings, ...(batch.warnings ?? []), ...cookWarnings] } : {}) };
     // The cue parts were written: a cook that did not succeed leaves the call partial.
     if (cookSteps.some((s) => s.name !== "cook" && s.status !== "succeeded") && result.outcome === "succeeded") result.outcome = "partial";
     const mismatchedCooks = cooked.filter((c) => c.verification === "mismatched").map((c) => c.target);
