@@ -44,6 +44,7 @@ import {
 } from "../results.js";
 import { ValidationError, Validator, finiteNumber } from "../validate.js";
 import { currentPoolBridge, dataPoolOf, dataPoolShape, inDataPool } from "./datapool.js";
+import { ON_NAME_TAKEN, checkPoolName, nameOrSuffixed, recordLeftName, type NamePool, type PoolNameCache } from "./poolnames.js";
 
 // ---------------------------------------------------------------------------
 // Model
@@ -596,6 +597,7 @@ interface StoreArgs {
   mode: unknown;
   lines: unknown;
   name?: unknown;
+  on_name_taken?: unknown;
   note?: unknown;
   cli?: unknown;
   accept_console_form?: boolean;
@@ -615,7 +617,14 @@ function stateProblem(m: MacroRead, need: "absent" | "present"): string | undefi
   return undefined;
 }
 
-export async function storeMacro(ctx: ToolContext, raw: StoreArgs): Promise<OperationResult> {
+/**
+ * The macro pool's names (#102): no probe shows whether the console renames a duplicate macro name, but two macros
+ * under one name make every lookup by name ambiguous, so a taken name is refused before the store all the same.
+ */
+export const MACRO_NAMES: NamePool = { ref: "DataPool.Macros", noun: "macro", plural: "macros", label: (no) => `Macro ${no}` };
+
+/** `shared.names` is the call's pool-name cache when several macros are stored in one call (#102). */
+export async function storeMacro(ctx: ToolContext, raw: StoreArgs, shared: { names?: PoolNameCache<string> } = {}): Promise<OperationResult> {
   const op = "store_macro";
   const v = new Validator();
   const n = v.check(() => finiteNumber("macro", raw.macro, { integer: true, min: 1, max: 99999 }));
@@ -625,6 +634,9 @@ export async function storeMacro(ctx: ToolContext, raw: StoreArgs): Promise<Oper
   if (Array.isArray(raw.lines) && raw.lines.length > MAX_LINES) v.fail(`at most ${MAX_LINES} lines`);
   if (Array.isArray(raw.lines) && !raw.lines.length && mode !== "replace") v.fail("lines must not be empty (replace with no lines clears the macro)");
   const name = v.check(() => lineName("name", raw.name));
+  const onNameTaken = ON_NAME_TAKEN.find((o) => o === (raw.on_name_taken ?? "refuse"));
+  if (!onNameTaken) v.fail(`on_name_taken must be ${ON_NAME_TAKEN.join(" or ")}`);
+  const allowSuffix = onNameTaken === "allow_suffix";
   const note = v.check(() => lineName("note", raw.note));
   const cli = raw.cli === undefined ? undefined : typeof raw.cli === "boolean" ? raw.cli : (v.fail("cli must be true or false"), undefined);
   const target: Record<string, unknown> = { macro: raw.macro, mode: raw.mode };
@@ -634,10 +646,12 @@ export async function storeMacro(ctx: ToolContext, raw: StoreArgs): Promise<Oper
   const bridge = ctx.bridge;
   const t = ctx.requestTimeoutMs;
   const preview = raw.preview === true;
+  const names = shared.names ?? new Map();
 
   const body = async (): Promise<OperationResult> => {
     let before: MacroRead | undefined;
     let checks: LineCheck[] = [];
+    const warnings: string[] = [];
     const base = () => (mode === "append" ? before?.lines?.length ?? 0 : 0);
     const inspect = await runSteps([
       {
@@ -652,6 +666,16 @@ export async function storeMacro(ctx: ToolContext, raw: StoreArgs): Promise<Oper
           return asRead(p ? { name: "read_macro", status: "failed", op: "objects", error: p } : { name: "read_macro", status: "succeeded", op: "objects", detail: { exists: before.exists, lines: before.lines?.length ?? 0 } });
         },
       },
+      ...(name !== undefined && name.trim() !== ""
+        ? [{
+            name: "check_name",
+            run: async (): Promise<StepResult> => {
+              // #102: a name another macro has is refused before anything is sent; keeping its own name is none.
+              if (before?.exists && before.name === name) return asRead({ name: "check_name", status: "succeeded", op: "children", detail: { unchanged: true } });
+              return asRead({ name: "check_name", op: "children", ...(await checkPoolName({ bridge, t, pool: MACRO_NAMES, cache: names, number: n, name: name.trim(), onNameTaken: onNameTaken!, warnings })) });
+            },
+          }]
+        : []),
       {
         name: "check_references",
         run: async () => {
@@ -662,7 +686,7 @@ export async function storeMacro(ctx: ToolContext, raw: StoreArgs): Promise<Oper
       },
     ]);
     const extra: Record<string, unknown> = { references: checks };
-    if (inspect.outcome !== "succeeded" || !before) return buildResult({ operation: op, target, steps: inspect.steps, summary: `${op} was not performed; nothing was sent: ${inspect.steps.find((s) => s.status !== "succeeded")?.error}`, extra });
+    if (inspect.outcome !== "succeeded" || !before) return buildResult({ operation: op, target, steps: inspect.steps, summary: `${op} was not performed; nothing was sent: ${inspect.steps.find((s) => s.status !== "succeeded")?.error}`, warnings, extra });
     const b = before;
     const stored: Stored = new Map();
     const sent = new Map<number, string>();
@@ -676,15 +700,18 @@ export async function storeMacro(ctx: ToolContext, raw: StoreArgs): Promise<Oper
       plan.push({ name: `line_${line}`, run: () => commandStep(bridge, `line_${line}`, `Store ${lineRef(n, line)} /NoConfirmation`, t) });
       plan.push(...lineSteps(ctx, n, line, { ...s, name: s.name }, stored));
     });
-    if (name !== undefined) plan.push({ name: "name", run: macroSet(ctx, "name", ref, "Name", name) });
+    if (name !== undefined) plan.push({ name: "name", run: macroSet(ctx, "name", ref, "Name", name, allowSuffix) });
     if (note !== undefined) plan.push({ name: "note", run: macroSet(ctx, "note", ref, "Note", note) });
     if (cli !== undefined) plan.push({ name: "cli", run: macroSet(ctx, "cli", ref, "CLI", cli ? "Yes" : "No") });
     const summaryOf = { mode, linesBefore: b.lines?.length ?? 0, linesAfter: base() + specs.length, commands: plan.filter((p) => !/_(command|wait|enabled|add_to_cmdline|execute|name|note)$/.test(p.name)).length };
-    if (preview) return buildResult({ operation: op, target, steps: inspect.steps, summary: `Preview only; nothing was sent (${plan.length} requests planned; the macro is never run).`, extra: { ...extra, preview: true, plan: summaryOf, linesBefore: b.lines?.map(presentLine) ?? [] } });
+    if (preview) return buildResult({ operation: op, target, steps: inspect.steps, warnings, summary: `Preview only; nothing was sent (${plan.length} requests planned; the macro is never run).`, extra: { ...extra, preview: true, plan: summaryOf, linesBefore: b.lines?.map(presentLine) ?? [] } });
     const run = await runSteps(plan);
     const steps = [...inspect.steps, ...run.steps];
     const rw = rewrites(stored, sent);
-    const warnings: string[] = [];
+    const nameStep = run.steps.find((s) => s.name === "name");
+    const nameRead = (nameStep?.detail as { value?: unknown; readBack?: unknown } | undefined)?.value ?? (nameStep?.detail as { readBack?: unknown } | undefined)?.readBack;
+    const suffixedName = (got: unknown) => name !== undefined && typeof got === "string" && got !== name && nameOrSuffixed(got, name);
+    if (allowSuffix && nameStep?.status === "succeeded" && suffixedName(text(nameRead))) warnings.push(`the console stored the name as ${JSON.stringify(text(nameRead))}: another macro has ${JSON.stringify(name)} (on_name_taken "allow_suffix")`);
     if (rw.length) warnings.push(`${rw.length} command(s) were stored in the console's form (${REWRITE_NOTE})`);
     let verification: Verification = notRequested();
     let after: MacroRead | undefined;
@@ -702,7 +729,7 @@ export async function storeMacro(ctx: ToolContext, raw: StoreArgs): Promise<Oper
           const line = base() + i + 1;
           problems.push(...lineDiff(lines[line - 1], s, line, raw.accept_console_form ? stored.get(line) : undefined));
         });
-        if (name !== undefined && after.name !== name) problems.push(`the macro is named ${JSON.stringify(after.name)}`);
+        if (name !== undefined && after.name !== name && !(allowSuffix && suffixedName(after.name))) problems.push(`the macro is named ${JSON.stringify(after.name)}`);
         if (note !== undefined && after.note !== note) problems.push(`the macro note reads ${JSON.stringify(after.note)}`);
         if (cli !== undefined && after.cli !== cli) problems.push(`CLI reads ${after.cli}`);
         const checked = `the ${lines.length} line(s) of ${ref} in order (command text exactly${raw.accept_console_form ? ", or the console's stored form" : ""}, wait, enabled, add_to_cmdline, execute, name, note)`;
@@ -712,16 +739,19 @@ export async function storeMacro(ctx: ToolContext, raw: StoreArgs): Promise<Oper
         verification = unavailable("the macro could not be read back");
       }
     }
+    // Later macros of the call check against the name this one was left with (#102; poolnames.ts).
+    recordLeftName(names, MACRO_NAMES.ref, n, { store: mode === "create" ? run.steps.find((s) => s.name === "create")?.status : "succeeded", requested: name, write: nameStep ? { status: nameStep.status, read: nameRead } : undefined, readBack: after?.exists ? after.name : undefined, existed: mode !== "create" });
     return buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, executed: false, ...(rw.length ? { rewritten: rw } : {}), ...(after?.lines ? { lines: after.lines.map(presentLine) } : {}) } });
   };
   return preview ? body() : ctx.mutations.run(body);
 }
 
-function macroSet(ctx: ToolContext, name: string, ref: string, property: string, value: string): () => Promise<StepResult> {
+/** One property write of the macro itself; `allowSuffix`: a Name read back as "<value>#<n>" counts as applied (#102). */
+function macroSet(ctx: ToolContext, name: string, ref: string, property: string, value: string, allowSuffix = false): () => Promise<StepResult> {
   return () =>
     requestStep(ctx.bridge, name, "set", { ref, property, value }, (res) => {
       const got = (res as { value?: unknown } | null)?.value;
-      const ok = property === "CLI" ? yesNo(got) === yesNo(value) : text(got) === value;
+      const ok = property === "CLI" ? yesNo(got) === yesNo(value) : text(got) === value || (allowSuffix && property === "Name" && value.trim() !== "" && got !== undefined && got !== null && nameOrSuffixed(text(got), value));
       return ok ? { name, status: "succeeded", op: "set", detail: { ref, property, value: got } } : { name, status: "failed", op: "set", detail: { ref, property, sent: value, readBack: got ?? null }, error: `the console did not apply ${property}=${JSON.stringify(value)} on ${ref}: it reads ${JSON.stringify(got ?? null)}` };
     }, ctx.requestTimeoutMs);
 }
@@ -1094,7 +1124,7 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
       title: "Create a macro or replace or append its lines (never runs it)",
       description:
         "mode (required): create (refuses an existing macro), replace (removes the existing lines first, keeping the macro, its appearance and its executor assignments) or append (adds after the existing lines). lines: [{command, wait (seconds, \"follow\" or \"go\" = a manual wait until the next Go+), enabled, add_to_cmdline, execute, name, note, raw}]; name, note, cli of the macro. " +
-        "Before anything is sent the references in each line are checked (single objects named with full keywords; a Store earlier in the macro counts as creating its object); raw: true stores a line unchecked. Refuses a locked or running macro. Sends Store Macro N, Delete/Store Macro N.L and one set per property; NEVER runs the macro. " +
+        "Before anything is sent the references in each line are checked (single objects named with full keywords; a Store earlier in the macro counts as creating its object); raw: true stores a line unchecked. Refuses a locked or running macro, and a name another macro has (naming the holder; the pool's names are read once per call, compared case-insensitively; a duplicate makes lookups by name ambiguous, and whether the console would store \"<name>#2\" is not verified for macros): on_name_taken refuse (default) | allow_suffix (store anyway); in the batch form a name an earlier macro of the call was stored under counts as taken. Sends Store Macro N, Delete/Store Macro N.L and one set per property; NEVER runs the macro. " +
         "The console rewrites command text outside quotes (trims, collapses spaces, expands abbreviated keywords): every line is read back and compared exactly; a rewritten line is a mismatch unless accept_console_form: true (it is reported in rewritten either way). " +
         BATCH_NOTE,
       inputSchema: {
@@ -1103,13 +1133,14 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
         mode: z.enum(["create", "replace", "append"]).optional().describe("Required (per macro or for the whole batch)."),
         lines: z.array(lineSchema).optional().describe("Required unless macros is given."),
         name: z.string().optional(),
+        on_name_taken: z.enum(ON_NAME_TAKEN).optional().describe("When another macro has the name: refuse (default, nothing is sent) or allow_suffix (store anyway)."),
         note: z.string().optional(),
         cli: z.boolean().optional(),
         accept_console_form: z.boolean().optional(),
         preview: z.boolean().optional(),
         verify: z.boolean().optional(),
         macros: z
-          .array(z.object({ macro: z.number(), mode: z.enum(["create", "replace", "append"]).optional(), lines: z.array(lineSchema), name: z.string().optional(), note: z.string().optional(), cli: z.boolean().optional() }))
+          .array(z.object({ macro: z.number(), mode: z.enum(["create", "replace", "append"]).optional(), lines: z.array(lineSchema), name: z.string().optional(), on_name_taken: z.enum(ON_NAME_TAKEN).optional(), note: z.string().optional(), cli: z.boolean().optional() }))
           .optional()
           .describe("Batch form: several macros, each {macro, mode, lines, name, note, cli}; mode may be given once for all."),
         ...batchOptionShape,
@@ -1126,7 +1157,8 @@ export const registerMacroTools: RegisterTools = (server, ctx) => {
               label: (it) => `Macro ${String(it.macro)}`,
               key: (it) => `Macro ${String(it.macro)}`,
               check: (items) => duplicates(items.map((it) => String(it.macro))).map((m) => `Macro ${m} appears more than once in macros`),
-              run: (it, c) => storeMacro(c, it as unknown as StoreArgs),
+              // The macro pool's names are read once for the whole call; a macro stored earlier in the call holds its name (#102).
+              run: ((names: PoolNameCache<string>) => (it: Record<string, unknown>, c: ToolContext) => storeMacro(c, it as unknown as StoreArgs, { names }))(new Map()),
             })
           : storeMacro(inDataPool(ctx, args), args),
       ),

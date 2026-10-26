@@ -38,6 +38,13 @@ and property operations, and nothing needs `gma3_lua`. Evidence: [the SB-02 prob
 - **Store Group on an existing group overwrites it** (with or without `/Overwrite`) and keeps its name. `/Merge`
   shifts and reorders cells, so the tool always stores the complete list. A locked group answers "Object locked" and
   silently ignores a rename; the tools refuse it.
+- **A name another group or MAtricks has is refused before anything is sent**
+  ([#102](https://github.com/bdstark/gma3-mcp/issues/102)). The console keeps names unique within a preset pool and
+  stores a taken name as `"<name>#2"` (live for presets, tags and Quickeys). **For groups and MAtricks the console's
+  behaviour is not verified**: no probe shows whether it renames a duplicate or keeps it. The tools refuse anyway,
+  because two objects of one pool under one name make every lookup by name ambiguous. The holder is named
+  (`"Front" is Group 5`); names are compared trimmed and case-insensitively. `on_name_taken: "allow_suffix"` stores
+  anyway: the requested name or a `"<name>#<n>"` read-back is then expected, with a warning.
 - **`Store MAtricks` copies the programmer's selection MAtricks.** A new MAtricks object would inherit whatever wings,
   groups or fades are active on the selection, so `gma3_configure_matricks` reads the new object right after `Store`
   and writes every property that differs from the request.
@@ -57,9 +64,9 @@ listed as `unreadable`, never dropped.
 
 ## `gma3_store_group`
 
-Parameters: `group` (1–9999), `name?`, exactly one of `items` / `arrangement`, `overwrite?`,
-`preserve_grid_positions?` (default true), `allow_shared_cells?`, `exclusive` (required unless `preview`), `preview?`,
-`verify?` (default true).
+Parameters: `group` (1–9999), `name?`, `on_name_taken?` (`refuse`, the default, or `allow_suffix`), exactly one of
+`items` / `arrangement`, `overwrite?`, `preserve_grid_positions?` (default true), `allow_shared_cells?`, `exclusive`
+(required unless `preview`), `preview?`, `verify?` (default true).
 
 - **`items`**: `[{fixture, x, y, z?}]`, fixture as `401` or `"501.1"` (a FID 1–99999999, then up to 7 cell numbers
   1–99999), integer cells −9999..9999, z default 0.
@@ -80,28 +87,31 @@ Requests, in order:
 
 1. read `check_group`: `objects Group <n>` (Name, Lock, ...). Missing: new group. Existing without `overwrite: true`,
    locked, or with a Lock that cannot be read: refused.
-2. read `check_fixtures`: one `objects Fixture <id>` per fixture; any that is not a Fixture/SubFixture is refused.
+2. read `check_name` (only with `name`, and not when an existing group already has exactly that name): `children` of
+   `DataPool.Groups` (fields `No` and `Name`), once per call. Another group with the name: refused, naming it, unless
+   `on_name_taken: "allow_suffix"`. An unreadable listing refuses too (a warning with `allow_suffix`).
+3. read `check_fixtures`: one `objects Fixture <id>` per fixture; any that is not a Fixture/SubFixture is refused.
    Each id is resolved to its console address, the identity every later comparison uses: two ids for one object
    (a cell's dotted path `501.3` and its own FID `9001`) are refused here, because the console would ignore the
    second selection. A cell requested as `501.3` that reads back as FID `9001` therefore still matches.
-3. read `read_selection`: `selection.grid`, reported as `selectionBefore` (what the tool is about to clear). An old
+4. read `read_selection`: `selection.grid`, reported as `selectionBefore` (what the tool is about to clear). An old
    bridge fails here, before anything is sent.
-4. `preview: true` stops here and returns `plan` (`items`, `gaps`, `offsetFromOrigin`, `bounds`, `sharedCells`).
-5. `clear_selection`: `ClearSelection` (deselects; programmer values stay).
-6. `build_selection`: per fixture `Grid x/y/z` then `Fixture <id>`, each answer must be OK (one aggregated step that
+5. `preview: true` stops here and returns `plan` (`items`, `gaps`, `offsetFromOrigin`, `bounds`, `sharedCells`).
+6. `clear_selection`: `ClearSelection` (deselects; programmer values stay).
+7. `build_selection`: per fixture `Grid x/y/z` then `Fixture <id>`, each answer must be OK (one aggregated step that
    names the failing command).
-7. read `check_selection`: `selection.grid` must hold exactly the planned fixtures on the planned cells. **Otherwise
+8. read `check_selection`: `selection.grid` must hold exactly the planned fixtures on the planned cells. **Otherwise
    nothing is stored.**
-8. `store`: `Store Group <n> /NoConfirmation` (`/Overwrite /NoConfirmation` for an existing group).
-9. `set_preserve_grid_positions`, then `set_name` when `name` is given: `set` with read-back.
-10. verify (default): `group.read` compared fixture by fixture (cells, PreserveGridPositions, name); then
+9. `store`: `Store Group <n> /NoConfirmation` (`/Overwrite /NoConfirmation` for an existing group).
+10. `set_preserve_grid_positions`, then `set_name` when `name` is given: `set` with read-back.
+11. verify (default): `group.read` compared fixture by fixture (cells, PreserveGridPositions, name); then
     `ClearSelection`, `Grid 0/0/0`, `Group <n>` and `selection.grid` compared again (fixtures only when
     `preserve_grid_positions` is false). Either difference makes `verification` `mismatched`.
-11. cleanup, always once anything was sent: `cleanup_clear_selection` (`ClearSelection`) and `cleanup_cursor`
+12. cleanup, always once anything was sent: `cleanup_clear_selection` (`ClearSelection`) and `cleanup_cursor`
     (`Grid 0/0/0`). They are ordinary steps: a failed cleanup makes the outcome `partial` (an error) and adds a warning
     that fixtures may still be selected.
 
-The tool holds this server's mutation lock from step 5 to the end. It cannot stop another operator from selecting
+The tool holds this server's mutation lock from step 6 to the end. It cannot stop another operator from selecting
 fixtures in between; `check_selection` and the recall check detect that.
 
 ### Compact specs and the batch form (SU-12)
@@ -124,7 +134,10 @@ fixtures in between; `check_selection` and the recall check detect that.
   is sent.
 - `groups: [{group, name, items | arrangement, overwrite, preserve_grid_positions, allow_shared_cells}]` stores
   several groups one after the other, each with the steps above; `exclusive`, `verify` and the other options apply to
-  every item unless an item gives its own. A group listed twice is refused. See
+  every item unless an item gives its own. A group listed twice is refused. The group pool's names are read once for
+  the call: a name an earlier group of the call was stored under counts as taken (`"Wash" is Group 902 (stored earlier
+  in this call)`), and a refused group fails alone, before its store. A store that leaves a name nobody read (an
+  unnamed new group, a failed or unanswered rename) makes the next named group read the pool again. See
   [Batch forms](README.md#batch-forms-su-12).
 
 ## `gma3_matricks` and `gma3_configure_matricks`
@@ -147,9 +160,12 @@ centre (`to`): **a centre-out delay is `{wings: 2, delay: {from: <outer>, to: 0}
 from a fresh MAtricks (inverts, align ranges, relative flags, phaser transform, shuffle mode, speed-master override;
 outside the qualified model, which only resets them).
 
-`gma3_configure_matricks {matricks, name?, create?, x?, y?, z?, reset_unspecified?, preview?, verify?}`:
+`gma3_configure_matricks {matricks, name?, on_name_taken?, create?, x?, y?, z?, reset_unspecified?, preview?, verify?}`:
 
 1. read `read_matricks`: missing without `create: true`, locked, or with an unreadable requested value: refused.
+   Then `check_name` (with a `name` the object does not already have): `children` of `DataPool.MAtricks`; a name
+   another MAtricks has is refused before anything is sent, naming it, unless `on_name_taken: "allow_suffix"` (see
+   above; not verified on the console for MAtricks).
 2. Existing object: only settings that differ are written (`intended.changes`; equal ones under `unchanged`); with
    `reset_unspecified: true` every other per-axis setting goes to None and the other settings to their defaults
    (`intended.resets`), including **SpeedMasterOverride**, which is cleared with `"0"` (the only form the console
@@ -178,6 +194,8 @@ Apply a MAtricks to a selection with `Recall MAtricks <n>` (`Call MAtricks` answ
   and are not modelled; group-level MAtricks (the MAtricks properties a group object also has) are not touched;
   `Width`, `Shift` and `Shuffle` are written and read back but their distribution was not measured.
 - Not covered: groups and MAtricks of other data pools (the tools address the current one by number).
+- Not verified live: the name check (`children` of `DataPool.Groups` and `DataPool.MAtricks` with `No` and `Name`),
+  and what the console does with a duplicate group or MAtricks name; only the fake bridge covers them.
 
 ## Live test
 

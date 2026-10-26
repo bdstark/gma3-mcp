@@ -58,6 +58,11 @@ No new bridge op: the tools use `children`, `objects`, `object`, `set` and `cmd`
 - **Locked or running macros are not edited.** The console silently ignores edits to a locked macro. A running macro
   (it shows a current line) is refused: stop it first. Only a read LineNo of "" counts as idle; a missing or malformed
   one is `runState: "unknown"`, and authoring is refused then too.
+- **A macro name another macro has is refused before anything is sent**
+  ([#102](https://github.com/bdstark/gma3-mcp/issues/102)), naming the holder (`"Intro" is Macro 5`). The console
+  keeps preset, tag and Quickey names unique and stores a taken one as `"<name>#2"`; **for macros this is not
+  verified**. The tool refuses anyway, because two macros under one name make every lookup by name ambiguous.
+  `on_name_taken: "allow_suffix"` stores anyway, and a `"<name>#<n>"` read-back is then expected, with a warning.
 - **Waits are verified numerically.** The `set` reply shows a wait as display text ("1h00m00.00"), so every written wait
   is read back with `asText: false`.
 
@@ -77,8 +82,8 @@ No new bridge op: the tools use `children`, `objects`, `object`, `set` and `cmd`
 
 ## `gma3_store_macro`
 
-`{macro, mode: "create" | "replace" | "append", lines: [...], name?, note?, cli?, accept_console_form?, preview?,
-verify?}`; each line is `{command, wait?, enabled? (true), add_to_cmdline? (false), execute? (true), name?, note?,
+`{macro, mode: "create" | "replace" | "append", lines: [...], name?, on_name_taken? ("refuse" | "allow_suffix"),
+note?, cli?, accept_console_form?, preview?, verify?}`; each line is `{command, wait?, enabled? (true), add_to_cmdline? (false), execute? (true), name?, note?,
 raw?}`.
 
 | Mode | Requires | Sends |
@@ -86,6 +91,11 @@ raw?}`.
 | `create` | the macro does not exist | `Store Macro N /NoConfirmation`, then the lines |
 | `replace` | the macro exists | `Delete Macro N.L /NoConfirmation` from the last line to the first, then the lines; the macro itself (its appearance, executor assignments) is kept; `lines: []` clears it |
 | `append` | the macro exists | the lines after the existing ones, which are verified unchanged |
+
+Before anything is sent, `read_macro` checks the mode, lock and run state; with a `name` the macro does not already
+have, `check_name` lists `DataPool.Macros` (`children`, fields `No` and `Name`, once per call) and refuses a name
+another macro has (compared trimmed and case-insensitively). An unreadable listing refuses too (a warning with
+`allow_suffix`). Then `check_references` checks the lines.
 
 Each line is created with `Store Macro N.L /NoConfirmation` at the end of the macro and gets one `set` per property
 (Command, Wait, Enabled, AddToCmdline, Execute, Name, Note), each compared with the console's reply. Then the macro's
@@ -117,7 +127,10 @@ appears in `references` as `$name` with status `exists`, `created_earlier`, `mis
 
 - `gma3_store_macro` with `macros: [{macro, mode, lines, name, note, cli}]`: several macros, each with this tool's
   reference checks and read-back. `mode` and `accept_console_form` may be given once for all. A macro listed twice is
-  refused. A macro stored earlier in the batch counts as existing for a later macro's references.
+  refused. A macro stored earlier in the batch counts as existing for a later macro's references, and its name as
+  taken for a later macro's name (`"Blackout" is Macro 902 (stored earlier in this call)`); a refused macro fails
+  alone, before its store. A store that leaves a name nobody read (an unnamed new macro, a failed or unanswered
+  rename) makes the next named macro read the pool again.
 - `gma3_edit_macro_line` with `edits: [{macro, action, line, ...}]`: the edits run in order, each against the macro as
   the earlier edits left it (line numbers shift after an insert, move or remove). Once an edit on a macro does not
   succeed, the later edits on that macro are not attempted; edits on other macros go on.
@@ -169,6 +182,8 @@ See [Batch forms](README.md#batch-forms-su-12).
   - a rewritten `echo  done` reported (`Echo done`) as a mismatch, then accepted with `accept_console_form`;
   - `off` on an idle macro.
 - Not covered:
+  - the name check (`children` of `DataPool.Macros` with `No` and `Name`) and what the console does with a duplicate
+    macro name: only the fake bridge covers them;
   - lines with `(prompts)` in operation (they open an input pop-up);
   - `add_to_cmdline` / `execute: false` lines in a run (see the KB-10 probe for their command-line behaviour);
   - macro variables;

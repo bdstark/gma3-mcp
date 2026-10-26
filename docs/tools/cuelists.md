@@ -72,7 +72,8 @@ cue. The look check is the evidence that the programmer held the right values at
 | Param | Notes |
 | --- | --- |
 | `sequence` | sequence number; the store creates it when it does not exist |
-| `sequence_name` | optional |
+| `sequence_name` | optional; a new name another sequence has is refused before anything is sent (below) |
+| `on_name_taken` | `refuse` (default) or `allow_suffix`: what happens when another sequence has `sequence_name` |
 | `mode` | `create` (refuse existing cues), `merge`, `overwrite` |
 | `fixtures` | default target for looks without their own |
 | `cues` | 1–100 cues: `cue` (number), `name`, content, `fade`, `delay`, `out_fade`, `out_delay`, `trigger` (`go`, `time` with `time`, `follow` with optional `time`, `sound`, `bpm`), `note` |
@@ -83,6 +84,16 @@ object after the store (one line, trimmed; `""` clears it; quotes and the charac
 read back exactly, case included. Not verified on a console for this change. For the recipe lines of the cues, use
 [`gma3_store_recipe_cues`](recipes.md#gma3_store_recipe_cues), which also takes a note per cue.
 
+**Sequence names** ([#102](https://github.com/bdstark/gma3-mcp/issues/102)). When `sequence_name` names a new
+sequence or renames one, `gma3_store_cues` lists `DataPool.Sequences` first (`children`, fields `No` and `Name`, once
+per call) and refuses a name another sequence has before anything is sent, naming the holder (`"Looks" is Sequence
+5`; compared trimmed and case-insensitively). A sequence that already has the name keeps it and is not checked. An
+unreadable listing refuses too. The console keeps preset, tag and Quickey names unique and stores a taken one as
+`"<name>#2"`; **for sequences this is not verified**, and the tool refuses anyway because two sequences under one name
+make every lookup by name ambiguous. `on_name_taken: "allow_suffix"` stores anyway, with a warning. The name write is
+judged by its read-back: a name the console did not apply fails the step (a `"<name>#<n>"` one is expected with
+`allow_suffix`). `gma3_build_chase` does not check its `name` yet.
+
 Tracking is the sequence's own setting: with Tracking on, a cue's stored values track into later cues that do not
 store those attributes.
 
@@ -90,7 +101,10 @@ store those attributes.
 
 `sequences: [{sequence, sequence_name, mode, fixtures, cues}]` stores cues in several sequences; each sequence is its
 own Preview build with the steps above, and `mode`, `fixtures` and `exclusive` may be given once for all. A sequence
-listed twice is refused. See [Batch forms](README.md#batch-forms-su-12).
+listed twice is refused. The sequence pool's names are read once for the call: a name an earlier sequence of the call
+took counts as taken, and a refused sequence fails alone, before its build. A build that leaves a name nobody read (a
+new unnamed sequence, a failed or unanswered rename) makes the next named sequence read the pool again. See
+[Batch forms](README.md#batch-forms-su-12).
 
 The results of `gma3_store_cues` and `gma3_build_chase` are compact by default:
 - one line per cue: `{cue, status, verification, name}`, with `error`, `detail` and `looks` only for a cue that did
@@ -199,4 +213,5 @@ It:
 5. builds a 0.5 s three-step chase and watches one full cycle;
 6. builds a six-step 1 s chase with `observe_max_seconds: 5` and watches its tail through the wrap.
 
-Everything is deleted afterwards. The chases play for a few seconds.
+Everything is deleted afterwards. The chases play for a few seconds. The sequence-name check of #102 is covered only
+by the fake bridge.

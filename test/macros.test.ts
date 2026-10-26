@@ -68,6 +68,11 @@ class Console {
   /** Run-state reads that fail, and macros whose LineNo the read omits. */
   failRunReads = false;
   omitLineNo = false;
+  /** #102: the pool listings (children of DataPool.Macros) read, in order, and whether they fail. */
+  listed: string[] = [];
+  failChildren = false;
+  /** #102: macros whose Name write the console rejects. */
+  rejectNameFor = new Set<number>();
 
   macro(n: number, lines: Array<Partial<FLine>> = [], name = `Macro ${n}`): FMacro {
     const m: FMacro = { name, note: "", lock: false, cli: true, lines: lines.map((l) => ({ name: "", note: "", command: "", wait: "Follow", enabled: true, add: false, exec: true, ...l })) };
@@ -98,10 +103,12 @@ class Console {
     h.fake.on("children", (args) => {
       const ref = String(args.ref);
       if (ref === "DataPool.Macros") {
+        this.listed.push(ref);
+        if (this.failChildren) throw new Error("timeout");
         const all = [...this.macros].sort(([a], [b]) => a - b);
         const off = Number(args.offset ?? 0);
         const lim = Number(args.limit ?? 100);
-        return { total: all.length, offset: off, items: all.slice(off, off + lim).map(([n, m]) => ({ index: n, name: m.name, childCount: m.lines.length, fields: { Name: m.name } })) };
+        return { total: all.length, offset: off, items: all.slice(off, off + lim).map(([n, m]) => ({ index: n, name: m.name, childCount: m.lines.length, fields: { No: String(n), Name: m.name } })) };
       }
       const f = find(ref);
       if (!f) throw new Error(`no object found for '${ref}'`);
@@ -135,8 +142,11 @@ class Console {
       const value = String(args.value);
       const f = find(ref)!;
       if (f.line === undefined) {
+        if (prop === "Name" && this.rejectNameFor.has(Number(ref.replace("Macro ", "")))) throw new Error("Illegal value");
         if (!f.m.lock && !this.ignore.has(prop)) {
-          if (prop === "Name") f.m.name = value;
+          // #102: not probed for macros; modelled on the preset pool's rule (a taken name gets "#2", live for presets).
+          const taken = [...this.macros].some(([k, o]) => o !== f.m && o.name.toLowerCase() === value.toLowerCase());
+          if (prop === "Name") f.m.name = taken ? `${value}#2` : value;
           if (prop === "Note") f.m.note = value;
           if (prop === "CLI") f.m.cli = value === "Yes";
         }
@@ -616,4 +626,92 @@ test("a Store earlier in the same command line satisfies the line's later statem
   con.macro(901, [{ command: "Store Sequence 950 /NoConfirmation" }, { command: "Go+ Sequence 950; Store Sequence 950 /NoConfirmation" }]);
   const order = await h.callJson("gma3_edit_macro_line", { macro: 901, action: "remove", line: 1 });
   assert.match(stepError(order.result, "check_dependents"), /line 1 uses Sequence 950/, "a Store after the Go in the same line does not satisfy it");
+});
+
+// ---------------------------------------------------------------------------
+// #102: a name another macro has
+// ---------------------------------------------------------------------------
+
+const sets = () => h.fake.requests.filter((r) => r.op === "set");
+const echo = [{ command: "Echo x" }];
+
+test("#102 store_macro: a name another macro has is refused before anything is sent, naming the holder (also in preview, case-insensitively)", async () => {
+  con.macro(5, [], "Intro");
+  const { result, isError } = await store({ mode: "create", name: "Intro", lines: echo });
+  assert.equal(isError, true);
+  assert.equal(result.outcome, "failed");
+  assert.match(stepError(result, "check_name"), /the name "Intro" is taken: "Intro" is Macro 5\. .*ambiguous.*not verified for macros.*on_name_taken: "allow_suffix"; nothing was sent/);
+  assert.match(result.summary, /"Intro" is Macro 5/);
+  assert.equal(con.commands.length + sets().length, 0, "nothing is sent");
+  assert.equal(con.macros.has(901), false);
+  assert.deepEqual(con.listed, ["DataPool.Macros"]);
+  const pv = await store({ mode: "create", name: "intro", lines: echo, preview: true });
+  assert.match(stepError(pv.result, "check_name"), /"Intro" is Macro 5 \(names are compared case-insensitively\)/);
+  assert.equal(con.commands.length, 0);
+});
+
+test("#102 store_macro: replacing a macro's lines under its own name is no collision, and the pool is not read", async () => {
+  con.macro(901, [{ command: "Echo old" }], "Intro");
+  const { result, isError } = await store({ mode: "replace", name: "Intro", lines: echo });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  assert.deepEqual(result.steps.find((s: any) => s.name === "check_name").detail, { unchanged: true });
+  assert.deepEqual(con.listed, []);
+});
+
+test("#102 store_macro: on_name_taken allow_suffix stores and expects the console's \"#2\"; an unreadable listing refuses (allow_suffix: a warning)", async () => {
+  con.macro(5, [], "Intro");
+  const { result, isError } = await store({ mode: "create", name: "Intro", lines: echo, on_name_taken: "allow_suffix" });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.outcome, "succeeded");
+  assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  assert.equal(con.macros.get(901)!.name, "Intro#2");
+  assert.ok(result.warnings.some((w: string) => /"Intro" is Macro 5.*allow_suffix/.test(w)), JSON.stringify(result.warnings));
+  assert.ok(result.warnings.some((w: string) => /stored the name as "Intro#2"/.test(w)), JSON.stringify(result.warnings));
+  con.failChildren = true;
+  const refused = await h.callJson("gma3_store_macro", { macro: 902, mode: "create", name: "Outro", lines: echo });
+  assert.match(stepError(refused.result, "check_name"), /the names of the macro pool could not be read \(timeout\).*nothing was sent/);
+  assert.equal(con.macros.has(902), false);
+  const allowed = await h.callJson("gma3_store_macro", { macro: 902, mode: "create", name: "Outro", lines: echo, on_name_taken: "allow_suffix" });
+  assert.equal(allowed.result.verification.status, "matched", JSON.stringify(allowed.result));
+  assert.ok(allowed.result.warnings.some((w: string) => /could not be read.*allow_suffix/.test(w)));
+});
+
+test("#102 store_macro batch: a taken name fails only its macro, a name an earlier macro took is taken, the pool is read once", async () => {
+  con.macro(5, [], "Intro");
+  const { result } = await h.callJson("gma3_store_macro", {
+    mode: "create",
+    macros: [
+      { macro: 901, name: "Intro", lines: echo },
+      { macro: 902, name: "Blackout", lines: echo },
+      { macro: 903, name: "BLACKOUT", lines: echo },
+      { macro: 904, name: "Outro", lines: echo },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), ["Macro 901:failed", "Macro 902:succeeded", "Macro 903:failed", "Macro 904:succeeded"], JSON.stringify(result.items));
+  assert.match(result.items[0].summary, /"Intro" is Macro 5/);
+  assert.match(result.items[2].summary, /"Blackout" is Macro 902 \(stored earlier in this call\)/);
+  assert.equal(con.commands.some((c) => /^Store Macro 90[13]/.test(c)), false, "no store for the refused macros");
+  assert.deepEqual([901, 902, 903, 904].map((n) => con.macros.get(n)?.name ?? null), [null, "Blackout", null, "Outro"]);
+  assert.deepEqual(con.listed, ["DataPool.Macros"]);
+});
+
+test("#102 store_macro batch (verify off): a rejected rename keeps the holder's real name, an unnamed create's default name is taken", async () => {
+  con.macro(5, [{ command: "Echo old" }], "Intro");
+  con.rejectNameFor.add(5);
+  const { result } = await h.callJson("gma3_store_macro", {
+    verify: false,
+    macros: [
+      { macro: 5, mode: "replace", name: "Blue", lines: echo },
+      { macro: 901, mode: "create", name: "Intro", lines: echo },
+      { macro: 902, mode: "create", name: "Blue", lines: echo },
+      { macro: 903, mode: "create", lines: echo },
+      { macro: 904, mode: "create", name: "Macro 903", lines: echo },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), ["Macro 5:partial", "Macro 901:failed", "Macro 902:succeeded", "Macro 903:succeeded", "Macro 904:failed"], JSON.stringify(result.items));
+  assert.match(result.items[1].summary, /"Intro" is Macro 5/, "the rename did not take: Intro is still held");
+  assert.match(result.items[4].summary, /"Macro 903" is Macro 903/, "the unnamed macro's default name was read again");
+  assert.deepEqual([5, 901, 902, 903, 904].map((n) => con.macros.get(n)?.name ?? null), ["Intro", null, "Blue", "Macro 903", null]);
+  assert.deepEqual(con.listed, ["DataPool.Macros", "DataPool.Macros", "DataPool.Macros"]);
 });

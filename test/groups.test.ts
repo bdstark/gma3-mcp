@@ -66,6 +66,21 @@ class Console {
   hidden = new Set<string>();
   /** Answer the n-th ClearSelection (1-based) with an error. */
   failClearCall = 0;
+  /** #102: the pool listings (children of DataPool.Groups / DataPool.MAtricks) read, in order, and whether they fail. */
+  listed: string[] = [];
+  failChildren = false;
+  /**
+   * #102: what a Name write does when another object of the pool has the name. Not probed for groups or MAtricks:
+   * "suffix" models the preset pool's rule ("Front" -> "Front#2", live for presets 2026-10-25), "keep" a console
+   * that allows the duplicate.
+   */
+  duplicateName: "suffix" | "keep" = "suffix";
+  /** #102: groups whose Name write the console rejects. */
+  rejectNameFor = new Set<number>();
+  private uniqueName<T extends { name?: string; Name?: string }>(pool: Map<number, T>, n: number, value: string): string {
+    const taken = [...pool].some(([k, o]) => k !== n && String(o.name ?? o.Name ?? "").toLowerCase() === value.toLowerCase());
+    return taken && this.duplicateName === "suffix" ? `${value}#2` : value;
+  }
   private clearCalls = 0;
 
   private read(c: Cell) {
@@ -95,6 +110,15 @@ class Console {
       }
       throw new Error(`unexpected objects ref ${ref}`);
     });
+    h.fake.on("children", (args) => {
+      const ref = String(args.ref);
+      this.listed.push(ref);
+      if (this.failChildren) throw new Error("timeout");
+      const pool: Array<[number, string]> =
+        ref === "DataPool.Groups" ? [...this.groups].map(([n, g]) => [n, g.name]) : ref === "DataPool.MAtricks" ? [...this.matricks].map(([n, m]) => [n, m.Name]) : (() => { throw new Error(`unexpected children ${ref}`); })();
+      const items = pool.sort(([a], [b]) => a - b).map(([n, name]) => ({ name, index: n, addr: `addr.${n}`, fields: { No: String(n), Name: name } }));
+      return { total: items.length, offset: 0, count: items.length, items };
+    });
     h.fake.on("selection.grid", () => {
       if (this.oldBridge) throw new Error("unknown op 'selection.grid'");
       return { count: this.selection.length, items: this.selection.map((c) => this.read(c)) };
@@ -113,8 +137,9 @@ class Console {
       let m: RegExpMatchArray | null;
       if ((m = ref.match(/^Group (\d+)$/))) {
         const g = this.groups.get(Number(m[1]))!;
+        if (property === "Name" && this.rejectNameFor.has(Number(m[1]))) throw new Error("Illegal value");
         if (g.lock === "") {
-          if (property === "Name") g.name = value;
+          if (property === "Name") g.name = this.uniqueName(this.groups, Number(m[1]), value);
           if (property === "PreserveGridPositions") g.preserve = value;
         }
         return { ref, property, value: property === "Name" ? g.name : g.preserve };
@@ -125,7 +150,7 @@ class Console {
         if (accepted && !this.refuse.has(`${property}=${value}`) && mt.Lock === "") {
           // As on 2.5.1: changing the override while SpeedFromX is None sets SpeedFromX to 60 BPM.
           if (property === "SpeedMasterOverride" && mt.SpeedFromX === "None") mt.SpeedFromX = "60";
-          mt[property] = property === "SpeedMasterOverride" ? (value === "0" ? "" : `Master ${value}`) : value;
+          mt[property] = property === "SpeedMasterOverride" ? (value === "0" ? "" : `Master ${value}`) : property === "Name" ? this.uniqueName(this.matricks, Number(m[1]), value) : value;
         }
         return { ref, property, value: this.editRole(mt)[property] };
       }
@@ -708,4 +733,152 @@ test("SU-19 review 1: the cell order is read inside the store's lock span (singl
     await store;
     assert.ok(reads() > before, "read once the lock is free");
   }
+});
+
+// ---------------------------------------------------------------------------
+// #102: a name another group or MAtricks has
+// ---------------------------------------------------------------------------
+
+const holdGroup = (n: number, name: string) => con.groups.set(n, { name, lock: "", preserve: "Yes", cells: [{ id: "701", x: 0, y: 0, z: 0 }] });
+const stepOf = (result: any, name: string) => result.steps.find((s: any) => s.name === name);
+const one = [{ fixture: 401, x: 0, y: 0 }];
+
+test("#102 store_group: a name another group has is refused before anything is sent, naming the holder (also in preview, case-insensitively)", async () => {
+  holdGroup(5, "Front");
+  const { result, isError } = await h.callJson("gma3_store_group", { group: 905, name: "Front", items: one, exclusive: true });
+  assert.equal(isError, true);
+  assert.equal(result.outcome, "failed");
+  assert.match(stepOf(result, "check_name").error, /the name "Front" is taken: "Front" is Group 5\. .*ambiguous.*not verified for groups.*on_name_taken: "allow_suffix"; nothing was sent/);
+  assert.deepEqual(stepOf(result, "check_name").detail, { taken: true, holder: 5, holderName: "Front" });
+  assert.match(result.summary, /"Front" is Group 5/);
+  assert.equal(mutations().length, 0, "nothing is sent");
+  assert.equal(con.groups.has(905), false);
+  assert.deepEqual(con.listed, ["DataPool.Groups"]);
+  const lower = await h.callJson("gma3_store_group", { group: 905, name: "front", items: one, preview: true });
+  assert.match(stepOf(lower.result, "check_name").error, /"Front" is Group 5 \(names are compared case-insensitively\)/);
+  assert.equal(mutations().length, 0);
+  // Unnamed stores do not read the pool.
+  const unnamed = await h.callJson("gma3_store_group", { group: 906, items: one, exclusive: true });
+  assert.equal(unnamed.result.verification.status, "matched", JSON.stringify(unnamed.result));
+  assert.equal(con.listed.length, 2);
+});
+
+test("#102 store_group: overwriting a group under its own name is no collision, and the pool is not read", async () => {
+  holdGroup(5, "Front");
+  const { result, isError } = await h.callJson("gma3_store_group", { group: 5, name: "Front", items: one, overwrite: true, exclusive: true });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.verification.status, "matched");
+  assert.deepEqual(stepOf(result, "check_name").detail, { unchanged: true });
+  assert.deepEqual(con.listed, []);
+  assert.equal(con.groups.get(5)!.name, "Front");
+  // Renaming it to a free name reads the pool and goes ahead.
+  const renamed = await h.callJson("gma3_store_group", { group: 5, name: "Back", items: one, overwrite: true, exclusive: true });
+  assert.equal(renamed.result.verification.status, "matched", JSON.stringify(renamed.result));
+  assert.equal(con.groups.get(5)!.name, "Back");
+});
+
+test("#102 store_group: on_name_taken allow_suffix stores; a \"#2\" or an unchanged duplicate read-back is expected, with warnings", async () => {
+  holdGroup(5, "Front");
+  const { result, isError } = await h.callJson("gma3_store_group", { group: 905, name: "Front", items: one, exclusive: true, on_name_taken: "allow_suffix" });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.outcome, "succeeded");
+  assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  assert.equal(con.groups.get(905)!.name, "Front#2");
+  assert.equal(result.resulting.name, "Front#2");
+  assert.ok(result.warnings.some((w: string) => /"Front" is Group 5.*allow_suffix/.test(w)), JSON.stringify(result.warnings));
+  assert.ok(result.warnings.some((w: string) => /stored the name as "Front#2"/.test(w)), JSON.stringify(result.warnings));
+  // A console that keeps the duplicate as asked (not verified either way for groups).
+  con.duplicateName = "keep";
+  const kept = await h.callJson("gma3_store_group", { group: 906, name: "Front", items: one, exclusive: true, on_name_taken: "allow_suffix" });
+  assert.equal(kept.result.verification.status, "matched", JSON.stringify(kept.result));
+  assert.equal(con.groups.get(906)!.name, "Front");
+});
+
+test("#102 store_group: an unreadable pool listing refuses a named store; with allow_suffix it is a warning", async () => {
+  con.failChildren = true;
+  const refused = await h.callJson("gma3_store_group", { group: 905, name: "Front", items: one, exclusive: true });
+  assert.equal(refused.isError, true);
+  assert.match(stepOf(refused.result, "check_name").error, /the names of the group pool could not be read \(timeout\).*nothing was sent/);
+  assert.equal(mutations().length, 0);
+  const allowed = await h.callJson("gma3_store_group", { group: 905, name: "Front", items: one, exclusive: true, on_name_taken: "allow_suffix" });
+  assert.equal(allowed.result.verification.status, "matched", JSON.stringify(allowed.result));
+  assert.ok(allowed.result.warnings.some((w: string) => /could not be read.*allow_suffix/.test(w)));
+});
+
+test("#102 store_group batch: a taken name fails only its group, a name an earlier group took is taken, the pool is read once", async () => {
+  holdGroup(5, "Front");
+  const { result } = await h.callJson("gma3_store_group", {
+    exclusive: true,
+    groups: [
+      { group: 901, name: "Front", items: one },
+      { group: 902, name: "Wash", items: one },
+      { group: 903, name: "wash", items: [{ fixture: 402, x: 0, y: 0 }] },
+      { group: 904, name: "Back", items: one },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), ["Group 901:failed", "Group 902:succeeded", "Group 903:failed", "Group 904:succeeded"], JSON.stringify(result.items));
+  assert.match(result.items[0].summary, /"Front" is Group 5/);
+  assert.match(result.items[2].summary, /"Wash" is Group 902 \(stored earlier in this call\)/);
+  assert.equal(commands().some((c) => /^Store Group 90[13] /.test(c)), false, "no store for the refused groups");
+  assert.deepEqual([901, 902, 903, 904].map((n) => con.groups.get(n)?.name ?? null), [null, "Wash", null, "Back"]);
+  assert.deepEqual(con.listed, ["DataPool.Groups"], "the pool's names are read once for the call");
+  // With allow_suffix every group is stored and the console suffixes the taken names.
+  con.groups.clear();
+  holdGroup(5, "Front");
+  con.listed = [];
+  const allowed = await h.callJson("gma3_store_group", { exclusive: true, on_name_taken: "allow_suffix", groups: [{ group: 901, name: "Front", items: one }, { group: 902, name: "Wash", items: one }, { group: 903, name: "Wash", items: one }] });
+  assert.deepEqual(allowed.result.items.map((i: any) => `${i.target}:${i.outcome}:${i.verification}`), ["Group 901:succeeded:matched", "Group 902:succeeded:matched", "Group 903:succeeded:matched"], JSON.stringify(allowed.result.items));
+  assert.deepEqual([901, 902, 903].map((n) => con.groups.get(n)!.name), ["Front#2", "Wash", "Wash#2"]);
+});
+
+test("#102 store_group batch (verify off): a rejected rename keeps the holder's real name, an unnamed create's default name is taken", async () => {
+  holdGroup(5, "Front");
+  con.rejectNameFor.add(5);
+  const { result } = await h.callJson("gma3_store_group", {
+    exclusive: true,
+    verify: false,
+    groups: [
+      { group: 5, name: "Blue", overwrite: true, items: one },
+      { group: 901, name: "Front", items: one },
+      { group: 902, name: "Blue", items: one },
+      { group: 903, items: one },
+      { group: 904, name: "Group 903", items: one },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), ["Group 5:partial", "Group 901:failed", "Group 902:succeeded", "Group 903:succeeded", "Group 904:failed"], JSON.stringify(result.items));
+  assert.match(result.items[1].summary, /"Front" is Group 5/, "the rename did not take: Front is still held");
+  assert.match(result.items[4].summary, /"Group 903" is Group 903/, "the unnamed group's default name was read again");
+  assert.equal(commands().some((c) => /^Store Group 90[14] /.test(c)), false);
+  assert.deepEqual([5, 901, 902, 903].map((n) => con.groups.get(n)?.name ?? null), ["Front", null, "Blue", "Group 903"]);
+  assert.deepEqual(con.listed, ["DataPool.Groups", "DataPool.Groups", "DataPool.Groups"], "the failed rename and the unnamed create each made the next item read the pool again");
+});
+
+test("#102 configure_matricks: a name another MAtricks has is refused before anything is sent; its own name, allow_suffix and an unreadable listing", async () => {
+  con.matricks.set(5, { ...freshMatricks(), Name: "Centre out", Lock: "" });
+  con.matricks.set(6, { ...freshMatricks(), Name: "M6", Lock: "" });
+  const taken = await h.callJson("gma3_configure_matricks", { matricks: 905, name: "Centre out", create: true, x: { wings: 2 } });
+  assert.equal(taken.isError, true);
+  assert.match(stepOf(taken.result, "check_name").error, /the name "Centre out" is taken: "Centre out" is MAtricks 5\. .*not verified for MAtricks.*nothing was sent/);
+  assert.equal(mutations().length, 0);
+  assert.equal(con.matricks.has(905), false);
+  const rename = await h.callJson("gma3_configure_matricks", { matricks: 6, name: "centre out", preview: true });
+  assert.match(stepOf(rename.result, "check_name").error, /\(names are compared case-insensitively\)/, "preview reports it too");
+  assert.equal(mutations().length, 0);
+  // Its own name: nothing to rename, the pool is not read.
+  con.listed = [];
+  const own = await h.callJson("gma3_configure_matricks", { matricks: 5, name: "Centre out", x: { wings: 2 } });
+  assert.equal(own.result.verification.status, "matched", JSON.stringify(own.result));
+  assert.deepEqual(con.listed, []);
+  // allow_suffix: written anyway, the "#2" read-back is expected.
+  const allowed = await h.callJson("gma3_configure_matricks", { matricks: 6, name: "Centre out", on_name_taken: "allow_suffix" });
+  assert.equal(allowed.isError, false, JSON.stringify(allowed.result));
+  assert.equal(allowed.result.verification.status, "matched", JSON.stringify(allowed.result.verification));
+  assert.equal(con.matricks.get(6)!.Name, "Centre out#2");
+  assert.ok(allowed.result.warnings.some((w: string) => /stored the name as "Centre out#2"/.test(w)), JSON.stringify(allowed.result.warnings));
+  // An unreadable listing refuses.
+  con.failChildren = true;
+  h.fake.requests.length = 0;
+  const unread = await h.callJson("gma3_configure_matricks", { matricks: 6, name: "Fan" });
+  assert.match(stepOf(unread.result, "check_name").error, /the names of the MAtricks pool could not be read.*nothing was sent/);
+  assert.equal(mutations().length, 0);
 });

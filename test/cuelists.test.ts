@@ -90,6 +90,9 @@ class Console {
   unreadablePriority = new Set<number>();
   current = new Map<number, number>();
   commands: string[] = [];
+  /** #102: the pool listings (children of DataPool.Sequences) read, in order, and whether they fail. */
+  listed: string[] = [];
+  failPoolList = false;
 
   set(fid: string, attr: string, v: Value) {
     const p = this.prog[this.env];
@@ -279,7 +282,8 @@ class Console {
     } else if ((m = ref.match(/^Sequence (\d+)$/))) {
       const s = this.seqs.get(+m[1]);
       if (!s) throw new Error(`no object found for '${ref}'`);
-      if (prop === "Name") s.name = value;
+      // #102: not probed for sequences; modelled on the preset pool's rule (a taken name gets "#2", live for presets).
+      if (prop === "Name") s.name = [...this.seqs].some(([k, o]) => k !== +m![1] && o.name.toLowerCase() === value.toLowerCase()) ? `${value}#2` : value;
       else if (prop === "WrapAround") s.wrap = value === "Yes";
       else (s.props ??= {})[prop] = value;
     }
@@ -293,6 +297,12 @@ class Console {
     f.on("objects", (args) => this.objects(String(args.ref), Array.isArray(args.fields) ? (args.fields as string[]) : []));
     f.on("children", (args) => {
       if (args.ref === "ShowData.Masters.Speed") return { items: [] };
+      if (args.ref === "DataPool.Sequences") {
+        this.listed.push(String(args.ref));
+        if (this.failPoolList) throw new Error("timeout");
+        const items = [...this.seqs].sort(([a], [b]) => a - b).map(([n, q]) => ({ name: q.name, index: n, addr: `seq.${n}`, fields: { No: String(n), Name: q.name } }));
+        return { total: items.length, offset: 0, count: items.length, items };
+      }
       const s = this.seqs.get(Number(String(args.ref).replace(/^Sequence /, "")));
       if (!s) throw new Error(`no objects found for '${args.ref}'`);
       return { items: s.cues.map((c) => ({ name: c.name, class: "Cue", addr: `seq.${String(args.ref).replace(/^Sequence /, "")}.cue.${c.no}`, fields: { No: c.no * 1000, Name: c.name } })) };
@@ -309,7 +319,8 @@ class Console {
       if (this.rejectSet?.test(key)) throw new Error("Access denied");
       if (this.ignoreSet?.test(key)) return { ref, property: prop, value };
       this.applySet(ref, prop, value);
-      return { ref, property: prop, value };
+      const seqName = prop === "Name" ? ref.match(/^Sequence (\d+)$/) : null;
+      return { ref, property: prop, value: seqName ? this.seqs.get(+seqName[1])!.name : value };
     });
     f.on("object", (args) => {
       const no = Number(String(args.ref).replace(/^Sequence /, ""));
@@ -1102,6 +1113,130 @@ test("store_cues (#101): a note per cue is written on the cue and read back exac
     assert.match(cased.result.verification.detail ?? "", /Note: expected "Bank B", read "bank b"/, "compared exactly, not ignoring case");
     const bad = await h.callJson("gma3_store_cues", { sequence: 951, mode: "merge", fixtures: "101", exclusive: true, cues: [{ cue: 5, intensity: 10, note: "a\nb" }] });
     assert.match(bad.result.validationErrors.join(), /cues\[0\]\.note must be one line/);
+  } finally {
+    await h.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #102: a sequence_name another sequence has
+// ---------------------------------------------------------------------------
+
+const holdSeq = (c: Console, n: number, name: string) => c.seqs.set(n, { name, wrap: true, cues: [] });
+const lookCue = (cue: number) => ({ cue, intensity: 10 * cue });
+
+test("#102 store_cues: a sequence_name another sequence has is refused before anything is sent, naming the holder", async () => {
+  const { h, c } = await setup();
+  try {
+    holdSeq(c, 5, "Looks");
+    const { result, isError } = await h.callJson("gma3_store_cues", { sequence: 951, sequence_name: "looks", mode: "create", fixtures: "101", detail: true, exclusive: true, cues: [lookCue(1)] });
+    assert.equal(isError, true);
+    assert.equal(result.outcome, "failed");
+    const chk = result.steps.find((s: any) => s.name === "check_sequence_name");
+    assert.match(chk.error, /the name "looks" is taken: "Looks" is Sequence 5 \(names are compared case-insensitively\)\. .*not verified for sequences.*nothing was sent/);
+    assert.deepEqual(c.commands, [], "nothing is sent, not even Preview On");
+    assert.equal(c.seqs.has(951), false);
+    assert.deepEqual(c.listed, ["DataPool.Sequences"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("#102 store_cues: a sequence keeping its own name is not checked against the others; a rename to a free name is stored", async () => {
+  const { h, c } = await setup();
+  try {
+    c.addCue(951, 1);
+    c.seqs.get(951)!.name = "Looks";
+    const kept = await h.callJson("gma3_store_cues", { sequence: 951, sequence_name: "Looks", mode: "merge", fixtures: "101", detail: true, exclusive: true, cues: [lookCue(2)] });
+    assert.equal(kept.isError, false, JSON.stringify(kept.result));
+    assert.deepEqual(kept.result.steps.find((s: any) => s.name === "check_sequence_name").detail, { unchanged: true });
+    const renamed = await h.callJson("gma3_store_cues", { sequence: 951, sequence_name: "Scenes", mode: "merge", fixtures: "101", detail: true, exclusive: true, cues: [lookCue(3)] });
+    assert.equal(renamed.isError, false, JSON.stringify(renamed.result));
+    assert.equal(c.seqs.get(951)!.name, "Scenes");
+    assert.equal(renamed.result.steps.find((s: any) => s.name === "sequence_name").status, "succeeded");
+  } finally {
+    await h.close();
+  }
+});
+
+test("#102 store_cues: allow_suffix stores and expects the \"#2\" name; an unreadable listing refuses (allow_suffix: a warning); a rejected name write fails", async () => {
+  const { h, c } = await setup();
+  try {
+    holdSeq(c, 5, "Looks");
+    const { result, isError } = await h.callJson("gma3_store_cues", { sequence: 951, sequence_name: "Looks", on_name_taken: "allow_suffix", mode: "create", fixtures: "101", detail: true, exclusive: true, cues: [lookCue(1)] });
+    assert.equal(isError, false, JSON.stringify(result));
+    assert.equal(result.outcome, "succeeded");
+    assert.equal(c.seqs.get(951)!.name, "Looks#2");
+    assert.equal(result.steps.find((s: any) => s.name === "sequence_name").detail.suffixed, true);
+    assert.ok(result.warnings.some((w: string) => /"Looks" is Sequence 5.*allow_suffix/.test(w)), JSON.stringify(result.warnings));
+    assert.ok(result.warnings.some((w: string) => /stored the name of Sequence 951 as "Looks#2"/.test(w)), JSON.stringify(result.warnings));
+    c.failPoolList = true;
+    const before = c.commands.length;
+    const refused = await h.callJson("gma3_store_cues", { sequence: 952, sequence_name: "Other", mode: "create", fixtures: "101", detail: true, exclusive: true, cues: [lookCue(1)] });
+    assert.match(refused.result.steps.find((s: any) => s.name === "check_sequence_name").error, /the names of the sequence pool could not be read \(timeout\).*nothing was sent/);
+    assert.equal(c.commands.length, before);
+    const allowed = await h.callJson("gma3_store_cues", { sequence: 952, sequence_name: "Other", on_name_taken: "allow_suffix", mode: "create", fixtures: "101", detail: true, exclusive: true, cues: [lookCue(1)] });
+    assert.equal(allowed.isError, false, JSON.stringify(allowed.result));
+    assert.ok(allowed.result.warnings.some((w: string) => /could not be read.*allow_suffix/.test(w)));
+    c.failPoolList = false;
+    c.rejectSet = /^Sequence 953 Name$/;
+    const rejected = await h.callJson("gma3_store_cues", { sequence: 953, sequence_name: "Third", mode: "create", fixtures: "101", detail: true, exclusive: true, cues: [lookCue(1)] });
+    assert.equal(rejected.result.steps.find((s: any) => s.name === "sequence_name").status, "failed");
+    assert.equal(rejected.isError, true);
+  } finally {
+    await h.close();
+  }
+});
+
+test("#102 store_cues batch: a taken name fails only its sequence, a name an earlier sequence took is taken, the pool is read once", async () => {
+  const { h, c } = await setup();
+  try {
+    holdSeq(c, 5, "Looks");
+    const { result } = await h.callJson("gma3_store_cues", {
+      mode: "create",
+      fixtures: "101",
+      exclusive: true,
+      sequences: [
+        { sequence: 951, sequence_name: "Looks", cues: [lookCue(1)] },
+        { sequence: 952, sequence_name: "Chase", cues: [lookCue(1)] },
+        { sequence: 953, sequence_name: "Chase", cues: [lookCue(1)] },
+        { sequence: 954, sequence_name: "Wash", cues: [lookCue(1)] },
+      ],
+    });
+    assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), ["Sequence 951:failed", "Sequence 952:succeeded", "Sequence 953:failed", "Sequence 954:succeeded"], JSON.stringify(result.items));
+    assert.match(result.items[0].summary, /"Looks" is Sequence 5/);
+    assert.match(result.items[2].summary, /"Chase" is Sequence 952 \(stored earlier in this call\)/);
+    assert.equal(c.commands.some((x) => /Store Sequence 95[13] /.test(x)), false, "no store for the refused sequences");
+    assert.deepEqual([951, 952, 953, 954].map((n) => c.seqs.get(n)?.name ?? null), [null, "Chase", null, "Wash"]);
+    assert.deepEqual(c.listed, ["DataPool.Sequences"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("#102 store_cues batch: a rejected rename keeps the holder's real name, an unnamed new sequence's default name is taken", async () => {
+  const { h, c } = await setup();
+  try {
+    c.addCue(5, 1);
+    c.seqs.get(5)!.name = "Looks";
+    c.rejectSet = /^Sequence 5 Name$/;
+    const { result } = await h.callJson("gma3_store_cues", {
+      mode: "merge",
+      fixtures: "101",
+      exclusive: true,
+      sequences: [
+        { sequence: 5, sequence_name: "Blue", cues: [lookCue(2)] },
+        { sequence: 951, sequence_name: "Looks", cues: [lookCue(1)] },
+        { sequence: 952, sequence_name: "Blue", cues: [lookCue(1)] },
+        { sequence: 953, cues: [lookCue(1)] },
+        { sequence: 954, sequence_name: "Sequence 953", cues: [lookCue(1)] },
+      ],
+    });
+    assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), ["Sequence 5:partial", "Sequence 951:failed", "Sequence 952:succeeded", "Sequence 953:succeeded", "Sequence 954:failed"], JSON.stringify(result.items));
+    assert.match(result.items[1].summary, /"Looks" is Sequence 5/, "the rename did not take: Looks is still held");
+    assert.match(result.items[4].summary, /"Sequence 953" is Sequence 953/, "the unnamed sequence's default name was read again");
+    assert.deepEqual([5, 951, 952, 953, 954].map((n) => c.seqs.get(n)?.name ?? null), ["Looks", null, "Blue", "Sequence 953", null]);
+    assert.deepEqual(c.listed, ["DataPool.Sequences", "DataPool.Sequences", "DataPool.Sequences"]);
   } finally {
     await h.close();
   }
