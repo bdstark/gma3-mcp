@@ -348,7 +348,9 @@ export function parseConsoleBoolean(value: unknown): boolean | null {
 
 /**
  * Normaliser for grandMA3 time display values, in seconds: "2.50" -> 2.5, "3s" -> 3, "1m00s" -> 60,
- * "1h22m56.3s" -> 4976.3, "0.50" -> 0.5. Returns null for anything else, including inherit markers
+ * "1h22m56.3s" -> 4976.3, "0.50" -> 0.5. From a minute up, onPC 2.5.1 shows the seconds without "s":
+ * a TrigTime of 64 reads "1m04.00" (live 2026-10-25), macro waits read "1h00m00.00" and "1d03h46m40.00"
+ * (docs/probes/sb-07-macros-macos-2.5.1.md). Returns null for anything else, including inherit markers
  * such as "CueTiming" and the composite "3.00 / 1.50" display of CueFade/CueDelay.
  */
 export function timeToSeconds(value: unknown): number | null {
@@ -357,9 +359,11 @@ export function timeToSeconds(value: unknown): number | null {
   const text = String(value).trim();
   const plain = parsePlainNumber(text);
   if (plain !== null && !text.includes("%")) return plain;
-  const m = text.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d*\.?\d+)s)?$/i);
-  if (!m || (m[1] === undefined && m[2] === undefined && m[3] === undefined)) return null;
-  return Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0);
+  const m = text.match(/^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d*\.?\d+)(s)?)?$/i);
+  if (!m || (m[1] === undefined && m[2] === undefined && m[3] === undefined && m[4] === undefined)) return null;
+  // Seconds without "s" only after a larger unit ("1m04.00"); a bare number was handled above.
+  if (m[4] !== undefined && m[5] === undefined && m[1] === undefined && m[2] === undefined && m[3] === undefined) return null;
+  return Number(m[1] ?? 0) * 86400 + Number(m[2] ?? 0) * 3600 + Number(m[3] ?? 0) * 60 + Number(m[4] ?? 0);
 }
 
 // ---------------------------------------------------------------------------

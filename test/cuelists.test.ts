@@ -4,6 +4,15 @@ import { registerCueListTools, expectedOrder, judgeCycle, planObservation } from
 import { SILENT } from "./helpers/fake-bridge.ts";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 
+/** onPC 2.5.1's time display: "4.00" under a minute, then the seconds without "s" ("1m04.00", "1h00m00.00"). */
+function consoleTime(seconds: number): string {
+  if (seconds < 60) return seconds.toFixed(2);
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const sec = (seconds % 60).toFixed(2).padStart(5, "0");
+  return h > 0 ? `${h}h${String(m).padStart(2, "0")}m${sec}` : `${m}m${sec}`;
+}
+
 /**
  * SU-06: gma3_store_cues, gma3_edit_cues, gma3_build_chase against a stateful fake console that behaves as onPC
  * 2.5.1 did in docs/probes/su-06-cuelists-macos-2.5.1.md:
@@ -220,7 +229,7 @@ class Console {
     if ((m = ref.match(/^Sequence (\d+) Cue ([\d.]+)(?: Part 0)?$/))) {
       const c = this.cue(+m[1], +m[2]);
       if (!c) return none;
-      const all: Record<string, unknown> = ref.endsWith("Part 0") ? { ...c.part0, Name: c.name } : { Name: c.name, TrigType: c.trigType, TrigTime: c.trigTime.toFixed(2), No: String(c.no), Note: c.note ?? "" };
+      const all: Record<string, unknown> = ref.endsWith("Part 0") ? { ...c.part0, Name: c.name } : { Name: c.name, TrigType: c.trigType, TrigTime: consoleTime(c.trigTime), No: String(c.no), Note: c.note ?? "" };
       return { total: 1, items: [{ name: c.name, class: ref.endsWith("Part 0") ? "Part" : "Cue", fields: Object.fromEntries(fields.map((f) => [f, all[f]])) }] };
     }
     if (ref === "Sequence Thru") {
@@ -365,6 +374,27 @@ test("store_cues: three cues built in Preview, each from its looks, named, timed
     assert.deepEqual([seq.cues[1].trigType, seq.cues[2].trigType, seq.cues[2].trigTime], ["Follow", "Time", 2]);
     assert.deepEqual(c.commands.slice(0, 6), ["Preview On", "[P] ClearSelection", "[P] Fixture 101 + 102", "[P] At Preset 4.1", "[P] At 100", "[P] Store Sequence 951 Cue 1 /NoConfirmation"]);
     assert.deepEqual(c.commands.slice(-2), ["[P] ClearAll", "[P] Preview Off"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues: a trigger time from a minute up reads back in the console's form (\"1m04.00\") and matches (#103)", async () => {
+  const { h, c } = await setup();
+  try {
+    const { result, isError } = await h.callJson("gma3_store_cues", {
+      sequence: 952,
+      mode: "create",
+      fixtures: "101",
+      exclusive: true,
+      cues: [
+        { cue: 1, presets: [{ pool: 4, preset: 1 }], trigger: "time", time: 64 },
+        { cue: 2, presets: [{ pool: 4, preset: 2 }], trigger: "time", time: 3600 },
+      ],
+    });
+    assert.equal(isError, false, JSON.stringify(result, null, 2));
+    assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+    assert.deepEqual(c.seqs.get(952)!.cues.map((x) => consoleTime(x.trigTime)), ["1m04.00", "1h00m00.00"]);
   } finally {
     await h.close();
   }

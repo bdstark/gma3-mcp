@@ -88,7 +88,7 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | --- | --- |
 | `gma3_patch_types` | Read-only: the show's fixture types and DMX modes with footprint and breaks |
 | `gma3_patch_list` | Read-only: fixtures of the live patch (all stages, sub-fixtures) with FID, CID, type, mode, address, breaks, stage; FID range filter |
-| `gma3_patch_add` | Add fixtures of one type/mode at consecutive FIDs, patched from an address or the first free block; pre-checked, committed, read back |
+| `gma3_patch_add` | Add fixtures of one type/mode at consecutive FIDs, patched from an address or the first free block; pre-checked, committed, read back; a stage with a Name (any session on one) needs bridge 0.45.0 |
 | `gma3_patch_set` | Readdress (swaps and moves across a fixture's own range work), unpatch or rename fixtures |
 | `gma3_patch_remove` | Delete fixtures (not ones with sub-fixtures) |
 | `gma3_patch_move` | Move fixtures under a top-level grouping fixture (the MA Show Start's FID 1-8) or back to the top level: Cut, ChangeDestination, Paste and the console's Move Fixtures dialog (absolute or relative 3D placement) answered by the bridge; read back against the state before: parent, address, groups, 3D pose (bridge 0.42.0) |
