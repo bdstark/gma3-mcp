@@ -631,6 +631,8 @@ test("SU-13 review round 1: presets stored with a rejected name write are partia
   assert.equal(con.presets.has("23.30") && con.presets.has("23.31"), true, "both presets exist");
   assert.match(result.summary, /2 stored with a later step that did not succeed/);
   assert.ok(result.items[0].steps.some((st: any) => st.status === "failed"), "the failed name step is listed in the compact line");
+  // #108 review: after a rejected name write the preset's name is unknown, so the next store reads the pool again.
+  assert.deepEqual(con.listed, ["Preset 23", "Preset 23"], "once for the inspection and the first store, again for the second store");
 });
 
 test("SU-13 review round 3: with shuffle a participating channel without a phase read is a problem, never left out", () => {

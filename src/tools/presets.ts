@@ -940,7 +940,16 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs, share
       const n = typeof left === "string" && left.trim() ? left.trim() : undefined;
       if (cached && n) cached.set(id.number, { name: n, thisCall: true });
     };
-    if (main.steps[0]?.status !== "failed") recordName(setRead ?? name);
+    // The requested name only after a confirmed name write, the console's own read-back of a write that did not take
+    // it; otherwise the preset's name is not known, and the pool is read again by the next item (review of #108: a
+    // rejected rename of 4.5 "Orange" to "Blue" must not leave "Orange" free and "Blue" taken).
+    const storeStatus = main.steps[0]?.status;
+    const nameStep = main.steps[1];
+    if (storeStatus !== "failed" && name !== undefined) {
+      if (storeStatus === "succeeded" && nameStep?.status === "succeeded") recordName(setRead ?? name);
+      else if (storeStatus === "succeeded" && typeof setRead === "string") recordName(setRead);
+      else names.delete(id.pool);
+    }
     let verification: Verification = notRequested();
     let resulting: unknown = null;
     if (verify && stored) {

@@ -73,6 +73,8 @@ class Console {
   failChildren = false;
   /** #102: the pool listings read, in order. */
   listed: string[] = [];
+  /** #102 review: presets whose Name write the console rejects (the store went through, the rename did not). */
+  rejectNameFor = new Set<string>();
   /** SU-12: the Preview environment has its own programmer and selection; `prog` is the current environment's. */
   env = "Normal";
   private other: Array<ProgrammerRow & { active: boolean }> = [];
@@ -197,6 +199,7 @@ class Console {
     h.fake.on("set", (args) => {
       if (this.silentNameSet && args.property === "Name") return SILENT;
       const key = String(args.ref).replace(/^Preset /, "");
+      if (args.property === "Name" && this.rejectNameFor.has(key)) throw new Error("Illegal value");
       const p = this.presets.get(key)!;
       if (args.property === "Name" && !p.lock) {
         // #102: names are unique within a pool; a taken one gets "#2" (live 2026-10-25: "Orange" -> "Orange#2").
@@ -742,4 +745,24 @@ test("#102 batch: a taken name fails only its preset, a name an earlier item too
   });
   assert.deepEqual(allowed.result.items.map((i: any) => `${i.target}:${i.outcome}:${i.verification}`), ["Preset 4.101:succeeded:matched", "Preset 4.102:succeeded:matched", "Preset 4.103:succeeded:matched"], JSON.stringify(allowed.result.items));
   assert.deepEqual(["4.101", "4.102", "4.103"].map((k) => con.presets.get(k)!.name), ["Orange#2", "Amber", "Amber#2"]);
+});
+
+test("#102 review of #108: a rejected name write keeps the holder's real name for the rest of the batch (verify off)", async () => {
+  holdName("4.5", "Orange");
+  con.rejectNameFor.add("4.5");
+  const red = [{ attribute: "ColorRGB_R", value: 100, unit: "percent" }];
+  const { result } = await store({
+    mode: "selective",
+    verify: false,
+    presets: [
+      { preset: "4.5", name: "Blue", existing: "overwrite", fixtures: [401], values: red },
+      { preset: "4.101", name: "Orange", fixtures: [402], values: red },
+      { preset: "4.102", name: "Blue", fixtures: [403], values: red },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), ["Preset 4.5:partial", "Preset 4.101:failed", "Preset 4.102:succeeded"], JSON.stringify(result.items));
+  assert.match(result.items[1].summary, /"Orange" is Preset 4\.5/, "the rename did not take: Orange is still held");
+  assert.equal(con.commands.some((c) => /^Store Preset 4\.101 /.test(c)), false);
+  assert.deepEqual(["4.5", "4.101", "4.102"].map((k) => con.presets.get(k)?.name ?? null), ["Orange", null, "Blue"]);
+  assert.deepEqual(con.listed, ["Preset 4", "Preset 4"], "the unknown name made the next item read the pool again");
 });
