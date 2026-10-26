@@ -44,6 +44,7 @@ quaternion is a second, display-role read (`ROTDIRECT` has no raw value).
 | `layouts` | Expanded into placements, see below |
 | `preview` | Return the expanded plan with every fixture's current values; nothing is sent |
 | `verify` | Default `true` |
+| `detail` | Default `false`: a clean success is compact (see the result below); `true` returns every write step and each fixture's pose before and read back |
 
 Layouts:
 
@@ -63,7 +64,7 @@ Pre-flight (read-only; nothing is sent on failure):
   refuses while someone is in the Patch menu or a patch session is open.
 - `patch.list`: every FID exists and is a top-level fixture. A fixture inside a grouping fixture is refused: whether
   its position is relative to the parent is not established. Cells have no position of their own (see SU-08).
-- The current poses, which go into the result as `before` and `restore`. A position or rotation value that is missing
+- The current poses, which go into the result as `restore` and, in the full result, each fixture's `before`. A position or rotation value that is missing
   or not a number refuses the call (it is never read as 0).
 
 Changes: per fixture, one `set` per position axis, one `ROTDIRECT` for the rotation, and `MESHMIRRORX` `1` / `0`
@@ -81,6 +82,14 @@ Not offered: scale. The console ignores `SCALEX/Y/Z` writes without an error.
 
 **No undo.** `Oops` does not revert positions. The result's `restore` is every placed fixture's previous pose in the
 same format as `placements`; passing it back restores them.
+
+**Result size (#100).** A clean success (every write succeeded, read-back `matched` or `not_requested`) lists each
+fixture as `{fid, position, rotation, mirror_mesh?}` in `items`, the pose it now has in `unit`, keeps `restore`, and
+reports the writes as one `set` step with their count (`detail: {writes: 372}`) instead of one step each; `fixtures`
+(each plan entry with its pose before and read back) and the verification's `actual` are left out. Anything else is
+returned whole, and so is a success with `detail: true`; `preview` always returns its plan. Placing 93 fixtures returned
+214 KB before (104 KB without the indentation); the compact form is about 18 KB, about half of it `restore`
+(roughly 95 characters a fixture, kept because it is the only undo).
 
 ## Cell layouts (SU-08)
 
@@ -156,7 +165,8 @@ Moves fixtures to another layout type of their fixture, so several fixtures shar
 DMX addressing, otherwise it is refused. That means every channel (name, coarse, fine, ultra, break, in order) at the
 same address in every cell, with the same cells (names and break offsets). Only the cells' positions may differ. One patch session
 (`patch.retype`), committed with no undo, then a read-back of the fixtures' type by number and name (two imports of
-one GDTF share the name). An unused copy is removed with
+one GDTF share the name). A clean success lists `{fid, type: [before, after]}` per fixture in `items` (`detail: true`
+for the read-back rows). An unused copy is removed with
 `gma3_patch_remove_type`.
 
 The target need not be a layout copy: any type with a matching mode works. The Halloween 2026 build (finding #5) used

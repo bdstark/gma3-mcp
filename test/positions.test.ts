@@ -185,7 +185,7 @@ async function setup() {
 test("gma3_place_fixtures: positions in feet, a full rotation and mirroring, read back by quaternion after renormalization", async () => {
   const { h, s, sets } = await setup();
   try {
-    const { result, isError } = await h.callJson("gma3_place_fixtures", { unit: "ft", placements: [{ fid: 101, position: { x: 10, z: 7 }, rotation: { x: 30, y: 100, z: 20 }, mirror_mesh: true }] });
+    const { result, isError } = await h.callJson("gma3_place_fixtures", { unit: "ft", placements: [{ fid: 101, position: { x: 10, z: 7 }, rotation: { x: 30, y: 100, z: 20 }, mirror_mesh: true }], detail: true });
     assert.equal(isError, false, JSON.stringify(result, null, 2));
     assert.equal(result.verification.status, "matched");
     const q = quatFromEuler({ x: 30, y: 100, z: 20 }).map((n) => Math.round(n * 1e9) / 1e9).join(",");
@@ -299,7 +299,7 @@ test("review P1: the checks and the restore values are read inside the mutation 
     await mover;
     assert.equal(r2.result.outcome, "succeeded", JSON.stringify(r2.result, null, 2));
     assert.deepEqual(r2.result.restore[0].position, { x: 5, y: 0, z: 0 });
-    assert.deepEqual(r2.result.fixtures[0].after.position, { x: 5, y: 1, z: 0 });
+    assert.deepEqual(r2.result.items[0].position, { x: 5, y: 1, z: 0 }, "the compact result has the pose the fixture now has");
   } finally {
     await h.close();
   }
@@ -369,6 +369,66 @@ test("review round 2: a write that executed without a reply is state unknown, ne
     assert.doesNotMatch(result.summary, /2 not changed/);
     assert.deepEqual(result.uncertainWrites, [{ fid: 101, property: "POSX", applied: true, observed: 2 }]);
     assert.equal(result.verification.status, "unavailable", "no write was confirmed");
+  } finally {
+    await h.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #100: compact results
+// ---------------------------------------------------------------------------
+
+test("gma3_place_fixtures: a clean placement of 93 fixtures lists each pose and keeps restore; detail: true and a mismatch are full (#100)", async (t) => {
+  const fids = Array.from({ length: 93 }, (_, i) => 1001 + i);
+  const placements = fids.map((fid, i) => ({ fid, position: { x: -4.6 + i * 0.1, y: 2.25, z: 6.5 }, rotation: { x: 0, y: 0, z: 90 } }));
+  for (const mode of ["compact", "detail", "mismatch"] as const) {
+    const { h, s } = await setup();
+    try {
+      for (const fid of fids) s.fixtures.set(fid, { fid, name: `Spot ${fid}`, depth: 0, pos: { x: 1, y: 0, z: 3 }, q: [0, 0, 0, 1], rot: { x: 0, y: 0, z: 0 }, mirror: false });
+      if (mode === "mismatch") s.ignore.add("POSZ");
+      const { result, isError, text } = await h.callJson("gma3_place_fixtures", { placements, ...(mode === "detail" ? { detail: true } : {}) });
+      assert.equal(result.outcome, "succeeded", text.slice(0, 2000));
+      assert.equal(result.restore.length, 93, "restore is always there: it is the only undo");
+      assert.deepEqual(result.restore[0], { fid: 1001, position: { x: 1, y: 0, z: 3 }, rotation: { x: 0, y: 0, z: 0 }, mirror_mesh: false });
+      if (mode === "compact") {
+        assert.equal(isError, false);
+        assert.equal(result.verification.status, "matched");
+        assert.equal(result.verification.actual, undefined);
+        assert.equal(result.items.length, 93);
+        assert.deepEqual(result.items[1], { fid: 1002, position: { x: -4.5, y: 2.25, z: 6.5 }, rotation: { x: 0, y: 0, z: 90 } });
+        assert.equal(result.fixtures, undefined);
+        assert.deepEqual(result.steps.map((st: any) => `${st.name}:${st.status}`), ["check_patch:succeeded", "check_fixtures:succeeded", "set:succeeded"]);
+        assert.deepEqual(result.steps[2].detail, { writes: 93 * 4 }, "the property writes are one step with their count");
+        const restoreChars = JSON.stringify(result.restore).length;
+        assert.ok(restoreChars < 10_000, `restore: ${restoreChars} characters`);
+        assert.ok(text.length < 20_000, `${text.length} characters`);
+        t.diagnostic(`93 placed: ${text.length} characters, restore ${restoreChars}`);
+      } else {
+        assert.equal(result.verification.status, mode === "detail" ? "matched" : "mismatched");
+        if (mode === "mismatch") assert.match(result.verification.detail, /FID 1001 z: 3 m, expected 6.5/);
+        assert.equal(result.items, undefined);
+        assert.equal(result.fixtures.length, 93);
+        assert.ok(result.fixtures[0].before && result.fixtures[0].after);
+        assert.equal(result.steps.filter((st: any) => st.op === "set").length, 93 * 4);
+        assert.equal(result.verification.actual.length, 93);
+        if (mode === "detail") t.diagnostic(`with detail: true: ${text.length} characters`);
+      }
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("gma3_place_fixtures: preview keeps its plan; a mirror_mesh write shows in the item (#100)", async () => {
+  const { h } = await setup();
+  try {
+    let r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 101, position: { x: 1 } }], preview: true });
+    assert.equal(r.result.plan.length, 1);
+    assert.ok(r.result.plan[0].before, "the preview lists the current values");
+    assert.equal(r.result.items, undefined);
+    r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 102, position: { y: 2 }, mirror_mesh: true }] });
+    assert.equal(r.result.verification.status, "matched");
+    assert.deepEqual(r.result.items, [{ fid: 102, position: { x: 0, y: 2, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, mirror_mesh: true }]);
   } finally {
     await h.close();
   }

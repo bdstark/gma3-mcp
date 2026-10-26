@@ -163,6 +163,29 @@ whether to continue, inspect console state, or stop:
   `skipped`. An operation with some steps done and one not is `partial`.
 * Any outcome other than `succeeded`, and any `mismatched` read-back, is returned as an MCP tool error with the
   full result in the error text.
+* Results are compact JSON, without indentation (every tool; the 2-space indentation more than doubled a large
+  result, #100).
+* The batch patch tools (`gma3_patch_set`, `gma3_patch_add` with `count` above 1, `gma3_patch_move`,
+  `gma3_patch_retype`, `gma3_assign_cell_layout` and `gma3_place_fixtures`) return a compact form on a clean success
+  (outcome `succeeded`, read-back `matched` or `not_requested`): `items` with one entry per fixture, its `fid` and
+  `[before, after]` of the fields the call changed (`gma3_patch_add`: each new fixture's `name` and `address`;
+  `gma3_place_fixtures`: the pose it now has), the steps with their names and statuses but without their `detail`,
+  the verification without `expected` and `actual`, and no per-fixture state dumps (`before`, `after`, `fixtures`);
+  `detailHint` says what `detail: true` adds. Anything else (a failure, a mismatch, an unknown or unavailable
+  read-back) is returned whole, and `detail: true` returns the whole result on a success too. Renaming 88 fixtures
+  went from 171 KB to about 6 KB; placing 93 fixtures from 214 KB to about 18 KB, most of it `restore`, which stays
+  because `Oops` does not undo positions:
+
+  ```jsonc
+  {
+    "operation": "patch_set", "target": { "edits": 88 }, "outcome": "succeeded",
+    "verification": { "status": "matched", "checked": "each edited fixture's patch address and/or name" },
+    "steps": [ { "name": "check_state", "status": "succeeded", "kind": "read", "op": "patch.state" }, ... ],
+    "committed": true, "copyLeftOpen": false,
+    "items": [ { "fid": 1001, "name": ["MHPar06 1", "Halloween Spot 01 SL"] }, ... ],
+    "detailHint": "detail: true returns the edits, every step's detail, the fixtures before and the read-back rows"
+  }
+  ```
 * Inputs are validated before anything is sent (finite numbers, zero accepted as a deliberate value, cue numbers
   with up to three decimals, mutually exclusive options). Object names may not contain any of
   `\ " $ & * ? , . ; ^ { } | ~`: onPC 2.5.1 silently removes those characters from a name whether it arrives

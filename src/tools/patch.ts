@@ -33,6 +33,7 @@ import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import {
   asRead,
   buildResult,
+  compactItems,
   notRequested,
   stepFromError,
   unavailable,
@@ -503,6 +504,7 @@ interface AddArgs {
   stage?: string;
   exclusive?: boolean;
   verify?: boolean;
+  detail?: boolean;
 }
 
 /** Address of fixture i of a consecutive block. */
@@ -625,7 +627,17 @@ export async function patchAdd(ctx: ToolContext, raw: AddArgs): Promise<Operatio
         : {}),
     };
   }
-  return result;
+  // #100: a block of fixtures on a clean success: per fixture its FID, name and address instead of every row.
+  if (count === 1) return result;
+  const c = checkDetail as { type?: unknown; mode?: unknown } | undefined;
+  return compactItems(result, raw.detail === true, {
+    set: { check: { type: c?.type, mode: c?.mode } },
+    drop: ["fixtures"],
+    items: rows.length
+      ? rows.map((r) => ({ fid: r.fid, name: r.name, address: r.patch ?? "" }))
+      : fids.map((f, i) => ({ fid: f, address: resolvedAddress ? blockAddress(resolvedAddress, footprint, i) : "" })),
+    hint: "detail: true returns every step's detail, the pre-check and the read-back rows",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -643,6 +655,7 @@ interface SetArgs {
   edits: EditArg[];
   exclusive?: boolean;
   verify?: boolean;
+  detail?: boolean;
 }
 
 export async function patchSet(ctx: ToolContext, raw: SetArgs): Promise<OperationResult> {
@@ -671,7 +684,7 @@ export async function patchSet(ctx: ToolContext, raw: SetArgs): Promise<Operatio
   const t = ctx.requestTimeoutMs;
   let before: unknown;
 
-  return runSession(ctx, {
+  const result = await runSession(ctx, {
     operation: op,
     target,
     touchedFids: edits.map((e) => e.fid),
@@ -721,6 +734,23 @@ export async function patchSet(ctx: ToolContext, raw: SetArgs): Promise<Operatio
         return { steps: [asRead(stepFromError("read_back", err, { op: "patch.list" }))], verification: unavailable("the patch could not be read back") };
       }
     },
+  });
+  // #100: on a clean success, per edit the FID and [before, after] of what it changed instead of every fixture's rows.
+  const was = new Map(((before as FixtureRow[] | undefined) ?? []).map((r) => [r.fid, r]));
+  const now = new Map(((result.after as FixtureRow[] | undefined) ?? []).map((r) => [r.fid, r]));
+  return compactItems(result, raw.detail === true, {
+    set: { target: { edits: edits.length } },
+    drop: ["before", "after"],
+    items: edits.map((e) => {
+      const b = was.get(e.fid);
+      const a = now.get(e.fid);
+      return {
+        fid: e.fid,
+        ...(e.address !== undefined ? { address: [b?.patch ?? "", a ? (a.patch ?? "") : e.address] } : {}),
+        ...(e.name !== undefined ? { name: [b?.name ?? null, a ? a.name : e.name] } : {}),
+      };
+    }),
+    hint: "detail: true returns the edits, every step's detail, the fixtures before and the read-back rows",
   });
 }
 
@@ -872,7 +902,7 @@ export function shapeLibraryPage(page: LibraryPage, compact: boolean, maxChars =
     }
     return { ...head, ...nextOffset, ...truncated, compact: true, files, ...(Object.keys(inShow).length ? { inShow } : {}), ...(Object.keys(inShowCount).length ? { inShowCount } : {}), ...(Object.keys(oversizedFiles).length ? { oversized: oversizedFiles } : {}), ...(Object.keys(notVerified).length ? { notVerified } : {}) };
   };
-  const size = (v: unknown) => JSON.stringify(v, null, 2).length;
+  const size = (v: unknown) => JSON.stringify(v).length;
   let keep = page.entries.length;
   let out = render(keep);
   for (let len = size(out); keep > 1 && len > maxChars; len = size(out)) {
@@ -1129,6 +1159,8 @@ export const SESSION_DESC =
   "When a session cannot be finished, the copy is closed again only if it provably holds no change; otherwise the result says copyLeftOpen: true and the command line stays inside the edit patch with no Patch window open: the operator keeps the copy by typing ChangeDestination Root at the console (no way to discard it without the Patch menu is known). Needs bridge 0.19.0.";
 export const EXCLUSIVE_DESC = "Required, must be true: confirms nobody else uses the console while this runs (see the description). Without it the call is refused and nothing is sent.";
 export const VERIFY_DESC = "Read the patch back after the commit and compare (default true).";
+export const DETAIL_DESC =
+  "Return the full result on a success too: every step's detail and each fixture's state before and after (default false: a clean success, committed and read back matched or not requested, lists one entry per fixture in items; anything else is always returned in full).";
 
 export const registerPatchTools: RegisterTools = (server, ctx) => {
   server.registerTool(
@@ -1175,7 +1207,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
         "Add count fixtures of one fixture type and DMX mode at consecutive FIDs from fid, patched consecutively from a DMX address (address, or the first free block found from findFreeFrom), or unpatched when neither is given. " +
         "Pre-checks (nothing sent on failure): the FIDs are free, the whole block is free and fits inside one universe, the mode has a single DMX break. Fixtures are added at the top level of a stage (default: the first stage). " +
         SESSION_DESC +
-        " verify reads the new FIDs back: present, patch addresses, name (when given) and mode.",
+        " verify reads the new FIDs back: present, patch addresses, name (when given) and mode. With count above 1 a clean success lists each new fixture as {fid, name, address} in items (detail: true for the full rows).",
       inputSchema: {
         type: z.union([z.number(), z.string()]).describe("Fixture type number or name, as gma3_patch_types lists it."),
         mode: z.union([z.number(), z.string()]).describe("DMX mode number or name within that type."),
@@ -1187,6 +1219,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
         stage: z.string().optional().describe("Stage name (default: the first stage)."),
         exclusive: z.boolean().optional().describe(EXCLUSIVE_DESC),
         verify: z.boolean().optional().describe(VERIFY_DESC),
+        detail: z.boolean().optional().describe(DETAIL_DESC),
       },
     },
     async (args) => operation(() => patchAdd(ctx, args as AddArgs)),
@@ -1200,7 +1233,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
         "Change existing fixtures: per edit, a new DMX address (address), unpatch: true, and/or a new name. Addresses are applied together, so fixtures can swap addresses or move across their own current range. " +
         "Pre-checks (nothing sent on failure): every FID exists, single-break modes only, and the new ranges overlap no other patched fixture. In the copy the bridge re-checks and restores every change of the call on any problem. " +
         SESSION_DESC +
-        " verify reads each edited fixture back (address and/or name).",
+        " verify reads each edited fixture back (address and/or name). A clean success lists per edit {fid, address?: [before, after], name?: [before, after]} in items (detail: true for the full rows).",
       inputSchema: {
         edits: z
           .array(
@@ -1214,6 +1247,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
           .describe(`Edits (1-${MAX_COUNT}); each FID at most once.`),
         exclusive: z.boolean().optional().describe(EXCLUSIVE_DESC),
         verify: z.boolean().optional().describe(VERIFY_DESC),
+        detail: z.boolean().optional().describe(DETAIL_DESC),
       },
     },
     async (args) => operation(() => patchSet(ctx, args as SetArgs)),

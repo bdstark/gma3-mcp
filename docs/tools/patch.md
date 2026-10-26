@@ -74,6 +74,14 @@ open on a display (someone is patching there), close it there with **Save and Ex
 | `failed` | Nothing was committed (`committed: false`): a refusal before anything was sent, a refused change with the copy closed again, or a failed isolation check (`copyLeftOpen: true`) |
 | `unknown` | A step after `enter` got no reply, the copy never opened, or the commit was not confirmed; `committed` / `copyLeftOpen` say what is known |
 
+**Result size (#100).** On a clean success (`succeeded`, read-back `matched` or `not_requested`), `gma3_patch_set`,
+`gma3_patch_add` with `count` above 1, `gma3_patch_move` and `gma3_patch_retype` return `items`, one entry per fixture
+with its `fid` and `[before, after]` of what the call changed, the steps without their `detail` and the verification
+without `expected` and `actual`; the per-fixture rows (`before`, `after`, `fixtures`, the pre-check's and read-back's
+details) are left out. Anything else is returned whole, and `detail: true` returns the whole result on a success too.
+A clean rename of 88 fixtures returned 171 KB before (79 KB of it without the indentation), more than the client takes
+in one result; the compact form is about 6 KB.
+
 **Bridge-side safety net.** Each mutating op re-checks in the console:
 - `patch.add`: the copy, the destination, a free FID range, a free DMX range inside one universe, a single-break
   mode. It calls `AddFixtures` once per fixture (amount 1, the fixture's own FID and address; bridge 0.25.2), stops
@@ -123,6 +131,7 @@ paginate.
 | `stage` | Default: the first stage. Fixtures are added at the stage's top level |
 | `exclusive` | Must be `true` |
 | `verify` | Default `true` |
+| `detail` | Default `false`: with `count` above 1 a clean success lists `items` (`{fid, name, address}` per new fixture) and `check` as just the type and mode; `true` returns the rows (`fixtures`) and the full pre-check |
 
 With neither `address` nor `findFreeFrom` the fixtures are added unpatched.
 
@@ -154,7 +163,10 @@ Pre-flight (`patch.check` `edits`), nothing sent on failure:
 - the new ranges overlap no other patched fixture. The moving fixtures' own current ranges are ignored, so swaps and
   moves across a fixture's own range pass.
 
-The change is `patch.set`. Read-back compares each fixture's patch address and/or name.
+The change is `patch.set`. Read-back compares each fixture's patch address and/or name. A clean success has
+`target: {edits: <count>}` and per edit `{fid, address?: [before, after], name?: [before, after]}` in `items` (an
+unpatch reads `address: ["2.009", ""]`); `detail: true` returns the edits, `before` (the fixtures as they were),
+`after` (the read-back rows) and every step's detail.
 
 ## gma3_patch_remove
 
@@ -175,6 +187,7 @@ synthetic mouse clicks included (live, onPC 2.5.1, 2026-10-23). FIDs, addresses,
 | `position` | `"absolute"` (default) or `"relative"`: the answer to the console's question below |
 | `exclusive` | Must be `true` |
 | `verify` | Default `true` |
+| `detail` | Default `false`: a clean success lists `{fid, parent: [before, after]}` per fixture in `items` (`"root"` is the top level); `true` returns `fixtures` and every step's detail |
 
 **The question.** Pasting fixtures under another parent opens the console's own dialog "Move Fixtures": *keep the
 absolute position and rotation in 3D space, or the offset relative to the parent?* (Absolute / Relative / Cancel).
@@ -204,7 +217,7 @@ Any other dialog stops the move and is left alone, and so does a poll that canno
 still open, the tool clicks Cancel (`cancel_dialog`), which moves nothing, so the copy can be closed unchanged. When
 it cannot read whether that dialog is open (or cannot see it close after Cancel), it leaves the copy open (`copyLeftOpen: true`, outcome
 `unknown`). A paste without a reply may still have been queued: its dialog, or a completed paste (every fixture under
-the target and `OK: Paste …`), confirms it, and the move goes on (`move_paste` detail `replyLost`). If the
+the target and `OK: Paste …`), confirms it, and the move goes on (`move_paste` detail `replyLost`, with `detail: true`). If the
 console pastes without asking, the result says `dialog: "not_shown"` and the read-back still checks the pose.
 
 The isolation check leaves out the moved FIDs and compares fixtures without their number in their list
@@ -218,7 +231,7 @@ resolves to no (sub)fixture is reported unreadable, never as not holding them), 
 `absolute` compares the world pose (the parent's position and rotation applied; mesh mirroring and scale are not
 considered), `relative` the pose relative to the parent, within 1 mm and by quaternion. A part that cannot be read
 makes the verification `unavailable` and names it; the result's `fixtures` lists each fixture's parent, address,
-groups and poses.
+groups and poses (on anything but a clean success, or with `detail: true`).
 
 **Live** (onPC 2.5.1, this bridge as 0.40.0 (bb5afd4), 2026-10-23, `test/live/patch-move.live.ts` 1/1 in 71 s on a disposable show):
 two fixtures moved into a grouping fixture placed at x = 1 m (absolute), then back to the top level (relative), every
@@ -239,7 +252,8 @@ preset values are kept. The case it is for: a GDTF fixed and imported again (`gm
 import, and `gma3_patch_remove_type` then removes the old one by number. It is the same session as
 `gma3_assign_cell_layout` (`patch.retype`, [positions.md](positions.md#gma3_assign_cell_layout)) under a patch-centred
 name. Give `type` by number when two types share a name. The read-back checks each fixture's type by number and name
-and every DMX break against the state before.
+and every DMX break against the state before. A clean success lists `{fid, type: [before, after]}` per fixture in
+`items` (`detail: true` for the read-back rows).
 
 ## gma3_patch_library
 

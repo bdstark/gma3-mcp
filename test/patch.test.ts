@@ -498,3 +498,134 @@ test("patch_add: fixtures with cells say their layout is shared, and string ligh
     await h.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// #100: compact results of batch edits
+// ---------------------------------------------------------------------------
+
+/** n fixtures from FID 1001, patched at consecutive 8-channel blocks from 2.001. */
+function addRig(w: PatchWorld, n: number) {
+  for (let i = 0; i < n; i++) w.live.push({ fid: 1001 + i, name: `MHPar06 ${i + 1}`, patch: blockAddress("2.001", FP, i), mode: "Ch08", type: "6 Mega Hex Par" });
+}
+
+test("gma3_patch_set: a clean rename of 88 fixtures returns one line per fixture, under 20 KB (#100)", async (t) => {
+  const { h, w } = await setup();
+  try {
+    addRig(w, 88);
+    const edits = Array.from({ length: 88 }, (_, i) => ({ fid: 1001 + i, name: `Halloween Spot ${String(i + 1).padStart(2, "0")} SL` }));
+    const r = await h.callJson("gma3_patch_set", { edits, exclusive: true });
+    assert.equal(r.isError, false, r.text.slice(0, 2000));
+    assert.equal(r.result.verification.status, "matched");
+    assert.equal(r.result.items.length, 88);
+    assert.deepEqual(r.result.items[0], { fid: 1001, name: ["MHPar06 1", "Halloween Spot 01 SL"] });
+    assert.deepEqual(r.result.target, { edits: 88 });
+    for (const k of ["before", "after"]) assert.equal(r.result[k], undefined, `${k} is left out`);
+    assert.equal(r.result.verification.actual, undefined);
+    assert.equal(r.result.verification.expected, undefined);
+    assert.deepEqual(stepNames(r.result), ["check_state:succeeded", "check_edits:succeeded", "enter:succeeded", "wait_copy:succeeded", "set:succeeded", "isolation_check:succeeded", "commit:succeeded", "wait_commit:succeeded", "read_back:succeeded"]);
+    assert.ok(r.result.steps.every((s: any) => s.detail === undefined), "no step keeps its detail");
+    assert.match(r.result.detailHint, /detail: true/);
+    assert.ok(!r.text.includes("\n"), "compact JSON, no indentation");
+    assert.ok(r.text.length < 20_000, `${r.text.length} characters`);
+    t.diagnostic(`88 renames: ${r.text.length} characters`);
+
+    // detail: true keeps everything on a success too.
+    const back = edits.map((e, i) => ({ fid: e.fid, name: `MHPar06 ${i + 1}` }));
+    const full = await h.callJson("gma3_patch_set", { edits: back, exclusive: true, detail: true });
+    assert.equal(full.result.verification.status, "matched");
+    assert.equal(full.result.items, undefined);
+    assert.equal(full.result.before.length, 88);
+    assert.equal(full.result.after.length, 88);
+    assert.equal(full.result.target.edits.length, 88);
+    assert.ok(full.result.steps.find((s: any) => s.name === "check_edits").detail.edits.length === 88);
+    t.diagnostic(`the same with detail: true: ${full.text.length} characters`);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_set: readdress and unpatch items show [before, after]; a mismatch returns the full result (#100)", async () => {
+  const { h, w } = await setup();
+  try {
+    addRig(w, 50);
+    let r = await h.callJson("gma3_patch_set", { edits: [{ fid: 1001, address: "5.001", name: "Moved" }, { fid: 1002, unpatch: true }], exclusive: true });
+    assert.equal(r.result.verification.status, "matched");
+    assert.deepEqual(r.result.items, [{ fid: 1001, address: ["2.001", "5.001"], name: ["MHPar06 1", "Moved"] }, { fid: 1002, address: ["2.009", ""] }]);
+
+    // The console keeps one old name: mismatched, and every detail is there to see why.
+    const orig = h.fake.handlerFor("patch.set")!;
+    h.fake.on("patch.set", async (args, req) => {
+      const res = await orig(args, req);
+      w.copy!.find((x) => x.fid === 1030)!.name = "MHPar06 30";
+      return res;
+    });
+    const edits = Array.from({ length: 50 }, (_, i) => ({ fid: 1001 + i, name: `Spot ${i + 1}` }));
+    r = await h.callJson("gma3_patch_set", { edits, exclusive: true });
+    assert.equal(r.isError, true);
+    assert.equal(r.result.verification.status, "mismatched");
+    assert.match(r.result.verification.detail, /FID 1030: name "MHPar06 30", expected "Spot 30"/);
+    assert.equal(r.result.items, undefined);
+    assert.equal(r.result.detailHint, undefined);
+    assert.equal(r.result.before.length, 50);
+    assert.equal(r.result.verification.actual.length, 50);
+    assert.equal(r.result.target.edits.length, 50);
+    assert.ok(r.result.steps.find((s: any) => s.name === "read_back").detail.length === 50);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_set: a refused call is returned in full (#100)", async () => {
+  const { h } = await setup();
+  try {
+    const r = await h.callJson("gma3_patch_set", { edits: [{ fid: 7777, name: "Nobody" }], exclusive: true });
+    assert.equal(r.result.outcome, "failed");
+    assert.equal(r.result.items, undefined);
+    assert.ok(r.result.steps.find((s: any) => s.name === "check_edits").detail, "the pre-check keeps its detail");
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_add: a clean block of 50 lists fid, name and address per fixture; detail: true and a mismatch are full (#100)", async () => {
+  const { h, w } = await setup();
+  try {
+    let r = await h.callJson("gma3_patch_add", { type: 6, mode: "Ch08", fid: 2001, count: 50, address: "3.001", name: "Wash", exclusive: true });
+    assert.equal(r.result.verification.status, "matched", r.text.slice(0, 2000));
+    assert.equal(r.result.items.length, 50);
+    assert.deepEqual(r.result.items[1], { fid: 2002, name: "Wash", address: "3.009" });
+    assert.equal(r.result.fixtures, undefined);
+    assert.deepEqual(r.result.check, { type: { no: 6, name: "Mega Hex Par" }, mode: { no: 3, name: "Ch08", footprint: FP, breaks: 1, breakChannels: [FP] } });
+    assert.equal(r.result.address, "3.001");
+    assert.ok(r.result.steps.every((s: any) => s.detail === undefined));
+    assert.ok(r.text.length < 6_000, `${r.text.length} characters`);
+
+    r = await h.callJson("gma3_patch_add", { type: 6, mode: "Ch08", fid: 2101, count: 50, address: "4.001", exclusive: true, detail: true });
+    assert.equal(r.result.verification.status, "matched");
+    assert.equal(r.result.items, undefined);
+    assert.equal(r.result.fixtures.length, 50);
+    assert.equal(r.result.check.dmxFree, true);
+
+    // One fixture lands at another address: the full result.
+    const orig = h.fake.handlerFor("patch.add")!;
+    h.fake.on("patch.add", async (args, req) => {
+      const res = await orig(args, req);
+      w.copy!.find((x) => x.fid === 2210)!.patch = "9.001";
+      return res;
+    });
+    r = await h.callJson("gma3_patch_add", { type: 6, mode: "Ch08", fid: 2201, count: 50, address: "5.001", exclusive: true });
+    assert.equal(r.result.verification.status, "mismatched");
+    assert.equal(r.result.items, undefined);
+    assert.equal(r.result.fixtures.length, 50);
+    assert.equal(r.result.verification.actual.length, 50);
+
+    // A single fixture keeps the full result (it is small).
+    h.fake.on("patch.add", orig);
+    r = await h.callJson("gma3_patch_add", { type: 6, mode: "Ch08", fid: 2301, address: "6.001", exclusive: true });
+    assert.equal(r.result.verification.status, "matched");
+    assert.equal(r.result.items, undefined);
+    assert.equal(r.result.fixtures.length, 1);
+  } finally {
+    await h.close();
+  }
+});

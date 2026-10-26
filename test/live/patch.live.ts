@@ -93,7 +93,7 @@ liveTest("KB-26 patch tools: add, refuse a taken FID, swap + rename, unpatch, re
   }
   assert.ok(pick, "the show needs a fixture type with a single-break DMX mode");
 
-  const add = ok(await call("gma3_patch_add", { type: pick.type, mode: pick.mode, fid: FID, count: 2, name: `${MARK} patch`, findFreeFrom: "3.001", exclusive: true }), "add");
+  const add = ok(await call("gma3_patch_add", { type: pick.type, mode: pick.mode, fid: FID, count: 2, name: `${MARK} patch`, findFreeFrom: "3.001", exclusive: true, detail: true }), "add");
   assert.equal(add.committed, true);
   assert.deepEqual(add.fixtures.map((f: any) => f.fid), [FID, FID + 1]);
   const a0 = add.fixtures[0].patch as string;
