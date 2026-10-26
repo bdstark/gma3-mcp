@@ -631,8 +631,8 @@ test("SU-13 review round 1: presets stored with a rejected name write are partia
   assert.equal(con.presets.has("23.30") && con.presets.has("23.31"), true, "both presets exist");
   assert.match(result.summary, /2 stored with a later step that did not succeed/);
   assert.ok(result.items[0].steps.some((st: any) => st.status === "failed"), "the failed name step is listed in the compact line");
-  // #108 review: after a rejected name write the preset's name is unknown, so the next store reads the pool again.
-  assert.deepEqual(con.listed, ["Preset 23", "Preset 23"], "once for the inspection and the first store, again for the second store");
+  // #108 review: the read-back name of each preset is what later stores check against; nothing is read again.
+  assert.deepEqual(con.listed, ["Preset 23"]);
 });
 
 test("SU-13 review round 3: with shuffle a participating channel without a phase read is a problem, never left out", () => {
@@ -800,4 +800,11 @@ test("#102: with on_name_taken allow_suffix the phaser is stored and the console
   assert.equal(isError, false, JSON.stringify(result).slice(0, 2000));
   assert.equal(result.verification.status, "matched");
   assert.equal(con.names.get("23.5"), "Chase#2");
+});
+
+test("#102 review of #108: with verify off, a store whose name nobody read makes the next store read the pool again", async () => {
+  con.rejectNameSet = true;
+  const { result } = await build({ verify: false, effects: [{ preset: "23.40", name: "A", fixtures: [401, 402], template: { type: "alternate" } }, { preset: "23.41", name: "B", fixtures: [401, 402], template: { type: "runner" } }] });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["partial", "partial"], JSON.stringify(result.items).slice(0, 1500));
+  assert.deepEqual(con.listed, ["Preset 23", "Preset 23"], "once for the inspection and the first store, again for the second store");
 });

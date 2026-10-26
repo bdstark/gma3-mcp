@@ -940,16 +940,7 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs, share
       const n = typeof left === "string" && left.trim() ? left.trim() : undefined;
       if (cached && n) cached.set(id.number, { name: n, thisCall: true });
     };
-    // The requested name only after a confirmed name write, the console's own read-back of a write that did not take
-    // it; otherwise the preset's name is not known, and the pool is read again by the next item (review of #108: a
-    // rejected rename of 4.5 "Orange" to "Blue" must not leave "Orange" free and "Blue" taken).
-    const storeStatus = main.steps[0]?.status;
-    const nameStep = main.steps[1];
-    if (storeStatus !== "failed" && name !== undefined) {
-      if (storeStatus === "succeeded" && nameStep?.status === "succeeded") recordName(setRead ?? name);
-      else if (storeStatus === "succeeded" && typeof setRead === "string") recordName(setRead);
-      else names.delete(id.pool);
-    }
+    let readName: unknown;
     let verification: Verification = notRequested();
     let resulting: unknown = null;
     if (verify && stored) {
@@ -965,7 +956,7 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs, share
         checks.push(...verifyStored({ rows: plan.rows, stored: after.rows, mode: targetMode, forced: !!force, merge: !!cur && (existing === "merge" || !!force), embed, types: after.types ?? {}, storedData: after.storedData }));
         if (!force && !cur && String(after.presetMode ?? "").toLowerCase() !== targetMode) checks.push(`the preset's mode reads ${JSON.stringify(after.presetMode)}, not ${targetMode}`);
         if (after.truncated) checks.push("the read-back was truncated");
-        recordName(after.name);
+        readName = after.name;
         if (name !== undefined && String(after.name ?? "").trim() !== name) {
           if (allowSuffix && nameOrSuffixed(String(after.name ?? ""), name)) warnings.push(`the console stored the name as ${JSON.stringify(String(after.name).trim())}: another preset of the pool has ${JSON.stringify(name)} (on_name_taken "allow_suffix")`);
           else checks.push(`name reads ${JSON.stringify(after.name)}`);
@@ -991,6 +982,17 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs, share
       else if (ok) verification = { status: "matched", checked };
       else verification = unavailable(`the preset or the preferences could not be read back: ${[...steps].reverse().find((s) => s.status !== "succeeded")?.error ?? "unknown"}`, ref);
     }
+    // Later items of the call check against the name the preset was left with (review of #108): the read-back name;
+    // else the requested name after a confirmed name write, or the console's read-back of a write that did not take
+    // it; else an existing preset stored without a name keeps its own. Any other store (an unnamed create gets a
+    // default name such as "Preset 102", a failed or unknown store or name write) may have changed a name nobody
+    // read, so the pool is read again by the next item.
+    const storeStatus = main.steps[0]?.status;
+    const nameStep = main.steps[1];
+    if (typeof readName === "string" && readName.trim()) recordName(readName);
+    else if (storeStatus === "succeeded" && name !== undefined && nameStep?.status === "succeeded") recordName(setRead ?? name);
+    else if (storeStatus === "succeeded" && name !== undefined && typeof setRead === "string") recordName(setRead);
+    else if (!(storeStatus === "succeeded" && name === undefined && cur)) names.delete(id.pool);
     return buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, resulting } });
   };
   return { preview, body };

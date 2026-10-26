@@ -766,3 +766,20 @@ test("#102 review of #108: a rejected name write keeps the holder's real name fo
   assert.deepEqual(["4.5", "4.101", "4.102"].map((k) => con.presets.get(k)?.name ?? null), ["Orange", null, "Blue"]);
   assert.deepEqual(con.listed, ["Preset 4", "Preset 4"], "the unknown name made the next item read the pool again");
 });
+
+test("#102 review of #108: an unnamed create's default name is taken for the rest of the batch (verify off)", async () => {
+  const red = [{ attribute: "ColorRGB_R", value: 100, unit: "percent" }];
+  const { result } = await store({
+    mode: "selective",
+    verify: false,
+    presets: [
+      { preset: "4.101", name: "Red", fixtures: [401], values: red },
+      { preset: "4.102", fixtures: [402], values: red },
+      { preset: "4.103", name: "Preset 102", fixtures: [403], values: red },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), ["Preset 4.101:succeeded", "Preset 4.102:succeeded", "Preset 4.103:failed"], JSON.stringify(result.items));
+  assert.match(result.items[2].summary, /"Preset 102" is Preset 4\.102/);
+  assert.equal(con.commands.some((c) => /^Store Preset 4\.103 /.test(c)), false, "refused before its store");
+  assert.deepEqual(con.listed, ["Preset 4", "Preset 4"], "the unnamed create made the next item read the pool again");
+});
