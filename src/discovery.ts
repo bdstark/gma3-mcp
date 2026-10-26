@@ -10,7 +10,7 @@
 /** Setup and show tasks, each with the tools that do it (the first one is usually the one to start with). */
 export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] }> = [
   { task: "find and import fixture types", tools: ["gma3_patch_library", "gma3_patch_import", "gma3_patch_library_add", "gma3_patch_types", "gma3_patch_remove_type"] },
-  { task: "patch fixtures (add, readdress, rename, remove, nest in a grouping fixture, retype)", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list", "gma3_patch_move", "gma3_patch_retype"] },
+  { task: "patch fixtures and stages (add, readdress, rename, remove, nest, retype)", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list", "gma3_patch_move", "gma3_patch_retype", "gma3_patch_stages"] },
   { task: "a fixture type's modes, cells, channels and size", tools: ["gma3_patch_type_structure"] },
   { task: "place fixtures in 3D (position, rotation, mirroring)", tools: ["gma3_place_fixtures", "gma3_fixture_positions"] },
   { task: "lay out a fixture's cells (string lights, pixel strands)", tools: ["gma3_layout_cells", "gma3_assign_cell_layout"] },
@@ -59,7 +59,7 @@ export const BATCH_TOOLS: ReadonlyArray<{ tool: string; list: string }> = [
   { tool: "gma3_configure_tag", list: "tags" },
 ];
 
-const BATCH_NOTE = `Many objects at once: ${BATCH_TOOLS.map((b) => `${b.tool} (${b.list})`).join(", ")} take a list in one call, with per-item checks, read-back and one result line per item; never loop over them in Lua.`;
+const BATCH_NOTE = `Many objects at once: ${BATCH_TOOLS.map((b) => `${b.tool} (${b.list})`).join(", ")} take a list in one call, with per-item checks, read-back and one line per item; never loop over them in Lua.`;
 
 const OBSERVE_NOTE = `Watching over time: ${OBSERVING_TOOLS.map((o) => `${o.tool} (${o.what})`).join(", ")}. They sample on the server side; never write a Lua waiting or polling loop (each gma3_lua request is limited to about 5 s).`;
 
@@ -78,7 +78,7 @@ export function serverInstructions(staleWarning?: string): string {
 
 /** The pointer at the start of gma3_lua's description. */
 export const LUA_FALLBACK_NOTE =
-  "FALLBACK: use a structured tool when one fits; they check, read back and need no Lua. Patch: gma3_patch_library, gma3_patch_import, gma3_patch_add, gma3_patch_set, gma3_patch_move, gma3_patch_retype, gma3_patch_type_structure, gma3_place_fixtures, gma3_layout_cells. Dialogs: gma3_dialog (never Mouse()). " +
+  "FALLBACK: use a structured tool when one fits; they check, read back and need no Lua. Patch: gma3_patch_library, gma3_patch_import, gma3_patch_add, gma3_patch_set, gma3_patch_move, gma3_patch_stages, gma3_patch_retype, gma3_patch_type_structure, gma3_place_fixtures, gma3_layout_cells. Dialogs: gma3_dialog (never Mouse()). " +
   "Groups: gma3_store_group, gma3_configure_matricks. Presets: gma3_apply_preset, gma3_store_preset. Phasers: gma3_build_phaser. Looks: gma3_set_attributes. Cues: gma3_store_cues, gma3_edit_cues, gma3_build_chase, gma3_cue_contents. " +
   "Playback: gma3_configure_sequence, gma3_configure_executor, gma3_playback, gma3_goto_cue. Reads: gma3_objects, gma3_get_object, gma3_list_children, gma3_programmer. " +
   `${BATCH_NOTE} ` +
