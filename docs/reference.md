@@ -24,7 +24,7 @@
 | `gma3_lua_api` | Search the live Lua API descriptor (names, arguments, returns) |
 | `gma3_get_object` | Properties (and optionally children and schema) of any object |
 | `gma3_list_children` | Children of an object with selected property values, paginated |
-| `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)) |
+| `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)), and so are preset ranges and `+` lists that name the pool (v0.46.0, [below](#preset-ranges-plugin-v0460)) |
 | `gma3_dump` | Raw `Dump()` text of an object |
 | `gma3_set_property` | `Set()` a property and read it back: plain values (Yes/No, enums, numbers, exact text) are verified, a kept value is an error naming the lock (or saying its state is unknown); references, a macro line's Command and Wait, Tags and reformatted values are returned unverified with the typed tool that checks them |
 | `gma3_playback` | Go+, Go-, Pause, Off, Top, Flash, Load, ReSync, ... on a sequence, executor or tag; reads the playback state back a frame later (for a tag, every tagged sequence) ([docs](tools/live-reads.md), [resync](tools/tempo-sync.md#resync)) |
@@ -250,6 +250,17 @@ the reference first:
 
 The guard does not cover `gma3_lua`: a script that calls `ObjectList` with an executor range still hangs the console.
 Evidence: [probes/objectlist-hang-macos-2.5.1.md](probes/objectlist-hang-macos-2.5.1.md).
+
+### Preset ranges (plugin v0.46.0)
+
+On onPC 2.5.1, `ObjectList` answers an empty list, without an error, for a preset range whose end names the pool
+(`Preset 4.1 Thru 4.3`) and for a `+` list of presets (`Preset 4.1 + 4.2`). The console's own range form
+`Preset 4.1 Thru 3` and a single `Preset 4.2` resolve (live 2026-10-25, #99). Since v0.46.0 the same ops expand
+`Preset P.N Thru P.M` and `+` lists of `P.N` terms and such ranges (across pools in a list; an unqualified range end
+stays in its pool) into single `Preset P.N` lookups, in the given order, duplicates once, at most 1000 presets, pools 1–999,
+presets 1–9999. Empty slots are skipped. A range across pools (`Preset 4.1 Thru 5.3`) is refused before any lookup.
+Every other form (`Preset 4.1 Thru 3`, a single preset, names, `*`, open ranges, a bare number after `+`) goes to `ObjectList`
+unchanged. An older bridge returns nothing for the qualified forms; write `Preset 4.1 Thru 20` there.
 
 ### Selection-grid reads (plugin v0.21.0, SB-02)
 

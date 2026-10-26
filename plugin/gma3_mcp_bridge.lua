@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.44.0"
+local VERSION      = "0.46.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -434,8 +434,94 @@ local function pageRangePlan(ref)
   return { kind = kind, items = items }
 end
 
--- ObjectList for one reference, with page/executor lists expanded into single lookups.
-local function objectList(ref)
+-- Preset ranges and lists with a pool on the second number are expanded into single lookups (bridge 0.46.0).
+-- On onPC 2.5.1 ObjectList("Preset 4.1 Thru 4.3") and ObjectList("Preset 4.1 + 4.2") return an empty list without
+-- an error, while "Preset 4.1 Thru 3" and "Preset 4.2" resolve (2026-10-25, #99). Returns nil when the reference
+-- is not such a form (no Preset keyword, no list operator, only unqualified range ends, or anything this parser
+-- does not read: names, wildcards, open ranges), so it goes to ObjectList unchanged; otherwise
+-- { { pool = P, no = N }, ... } in the given order without duplicates. A range across pools is refused.
+-- Scoped in a do block: the main chunk is at Lua's limit of 200 locals.
+local objectList
+do
+local MAX_PRESET_POOL, MAX_PRESET_NUMBER = 999, 9999
+local function presetRangePlan(ref)
+  local toks = refTokens(ref)
+  local first = toks[1]
+  if not (first and first.kind == "word" and isPrefixOf(first.lower, "preset", 2)) then return nil end
+  local qualifiedEnd, plus = false, false
+  local items, seen, i, pool = {}, {}, 2, nil
+  local function number(text, max)
+    local n = math.tointeger(tonumber(text))
+    if n == nil or n < 1 or n > max then return nil end
+    return n
+  end
+  -- "P.N" sets the pool; a bare "N" (a range end) stays in it, as the console reads "Preset 4.1 Thru 3".
+  local function parse(t, bareOk)
+    if not t or t.kind ~= "number" then return nil end
+    local p, n = t.text:match("^(%d+)%.(%d+)$")
+    if p then
+      p, n = number(p, MAX_PRESET_POOL), number(n, MAX_PRESET_NUMBER)
+      if not (p and n) then return nil end
+      return { pool = p, no = n, qualified = true }
+    end
+    if bareOk and pool and t.text:match("^%d+$") then
+      n = number(t.text, MAX_PRESET_NUMBER)
+      return n and { pool = pool, no = n } or nil
+    end
+    return nil
+  end
+  local function add(p, n)
+    local key = p .. "." .. n
+    if seen[key] then return true end
+    seen[key] = true
+    items[#items + 1] = { pool = p, no = n }
+    return #items <= MAX_EXPANDED_OBJECTS
+  end
+  while true do
+    local a = parse(toks[i], false)
+    if not a then return nil end
+    pool = a.pool
+    i = i + 1
+    if toks[i] and isThruWord(toks[i]) then
+      local b = parse(toks[i + 1], true)
+      if not b then return nil end
+      if b.qualified then qualifiedEnd = true end
+      if b.pool ~= a.pool then
+        error(string.format("'%s' is a preset range across pools (%d.%d to %d.%d); name one range per pool, joined with +", ref, a.pool, a.no, b.pool, b.no), 0)
+      end
+      if math.abs(b.no - a.no) + 1 > MAX_EXPANDED_OBJECTS then
+        error(string.format("'%s' expands to more than %d presets", ref, MAX_EXPANDED_OBJECTS), 0)
+      end
+      local step = b.no >= a.no and 1 or -1
+      for v = a.no, b.no, step do
+        if not add(a.pool, v) then error(string.format("'%s' expands to more than %d presets", ref, MAX_EXPANDED_OBJECTS), 0) end
+      end
+      i = i + 2
+    elseif not add(a.pool, a.no) then
+      error(string.format("'%s' expands to more than %d presets", ref, MAX_EXPANDED_OBJECTS), 0)
+    end
+    local t = toks[i]
+    if t == nil then break end
+    if not (t.kind == "symbol" and t.text == "+") then return nil end
+    plus = true
+    i = i + 1
+  end
+  if not (qualifiedEnd or plus) then return nil end
+  return items
+end
+
+-- ObjectList for one reference, with page/executor lists and pool-qualified preset lists expanded into
+-- single lookups.
+function objectList(ref)
+  local presets = presetRangePlan(ref)
+  if presets then
+    local out = {}
+    for _, it in ipairs(presets) do
+      local list = ObjectList(string.format("Preset %d.%d", it.pool, it.no))
+      if list and list[1] then out[#out + 1] = list[1] end
+    end
+    return out
+  end
   local plan = pageRangePlan(ref)
   if not plan then return ObjectList(ref) end
   local out, pages = {}, {}
@@ -457,6 +543,7 @@ local function objectList(ref)
     end
   end
   return out
+end
 end
 
 -- Resolve an object reference to a handle.
