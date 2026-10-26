@@ -151,8 +151,9 @@ local function buildLive()
   for i = 1, 3 do pars[i] = fixture("Par " .. i, 400 + i, MODE8, string.format("1.%03d", 1 + (i - 1) * 8)); pars[i].TypeRef = mhpType end
   local group = fixture("Group 4", 4, GROUPMODE, "", pars); group.TypeRef = types.kids[1]
   local dim = fixture("Dim 1", 501, MODE1, "1.100"); dim.TypeRef = types.kids[4]
-  local stage = obj("Stage", "Stage 1", 1, {}, { obj("Fixtures", "Fixtures", 1, {}, { group, dim }) })
-  stage.Fixtures = stage.kids[1]
+  -- An unnamed stage: Lua reads its empty Name as "Stage 1" (named = true marks one whose Name was set, #98).
+  local stage = obj("Stage", "Stage 1", 1, {}, { obj("Fixtures", "Fixtures", 1, {}, { group, dim }) }, { addr = "14.9.7.1" })
+  stage.Fixtures = stage.kids[1]; stage.Fixtures.addr = "14.9.7.1.1"
   local stages = obj("Stages", "Stages", 7, {}, { stage })
   local p = obj("Patch", "LivePatch", 9, {}, { obj("DmxCurves", "DmxCurves", 1, {}, { obj("DmxCurve", "DmxCurve 1", 1, { { "CURVEMODE", "MinMax" } }, { obj("DmxCurvePoint", "Max", 3, { { "IN", "FFFFFF" }, { "OUT", "FFFFFF" } }) }),
       obj("DmxCurve", "Custom", 2, { { "CURVEMODE", "Linear" } }, { obj("DmxCurvePoint", "Min", 1, { { "IN", "000000" }, { "OUT", "000000" } }), obj("DmxCurvePoint", "Knee", 2, { { "IN", "808080" }, { "OUT", "404040" } }) }) }), attrDefs, types, stages, obj("IDTypes", "IDTypes", 11, {}, { obj("IDs", "Fixture", 1, { { "MAXID", 501 } }) }),
@@ -162,7 +163,18 @@ local function buildLive()
 end
 
 -- A deep copy that keeps the shared DMX mode objects (immutable here), as the copy's own modes would be equal.
-local function deepcopy(o, seen)
+local deepcopy
+-- The copy's objects have their own addresses (ShowData.Patch is 14.10, LivePatch 14.9).
+local function readdr(o, from, to, seen)
+  seen = seen or {}
+  if type(o) ~= "table" or seen[o] or o.class == "DMXMode" then return o end
+  seen[o] = true
+  local a = rawget(o, "addr")
+  if type(a) == "string" and a:sub(1, #from + 1) == from .. "." then o.addr = to .. a:sub(#from + 1) end
+  for _, k in ipairs(rawget(o, "kids") or {}) do readdr(k, from, to, seen) end
+  return o
+end
+function deepcopy(o, seen)
   if type(o) ~= "table" then return o end
   if o.class == "DMXMode" then return o end
   seen = seen or {}
@@ -171,6 +183,11 @@ local function deepcopy(o, seen)
   seen[o] = c
   for k, v in pairs(o) do c[k] = deepcopy(v, seen) end
   return c
+end
+-- The console's text for a stage's Fixtures as the destination (live 2026-10-25, #98).
+local function stageDestText(st)
+  if st.named then return "Stage " .. st.no .. " '" .. st.name .. "'.Fixtures" end
+  return "Stage " .. st.no .. ".Fixtures"
 end
 
 local console
@@ -304,10 +321,11 @@ local function frame()
   console.queue = {}
   for _, cmd in ipairs(q) do
     if cmd == 'ChangeDestination "ShowData"."Patch"' then
-      local c = deepcopy(console.live); c.addr = "14.10"; c.name = "Patch"
+      local c = readdr(deepcopy(console.live), "14.9", "14.10"); c.addr = "14.10"; c.name = "Patch"
       console.copy = c; console.copyOpen = true; console.dest = "ShowData.Patch"
     elseif cmd:match('^ChangeDestination "Stages"%."(.-)"%."Fixtures"$') then
-      console.dest = cmd:match('^ChangeDestination "Stages"%."(.-)"%."Fixtures"$') .. ".Fixtures"
+      local want = cmd:match('^ChangeDestination "Stages"%."(.-)"%."Fixtures"$')
+      for _, st in ipairs(console.copy.Stages:Children()) do if st.name == want then console.dest = stageDestText(st); break end end
     elseif cmd == 'ChangeDestination "FixtureTypes"' and console.copyOpen then
       console.dest = "FixtureTypes"
     elseif cmd:match('^Import Library "') then
@@ -330,7 +348,7 @@ local function frame()
       if tonumber(no) < nextTypeNo() then console.last = "Illegal: " .. cmd; goto continue end
       addImported(file, tonumber(no))
     elseif cmd == "ChangeDestination Root" then
-      if console.copyOpen then local l = deepcopy(console.copy); l.addr = "14.9"; l.name = "LivePatch"; console.live = l end
+      if console.copyOpen then local l = readdr(deepcopy(console.copy), "14.10", "14.9"); l.addr = "14.9"; l.name = "LivePatch"; console.live = l end
       console.copy = obj("Patch", "Patch", 10, {}, {}); console.copy.addr = "14.10"; console.copyOpen = false; console.dest = "Root"
     end
     if moveCommand(cmd) == "pending" then goto continue end
@@ -375,9 +393,10 @@ end
 AddFixtures = function(spec)
   if not console.copyOpen or not console.dest:match("%.Fixtures$") then return nil end
   if console.addMode == "nil" then return nil end
-  local stageName = console.dest:match("^(.-)%.Fixtures$")
+  -- The fixtures land in the destination (a stage's Fixtures).
   local stage
-  for _, s in ipairs(console.copy.Stages:Children()) do if s.name == stageName then stage = s end end
+  for _, s in ipairs(console.copy.Stages:Children()) do if s.Fixtures == console.destObj then stage = s end end
+  if not stage then return nil end
   local fp = tonumber(spec.mode.pv.TOTALFOOTPRINT)
   local fid = tonumber(spec.fid)
   local start = spec.patch and parse(spec.patch[1]) or nil
@@ -436,7 +455,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.44.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.45.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -488,10 +507,11 @@ console.modal = false
 r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 901 }))
 check("patch.add outside a session is refused", r.ok == false and r.code == "copy-closed", J(r))
 r = request("patch.enter", X)
-check("patch.enter queues the two destination changes (CmdIndirect, nothing applied yet)", r.ok and r.result.expectDestination == "Stage 1.Fixtures" and #console.queue == 2 and console.copyOpen == false, J(r))
+check("patch.enter queues the two destination changes (CmdIndirect, nothing applied yet)", r.ok and r.result.expectDestination == "Stage 1.Fixtures" and r.result.stageIndex == 1 and #console.queue == 2 and console.copyOpen == false, J(r))
 frame()
 r = request("patch.state")
 check("after a frame the copy is open at the stage's Fixtures", r.ok and r.result.copyOpen and r.result.destination == "Stage 1.Fixtures" and r.result.patchAddr == "14.10", J(r))
+check("patch.state names the copy's stage the command line is at, found by address (0.45.0)", r.ok and r.result.destinationStage and r.result.destinationStage.index == 1 and r.result.destinationStage.by == "address" and r.result.destinationStage.text == "Stage 1.Fixtures", J(r))
 r = request("patch.enter", X)
 check("patch.enter while the copy is open is refused", r.ok == false and r.code == "copy-open", J(r))
 check("the copy fingerprint equals the live one on entry", fpOf("copy") == fpOf("live"), fpOf("copy") .. " | " .. fpOf("live"))
@@ -509,10 +529,11 @@ check("a real change to an attribute still changes the fingerprint", fpOf("copy"
 copyAttr:Set("PRETTY", "PixelMask")
 check("(the attribute change is undone again)", fpOf("copy") == fpOf("live"))
 
-console.dest = "ShowData.Patch"
+local atFixtures = console.destObj
+console.dest = "ShowData.Patch"; console.destObj = console.copy
 r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 901, count = 2, address = "2.001" }))
-check("patch.add at the wrong destination is refused", r.ok == false and r.code == "wrong-destination", J(r))
-console.dest = "Stage 1.Fixtures"
+check("patch.add at the wrong destination is refused, naming both", r.ok == false and r.code == "wrong-destination" and r.error:find("the command line destination is ShowData.Patch, expected Stage 1.Fixtures", 1, true) and not r.error:find("CmdIndirect"), J(r))
+console.dest = "Stage 1.Fixtures"; console.destObj = atFixtures
 r = request("patch.add", with({ stage = "Stage 1", type = 8, mode = 1, fid = 901 }))
 check("patch.add refuses a multi-break mode", r.ok == false and r.code == "multi-break", J(r))
 r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 403 }))
@@ -1084,6 +1105,81 @@ grpC.pv.SELECTIONDATA = { { sf_index = 5 } }
 r = request("patch.groupsOf", { fids = { 401, 501 } })
 check("patch.groupsOf: a selected cell whose Parent cannot be read makes the group unreadable (PR #89 review)", r.ok and J(r.result.unreadable) == '["1.11"]', J(r))
 ShowData = liveShowData
+
+-------------------------------------------------------------------------------
+-- Named stages (#98). The console shows a named stage's Fixtures as "Stage <no> '<name>'.Fixtures" (live 2026-10-25),
+-- so the destination is compared by its address; the text is the fallback when the address cannot be read.
+-------------------------------------------------------------------------------
+reset()
+local function addStage(no, name)
+  local st = obj("Stage", name, no, {}, { obj("Fixtures", "Fixtures", 1, {}, {}) }, { named = true, addr = "14.9.7." .. no })
+  st.Fixtures = st.kids[1]; st.Fixtures.addr = st.addr .. ".1"
+  local ss = console.live.Stages
+  ss.kids[#ss.kids + 1] = st
+  return st
+end
+addStage(2, "Main Floor")
+addStage(3, "Bob's Deck")
+local function stageFids(side, i) local out = {} for _, f in ipairs(console[side].Stages.kids[i].Fixtures.kids) do out[#out + 1] = f.FID end return table.concat(out, ",") end
+local function commit() request("patch.commit", X); frame() end
+
+-- An unnamed stage still enters as before.
+r = enter()
+check("named stages: the unnamed first stage still enters at Stage 1.Fixtures", r.ok and r.result.stageIndex == 1 and r.result.expectDestination == "Stage 1.Fixtures" and console.dest == "Stage 1.Fixtures", J(r))
+r = request("patch.add", with({ stage = "Stage 1", type = 7, mode = 1, fid = 950, address = "3.001" }))
+check("named stages: patch.add into the unnamed stage", r.ok and #r.result.created == 1, J(r))
+commit()
+
+-- A named stage with a space: the destination text is the console's, the add lands in that stage.
+r = request("patch.enter", with({ stage = "Main Floor" }))
+check("patch.enter on a named stage: expectDestination in the console's form, the stage's position", r.ok and r.result.stage == "Main Floor" and r.result.stageIndex == 2 and r.result.expectDestination == "Stage 2 'Main Floor'.Fixtures" and console.queue[2] == 'ChangeDestination "Stages"."Main Floor"."Fixtures"', J(r))
+frame()
+r = request("patch.state")
+check("patch.state on a named stage: the console's text, and the stage found by address", r.ok and r.result.destination == "Stage 2 'Main Floor'.Fixtures" and r.result.destinationStage.index == 2 and r.result.destinationStage.name == "Main Floor" and r.result.destinationStage.by == "address" and r.result.destinationStage.text == "Stage 2 'Main Floor'.Fixtures", J(r))
+r = request("patch.add", with({ stage = "Stage 1", type = 7, mode = 1, fid = 951, address = "3.002" }))
+check("patch.add for another stage than the destination is refused: destination is X, expected Y", r.ok == false and r.code == "wrong-destination" and r.error:find("the command line destination is Stage 2 'Main Floor'.Fixtures, expected Stage 1.Fixtures (stage 1)", 1, true) and stageFids("copy", 1) == "4,501,950", J(r))
+r = request("patch.add", with({ stage = "Main Floor", type = 7, mode = 1, fid = 951, address = "3.002" }))
+check("patch.add into the named stage (the bug of #98)", r.ok and #r.result.created == 1 and stageFids("copy", 2) == "951", J(r))
+commit()
+check("(the named stage's fixture is live after the commit)", stageFids("live", 2) == "951", stageFids("live", 2))
+
+-- A stage named explicitly "Stage 1": the console shows "Stage 1 'Stage 1'.Fixtures", Lua reads the same name as for
+-- an empty Name, so expectDestination stays the plain text; the address decides.
+console.live.Stages.kids[1].named = true
+r = enter()
+check("patch.enter on a stage named Stage 1 explicitly: the plain text, stage 1", r.ok and r.result.stageIndex == 1 and r.result.expectDestination == "Stage 1.Fixtures", J(r))
+r = request("patch.state")
+check("patch.state on a stage named Stage 1: the console's quoted text, the stage by address", r.ok and r.result.destination == "Stage 1 'Stage 1'.Fixtures" and r.result.destinationStage.index == 1 and r.result.destinationStage.by == "address", J(r))
+r = request("patch.add", with({ stage = "Stage 1", type = 7, mode = 1, fid = 952, address = "3.003" }))
+check("patch.add into a stage named Stage 1 explicitly", r.ok and #r.result.created == 1, J(r))
+-- Without a readable destination object the text decides: both forms are the stage named Stage 1, an old-style
+-- "<name>.Fixtures" for a named stage is not.
+local destObj = console.destObj
+console.destObj = nil
+r = request("patch.state")
+check("text fallback: Stage 1 'Stage 1'.Fixtures is stage 1", r.ok and r.result.destinationStage and r.result.destinationStage.index == 1 and r.result.destinationStage.by == "text", J(r))
+console.dest = "Stage 1.Fixtures"
+r = request("patch.state")
+check("text fallback: Stage 1.Fixtures is the same stage", r.ok and r.result.destinationStage and r.result.destinationStage.index == 1, J(r))
+console.dest = "Main Floor.Fixtures"
+r = request("patch.state")
+check("text fallback: Main Floor.Fixtures (the pre-0.45.0 expectation) is no stage", r.ok and r.result.destinationStage == nil, J(r))
+r = request("patch.add", with({ stage = "Main Floor", type = 7, mode = 1, fid = 953, address = "3.004" }))
+check("text fallback: patch.add refuses Main Floor.Fixtures for the named stage", r.ok == false and r.code == "wrong-destination" and r.error:find("expected Stage 2 'Main Floor'.Fixtures (stage 2)", 1, true), J(r))
+console.dest = "Stage 1 'Stage 1'.Fixtures"; console.destObj = destObj
+commit()
+
+-- A name with ' in it: the command quotes it with ", the address decides, the text is only for messages.
+r = request("patch.enter", with({ stage = "Bob's Deck" }))
+check("patch.enter on a stage whose name has a '", r.ok and r.result.stageIndex == 3 and r.result.expectDestination == "Stage 3 'Bob's Deck'.Fixtures" and console.queue[2] == [[ChangeDestination "Stages"."Bob's Deck"."Fixtures"]], J(r))
+frame()
+r = request("patch.add", with({ stage = "Bob's Deck", type = 7, mode = 1, fid = 954, address = "3.005" }))
+check("patch.add into a stage whose name has a '", r.ok and stageFids("copy", 3) == "954", J(r))
+commit()
+-- A name with " cannot be put into the command and is refused before anything is queued.
+addStage(4, 'The "Pit"')
+r = request("patch.enter", with({ stage = 'The "Pit"' }))
+check("patch.enter refuses a stage name with a double quote, nothing queued", r.ok == false and r.code == "bad-stage" and #console.queue == 0, J(r))
 
 print(string.format("%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) end

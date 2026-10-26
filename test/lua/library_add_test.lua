@@ -112,7 +112,7 @@ local PART = "." .. ID .. ".gma3mcp-part"
 local function add(a) a.upload = a.upload or ID; return request("patch.libraryAdd", a) end
 
 local r = request("ping", {})
-check("ping reports bridge 0.38.1", r.ok and r.result.bridgeVersion == "0.44.0", J(r))
+check("ping reports bridge 0.38.1", r.ok and r.result.bridgeVersion == "0.45.0", J(r))
 check("the CRC reference matches zlib's check value", crc32("123456789") == "cbf43926")
 
 -- Every byte value, in three chunks of uneven length (padding 0, 1 and 2 at the ends).

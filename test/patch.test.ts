@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
 import { BridgeReplyError, SILENT } from "./helpers/fake-bridge.js";
-import { registerPatchTools, blockAddress, dmxAddress } from "../src/tools/patch.js";
+import { registerPatchTools, blockAddress, copyArrival, dmxAddress, type PatchState } from "../src/tools/patch.js";
 
 /**
  * KB-26 patch tools against a fake bridge whose patch.* ops behave like the bridge's: the copy opens and
@@ -49,6 +49,20 @@ class PatchWorld {
   occupancyUnknown: Array<{ fid: number; reason: string }> = [];
   /** Extra fields of the fixtures patch.add creates (type and cells, SU-08). */
   addExtra: Partial<Fx> = {};
+  /** The live patch's stages; named: the Name was set (the console then shows "Stage <no> '<name>'.Fixtures", #98). */
+  stages: Array<{ name: string; named?: boolean }> = [{ name: "Stage 1" }];
+  /** Bridge 0.45.0: patch.enter names the stage's position, patch.state the stage at the destination (by address). */
+  bridge045 = false;
+  /** The stage the command line lands at, when not the one entered (1-based). */
+  landAt: number | null = null;
+  /** The stage whose Fixtures the command line is at (1-based), while the copy is open. */
+  atStage: number | null = null;
+  private entering = 1;
+
+  stageText(i: number) {
+    const s = this.stages[i - 1];
+    return s.named ? `Stage ${i} '${s.name}'.Fixtures` : `Stage ${i}.Fixtures`;
+  }
 
   frame() {
     if (this.delay > 0) {
@@ -59,11 +73,13 @@ class PatchWorld {
       if (cmd === "enter") {
         if (this.neverOpen) continue;
         this.copy = this.live.map((f) => ({ ...f }));
-        this.dest = "Stage 1.Fixtures";
+        this.atStage = this.landAt ?? this.entering;
+        this.dest = this.stageText(this.atStage);
       } else if (cmd === "root") {
         if (this.copy) this.live = this.copy;
         this.copy = null;
         this.dest = "Root";
+        this.atStage = null;
         this.foreignInCopy = false;
       }
     }
@@ -84,7 +100,8 @@ class PatchWorld {
     f.on("patch.state", () => {
       this.frame();
       const copyOpen = this.copy !== null;
-      return { destination: this.dest, copyOpen, atRoot: this.dest === "Root" && !copyOpen, modal: this.modal, stages: ["Stage 1"] };
+      const at = this.bridge045 && copyOpen && this.atStage !== null ? { destinationStage: { index: this.atStage, no: this.atStage, name: this.stages[this.atStage - 1].name, text: this.stageText(this.atStage), by: "address" } } : {};
+      return { destination: this.dest, copyOpen, atRoot: this.dest === "Root" && !copyOpen, modal: this.modal, stages: this.stages.map((x) => x.name), ...at };
     });
     f.on("patch.check", (args) => {
       if (args.add) {
@@ -136,11 +153,17 @@ class PatchWorld {
     f.on("patch.enter", (args) => {
       if (args.exclusive !== true) throw new BridgeReplyError("[not-exclusive] needs exclusive", "not-exclusive");
       if (this.copy) throw new BridgeReplyError("[copy-open] the patch copy is already open", "copy-open");
+      const i = args.stage === undefined ? 1 : this.stages.findIndex((x) => x.name === args.stage) + 1;
+      if (i === 0) throw new BridgeReplyError(`[no-stage] no stage named ${args.stage}`, "no-stage");
+      this.entering = i;
       this.pending.push("enter");
-      return { queued: true, stage: "Stage 1", expectDestination: "Stage 1.Fixtures" };
+      const name = this.stages[i - 1].name;
+      // Before 0.45.0 the bridge expected "<name>.Fixtures", which only an unnamed stage shows.
+      return this.bridge045 ? { queued: true, stage: name, stageIndex: i, expectDestination: this.stageText(i) } : { queued: true, stage: name, expectDestination: `${name}.Fixtures` };
     });
     f.on("patch.add", (args) => {
-      if (!this.copy || this.dest !== `${args.stage}.Fixtures`) throw new BridgeReplyError("[wrong-destination] not at the stage", "wrong-destination");
+      const at = this.bridge045 ? this.atStage !== null && this.stages[this.atStage - 1].name === args.stage : this.dest === `${args.stage}.Fixtures`;
+      if (!this.copy || !at) throw new BridgeReplyError("[wrong-destination] not at the stage", "wrong-destination");
       if (this.addError) throw this.addError;
       const count = (args.count as number) ?? 1;
       const created: Fx[] = [];
@@ -340,6 +363,86 @@ test("gma3_patch_add: a copy that never opens ends unknown, with nothing left op
     assert.equal(result.copyLeftOpen, false);
     assert.ok(stepNames(result).includes("wait_copy:unknown") && stepNames(result).includes("add:skipped"));
     assert.ok(!h.fake.requests.some((r) => r.op === "patch.add"));
+  } finally {
+    await h.close();
+  }
+});
+
+test("copyArrival: stage by position from bridge 0.45.0, the exact text before, and the destination named when it differs", () => {
+  const st = (destination: string, extra: Partial<PatchState> = {}): PatchState => ({ destination, copyOpen: true, atRoot: false, modal: false, stages: [], ...extra });
+  const old = copyArrival({ expectDestination: "Stage 1.Fixtures" });
+  assert.equal(old.at(st("Stage 1.Fixtures")), true, "an older bridge: the old exact form is still accepted");
+  assert.equal(old.at(st("Stage 1 'Stage 1'.Fixtures")), false);
+  assert.equal(old.at(st("Stage 1.Fixtures", { copyOpen: false })), false, "the copy must be open");
+  assert.equal(old.settled(st("ShowData.Patch", { copyOpen: false })), undefined, "a closed copy is not settled: still waiting");
+  assert.equal(old.settled(st("Stage 1.Fixtures")), undefined);
+  const named = copyArrival({ expectDestination: "Main Floor.Fixtures" });
+  assert.match(named.settled(st("Stage 1 'Main Floor'.Fixtures"))!, /the patch copy is open, but the command line destination is "Stage 1 'Main Floor'\.Fixtures", expected "Main Floor\.Fixtures" \(a bridge before 0\.45\.0 .*install bridge 0\.45\.0\)/);
+  const now = copyArrival({ expectDestination: "Stage 2 'Main Floor'.Fixtures", stageIndex: 2 });
+  assert.equal(now.at(st("Stage 2 'Main Floor'.Fixtures", { destinationStage: { index: 2, by: "address" } })), true);
+  assert.equal(now.at(st("whatever the text", { destinationStage: { index: 2, by: "address" } })), true, "the position decides, not the text");
+  assert.equal(now.at(st("Stage 2 'Main Floor'.Fixtures")), false, "no destinationStage: not at the stage");
+  assert.equal(now.at(st("Stage 1.Fixtures", { destinationStage: { index: 1 } })), false);
+  assert.equal(now.settled(st("Stage 1.Fixtures", { destinationStage: { index: 1 } })), `the patch copy is open, but the command line destination is "Stage 1.Fixtures", expected "Stage 2 'Main Floor'.Fixtures" (stage 2)`);
+  assert.equal(copyArrival({ expectDestination: "FixtureTypes" }).at(st("FixtureTypes")), true, "the fixture-type pool is compared as text");
+});
+
+test("gma3_patch_add (bridge 0.45.0): into a named stage, compared by the stage's position (#98)", async () => {
+  const { h, w } = await setup();
+  try {
+    w.bridge045 = true;
+    w.stages = [{ name: "Stage 1" }, { name: "Main Floor", named: true }];
+    const { result } = await h.callJson("gma3_patch_add", { type: 6, mode: 3, fid: 901, address: "2.001", stage: "Main Floor", exclusive: true });
+    assert.equal(result.outcome, "succeeded", result.summary);
+    assert.deepEqual(stepNames(result).slice(0, 5), ["check_state:succeeded", "check_add:succeeded", "enter:succeeded", "wait_copy:succeeded", "add:succeeded"]);
+    assert.deepEqual(result.steps.find((s: any) => s.name === "enter").detail, { queued: true, stage: "Main Floor", stageIndex: 2, expectDestination: "Stage 2 'Main Floor'.Fixtures" });
+    assert.equal(h.fake.requests.find((r) => r.op === "patch.add")!.args.stage, "Main Floor");
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_set (bridge 0.45.0): the first stage named Stage 1 explicitly reads \"Stage 1 'Stage 1'.Fixtures\" and still matches", async () => {
+  const { h, w } = await setup();
+  try {
+    w.bridge045 = true;
+    w.stages = [{ name: "Stage 1", named: true }];
+    const { result } = await h.callJson("gma3_patch_set", { edits: [{ fid: 401, name: "Renamed" }], exclusive: true });
+    assert.equal(result.outcome, "succeeded", result.summary);
+    assert.equal(result.steps.find((s: any) => s.name === "wait_copy").status, "succeeded");
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_add: the copy open at another stage fails naming the destination and the expected one, closed again", async () => {
+  const { h, w } = await setup();
+  try {
+    w.bridge045 = true;
+    w.stages = [{ name: "Stage 1" }, { name: "Main Floor", named: true }];
+    w.landAt = 1;
+    const { result } = await h.callJson("gma3_patch_add", { type: 6, mode: 3, fid: 901, stage: "Main Floor", exclusive: true });
+    assert.equal(result.outcome, "failed");
+    const wc = result.steps.find((s: any) => s.name === "wait_copy");
+    assert.equal(wc.status, "failed");
+    assert.equal(wc.error, `the patch copy is open, but the command line destination is "Stage 1.Fixtures", expected "Stage 2 'Main Floor'.Fixtures" (stage 2)`);
+    assert.doesNotMatch(result.summary, /CmdIndirect/);
+    assert.match(result.summary, /destination is "Stage 1\.Fixtures", expected "Stage 2 'Main Floor'\.Fixtures".*closed again without changes/);
+    assert.equal(result.copyLeftOpen, false);
+    assert.ok(!h.fake.requests.some((r) => r.op === "patch.add"), "nothing was added");
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_add: an older bridge on a named stage fails with the destination named and the bridge to install", async () => {
+  const { h, w } = await setup();
+  try {
+    w.stages = [{ name: "Main Floor", named: true }];
+    const { result } = await h.callJson("gma3_patch_add", { type: 6, mode: 3, fid: 901, stage: "Main Floor", exclusive: true });
+    assert.equal(result.outcome, "failed");
+    assert.match(result.summary, /destination is "Stage 1 'Main Floor'\.Fixtures", expected "Main Floor\.Fixtures" \(a bridge before 0\.45\.0/);
+    assert.equal(result.copyLeftOpen, false);
   } finally {
     await h.close();
   }
