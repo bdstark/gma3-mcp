@@ -192,6 +192,15 @@ test("timeToSeconds interprets grandMA3 time displays and refuses markers and co
   assert.equal(timeToSeconds("1m00s"), 60);
   assert.equal(timeToSeconds("1h22m56.3s"), 4976.3);
   assert.equal(timeToSeconds("2m"), 120);
+  // onPC 2.5.1 drops the "s" from a minute up (#103): TrigTime 64 reads "1m04.00", macro waits "1h00m00.00".
+  assert.equal(timeToSeconds("1m04.00"), 64);
+  assert.equal(timeToSeconds("1m04.50"), 64.5);
+  assert.equal(timeToSeconds("1m04.00s"), 64);
+  assert.equal(timeToSeconds("1h00m00.00"), 3600);
+  assert.equal(timeToSeconds("1d03h46m40.00"), 100000);
+  assert.equal(timeToSeconds("59.99"), 59.99);
+  assert.equal(timeToSeconds("1m04.00x"), null);
+  assert.equal(timeToSeconds("m04"), null);
   assert.equal(timeToSeconds(4), 4);
   assert.equal(timeToSeconds("CueTiming"), null);
   assert.equal(timeToSeconds("3.00 / 1.50"), null);
@@ -202,6 +211,7 @@ test("timeToSeconds interprets grandMA3 time displays and refuses markers and co
 test("compareFields applies per-field normalisers and reports the interpreted value on mismatch", () => {
   const norm = { CueInFade: timeToSeconds, TrigTime: timeToSeconds };
   assert.equal(compareFields("t", { CueInFade: 60, TrigTime: 4 }, { CueInFade: "1m00s", TrigTime: "4.00" }, { normalize: norm }).status, "matched");
+  assert.equal(compareFields("t", { TrigTime: 64 }, { TrigTime: "1m04.00" }, { normalize: norm }).status, "matched");
   const m = compareFields("t", { CueInFade: 0 }, { CueInFade: "CueTiming" }, { normalize: norm });
   assert.equal(m.status, "mismatched");
   assert.match(m.detail ?? "", /CueInFade: expected 0, read "CueTiming" \(interpreted as null\)/);
