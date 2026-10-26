@@ -2444,7 +2444,11 @@ do
     def.props = lowered
     def.children = def.children or {}
     def.methods = {
-      Get = function(self, k) return registry[self].props[tostring(k):lower()] end,
+      Get = function(self, k)
+        local d = registry[self]
+        if d.raise and d.raise[tostring(k):lower()] then error(d.raise[tostring(k):lower()]) end
+        return d.props[tostring(k):lower()]
+      end,
       GetClass = function(self) return registry[self].class end,
       Addr = function(self) return registry[self].addr or registry[self].name end,
       Index = function(self) return registry[self].index or 1 end,
@@ -2490,6 +2494,31 @@ do
   check("su16: executors carry the assigned sequence's current cue", r.ok and r.result.count == 1 and r.result.executors[1].assigned.currentCue.no == 2.5 and r.result.executors[1].assigned.hasActivePlayback == false, J(r))
   r = request("executor", { number = 201 })
   check("su16: executor carries the assigned sequence's current cue", r.ok and r.result.assigned.currentCue.name == "Half", J(r))
+
+  -- 0.47.0 (#96): a field read that raises is reported in fieldErrors, not dropped like an empty field.
+  local broken = H({ name = "202", class = "Exec", index = 202, props = { No = 202 }, raise = { object = "cannot read Object" } })
+  local plain = H({ name = "203", class = "Exec", index = 203, props = { No = 203 } })
+  local page = H({ name = "Page 1", class = "Page", children = { exec, broken, plain } })
+  local listed = ObjectList
+  ObjectList = function(ref) if ref == "ExecPage" then return { page } end return listed(ref) end
+  r = request("children", { ref = "ExecPage", fields = { "No", "Object" }, asText = false })
+  check("#96: children names a raising Object read in fieldErrors; a read field and an empty one have none",
+    r.ok and r.result.count == 3 and r.result.items[1].fields.Object.name == "Chase" and r.result.items[1].fieldErrors == nil
+      and r.result.items[2].fields.Object == nil and type(r.result.items[2].fieldErrors) == "table" and tostring(r.result.items[2].fieldErrors.Object):find("cannot read Object", 1, true) ~= nil
+      and r.result.items[2].fields.No == 202 and r.result.items[2].fieldErrors.No == nil
+      and r.result.items[3].fields.Object == nil and r.result.items[3].fieldErrors == nil, J(r))
+  -- 0.47.0 (#96): a Children() that raises is enumerationError, not an empty parent; a plain empty parent has none.
+  local unlistable = H({ name = "Macros", class = "Macros" })
+  registry[unlistable].methods.Children = function() error("Children failed") end
+  local emptyPool = H({ name = "Groups", class = "Groups" })
+  ObjectList = function(ref) if ref == "BadPool" then return { unlistable } elseif ref == "EmptyPool" then return { emptyPool } end return listed(ref) end
+  r = request("children", { ref = "BadPool" })
+  check("#96: children reports a raising Children() as enumerationError with the empty listing", r.ok and r.result.total == 0 and r.result.count == 0 and tostring(r.result.enumerationError):find("Children failed", 1, true) ~= nil, J(r))
+  r = request("children", { ref = "EmptyPool" })
+  check("#96: an empty parent has no enumerationError", r.ok and r.result.total == 0 and r.result.enumerationError == nil, J(r))
+  ObjectList = function(ref) if ref == "Page 1.202" then return { broken } end return listed(ref) end
+  r = request("objects", { ref = "Page 1.202", fields = { "Object" }, asText = false })
+  check("#96: objects reports the same fieldErrors", r.ok and r.result.count == 1 and tostring(r.result.items[1].fieldErrors and r.result.items[1].fieldErrors.Object):find("cannot read Object", 1, true) ~= nil, J(r))
 
   ObjectList, GetExecutor, CurrentExecPage = savedObjectList, savedGetExecutor, savedPage
 end

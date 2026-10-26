@@ -41,6 +41,7 @@ import { registerTagTools, tagPlayback, tagTarget } from "./tools/tags.js";
 import { setPropertyChecked } from "./tools/setproperty.js";
 import { registerTempoSyncTools, resyncPlayback, RESYNC_NOTE } from "./tools/temposync.js";
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
+import { registerPoolUsageTools, shapeListing } from "./tools/poolusage.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -363,15 +364,17 @@ server.registerTool(
   {
     title: "List child objects",
     description:
-      "List the children of an object (e.g. cues of a sequence, items of a pool, executors of a page) with name, class, address and index, plus optional property values per child. Paginated.",
+      "List the children of an object (e.g. cues of a sequence, items of a pool, executors of a page) with name, class, address and index, plus optional property values per child. Paginated: truncated: true (with a note) when more children follow. " +
+      "For the used and free numbers of a pool use gma3_pool_usage.",
     inputSchema: {
       ref: refSchema,
       fields: z.array(z.string()).optional().describe("Property names to read for each child, e.g. ['No','Name','TrigType','TrigTime']"),
       limit: z.number().int().positive().optional().describe("Max items (default 200)"),
       offset: z.number().int().nonnegative().optional(),
+      compact: z.boolean().optional().describe("With fields: drop addr and addrNative per child and return minified JSON (default false)"),
     },
   },
-  async ({ ref, fields, limit, offset }) => run(() => bridge.request("children", { ref, fields, limit, offset })),
+  async ({ ref, fields, limit, offset, compact }) => run(async () => shapeListing(await bridge.request("children", { ref, fields, limit, offset }), { compact, fields })),
 );
 
 server.registerTool(
@@ -385,11 +388,12 @@ server.registerTool(
     inputSchema: {
       ref: z.string().describe("Command-line object range"),
       fields: z.array(z.string()).optional().describe("Property names to read for each object"),
-      limit: z.number().int().positive().optional().describe("Max items (default 500)"),
+      limit: z.number().int().positive().optional().describe("Max items (default 500); the result has truncated: true (with a note) when more objects follow"),
       offset: z.number().int().nonnegative().optional(),
+      compact: z.boolean().optional().describe("With fields: drop addr and addrNative per object and return minified JSON (default false)"),
     },
   },
-  async ({ ref, fields, limit, offset }) => run(() => bridge.request("objects", { ref, fields, limit, offset }, 30000)),
+  async ({ ref, fields, limit, offset, compact }) => run(async () => shapeListing(await bridge.request("objects", { ref, fields, limit, offset }, 30000), { compact, fields })),
 );
 
 server.registerTool(
@@ -700,6 +704,7 @@ registerOscTools(server, toolContext);
 registerShowTools(server, toolContext);
 registerTagTools(server, toolContext);
 registerTempoSyncTools(server, toolContext);
+registerPoolUsageTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

@@ -30,6 +30,8 @@ ask for 3D placement, for haze in the beam check, for the universe budget and fo
   patch work, ask the user to close the Patch menu.
   Then check that the command line's destination is Root and that no modal is open. Leaving the copy with
   `ChangeDestination Root` commits it. There is no discard without the menu.
+- **Check the used numbers before the first store.** `gma3_pool_usage` lists the used and free numbers of the groups,
+  sequences, macros, MAtricks, preset pools and pages in one call; Show Start already fills many of them.
 - **Ask before Art-Net output goes on.** Output drives real fixtures. Configure it with output off, and turn output on
   only when the user says so.
 - **Ask before running a Show Start macro that overwrites,** such as the Position Wizard.
