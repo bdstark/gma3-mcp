@@ -15,7 +15,7 @@ import { Validator } from "../validate.js";
 import type { ToolContext } from "./context.js";
 import { buildInPreview, validateLooks, type LookSpec, type PreviewItem } from "./cuelists.js";
 import { expandFixtures } from "./groups.js";
-import { prepareStorePreset, type StorePresetArgs } from "./presets.js";
+import { prepareStorePreset, type PoolNames, type StorePresetArgs } from "./presets.js";
 
 const OP = "store_preset";
 
@@ -98,10 +98,12 @@ export async function storePresetsFromContent(ctx: ToolContext, merged: Array<Re
   const items = checked.items;
   return ctx.mutations.run(async () => {
     const stored: Array<OperationResult | undefined> = items.map(() => undefined);
+    // Each target pool's names are read once for the whole call; a preset stored earlier in the call holds its name (#102).
+    const names: PoolNames = new Map();
     const preview: PreviewItem[] = items.map((p, i) => {
       const pre = `preset ${p.preset}: `;
       const run: StepFn = async (): Promise<StepResult> => {
-        const prep = prepareStorePreset(ctx, p.store);
+        const prep = prepareStorePreset(ctx, p.store, { names });
         const r = "operation" in prep ? prep : await prep.body();
         stored[i] = r;
         const ok = r.outcome === "succeeded" && r.verification.status !== "mismatched";

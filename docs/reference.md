@@ -23,8 +23,9 @@
 | `gma3_lua` | Evaluate Lua inside onPC and return the result as JSON. Off until the operator [enables it on the console](lua.md); uses a best-effort execution budget |
 | `gma3_lua_api` | Search the live Lua API descriptor (names, arguments, returns) |
 | `gma3_get_object` | Properties (and optionally children and schema) of any object |
-| `gma3_list_children` | Children of an object with selected property values, paginated |
-| `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)), and so are preset ranges and `+` lists that name the pool (v0.46.0, [below](#preset-ranges-plugin-v0460)) |
+| `gma3_list_children` | Children of an object with selected property values, paginated; `truncated: true` when more follow, `compact: true` ([below](#pool-usage-and-truncated-listings)) |
+| `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)), and so are preset ranges and `+` lists that name the pool (v0.46.0, [below](#preset-ranges-plugin-v0460)); `truncated: true` when more follow, `compact: true` |
+| `gma3_pool_usage` | Read-only: per pool, the stored count, the used numbers as ranges, optional `[no, name]` pairs and the first free block of a size; preset pools, a page's executors and every page ([below](#pool-usage-and-truncated-listings)) |
 | `gma3_dump` | Raw `Dump()` text of an object |
 | `gma3_set_property` | `Set()` a property and read it back: plain values (Yes/No, enums, numbers, exact text) are verified, a kept value is an error naming the lock (or saying its state is unknown); references, a macro line's Command and Wait, Tags and reformatted values are returned unverified with the typed tool that checks them |
 | `gma3_playback` | Go+, Go-, Pause, Off, Top, Flash, Load, ReSync, ... on a sequence, executor or tag; reads the playback state back a frame later (for a tag, every tagged sequence) ([docs](tools/live-reads.md), [resync](tools/tempo-sync.md#resync)) |
@@ -92,6 +93,7 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_patch_set` | Readdress (swaps and moves across a fixture's own range work), unpatch or rename fixtures |
 | `gma3_patch_remove` | Delete fixtures (not ones with sub-fixtures) |
 | `gma3_patch_move` | Move fixtures under a top-level grouping fixture (the MA Show Start's FID 1-8) or back to the top level: Cut, ChangeDestination, Paste and the console's Move Fixtures dialog (absolute or relative 3D placement) answered by the bridge; read back against the state before: parent, address, groups, 3D pose (bridge 0.42.0) |
+| `gma3_patch_stages` | List the stages (position, name, fixtures, spaces), or create, rename or remove (only empty ones after the first) stages in one patch session; names unique ignoring case; read back from the live patch (bridge 0.48.0) |
 | `gma3_patch_retype` | Move fixtures to another fixture type with the same DMX mode, e.g. from an old GDTF import to a fixed one (the session of `gma3_assign_cell_layout`; bridge 0.29.0) |
 | `gma3_patch_library` | Read-only: search the fixture-type library (grandMA3, grandMA2, user, WorldServer) by manufacturer and model; modes when readable; which show types match; `compact` for file names only; every page fits the client (bridge 0.26.0) |
 | `gma3_patch_import` | Import one library file into the show: duplicate check, wait for exactly one new type, committed, read back with its modes (bridge 0.26.0) |
@@ -121,6 +123,49 @@ Object references accept command syntax (`Sequence 1 Cue 3`, `Page 1.201`), dott
 `ShowData`, `ShowSettings`, `DataPool`, `MasterPool`, `SelectedSequence`, `CurrentCue`, `Patch`, `Programmer`,
 `Selection`, `CurrentExecPage`. Property names are case-insensitive (`Name`, `TrigType`, `FID`); values come back
 as the display text the editor shows, and object references are resolved to the referenced object's name.
+
+### Pool usage and truncated listings
+
+`gma3_pool_usage` answers which numbers a show already uses before anything is stored (issue #96). It takes
+`pools` (names) and `preset_pools` (numbers), up to 30 per call, and returns compact JSON with one line per pool:
+
+| Pool | Read with | Per pool |
+| --- | --- | --- |
+| A DataPool pool: `Groups`, `Sequences`, `Macros`, `MAtricks`, `Timecodes`, `Layouts`, ... (any `gma3_pool` name) | `children` on `DataPool.<Pool>` | `stored`, `used` (`"1-11, 5001-5534"`), with `names: true` `names: [[no, name], ...]` |
+| `Preset 4`, or `preset_pools: [1, 4, 21]` | `children` on `Preset 4` | the same; `stored` counts the stored presets, not the pool's 1000 slots (its `No` reads `4 (1000)`) |
+| `PresetPools` | `DataPool.PresetPools`, then each pool | `presetPools: [[no, name, stored, used], ...]` |
+| `Page 2` | `children` on `Page 2` (`No`, `Object`, handles) | the executors with an object: `executors: [[no, class, name], ...]`; `covered` for the numbers a wider executor spans (Width 2 on 180 covers 181, KB-21), never offered as free; `unassigned` for executors without one; `unreadable` for an assignment that could not be read (an invalid handle, or from bridge 0.47.0 an `Object` read that raised), which makes the page incomplete |
+| `Pages` | `DataPool.Pages`, then each page by address | `pages: [[no, name, executors used, used], ...]` |
+
+`free: {size, from?}` adds each pool's first free block of `size` numbers from `from` (default 1) up to 9999,
+such as `"21-40"`. For a page it stays inside one executor row (101-198, 201-298, 301-390, 401-490) and starts at 101;
+an executor without an object counts as free unless a wider executor covers it. An executor's Width that cannot be read makes the page incomplete.
+Free blocks need bridge 0.47.0 (the tool asks the bridge's `ping` once per call). An older bridge answers a failed
+child enumeration with an empty listing and drops a failed `Object` read, so an existing pool or an occupied executor
+could read as free. With an older bridge, or when the version cannot be read, the result carries `unconfirmed` with the
+reason, and every pool's `free` is `null` with `freeNote`. `free` is also `null` with `freeNote` when there is no such
+block or the read is incomplete. `data_pool` reads another data pool.
+
+Every listing is read page by page (500 children per request) to its end. A failed request, a child enumeration the
+console could not make (`enumerationError`), a total that changes between requests or an object without a number
+makes that pool `complete: false` with `reason`, keeping what was
+read; the call is an error only when no pool could be read at all (a pool whose first page was read is not). Page and executor ranges are refused before any read:
+the tool reads a page's executors with `children` on the page, never with `ObjectList` over a range
+([above](#page-and-executor-ranges-plugin-v0200)).
+
+A pool object's number is its `index` (its slot in the pool); a page's is its `No`, else its `index`. An executor's
+number is its `No` only: its `index` is its position on the page (executor 191 reads index 91), so an executor whose
+`No` is missing or failed makes the page incomplete.
+
+From bridge 0.47.0 an item of the `children` and `objects` ops carries `fieldErrors: {<field>: <error>}` for each
+requested field whose read raised (the field itself stays absent, as before); an item whose fields were all read has
+no `fieldErrors`. Before 0.47.0 such a field was simply absent, like an empty one. A `children` listing (also inside
+`object` with `children`) carries `enumerationError` when the console's `Children()` raised; the listing is empty, as
+before.
+
+`gma3_objects` and `gma3_list_children` add `truncated: true` and a `note` with the next offset whenever the
+returned items stop before `total` (a read of `Macro Thru` stops at the default limit of 500). With `fields`,
+`compact: true` drops `addr` and `addrNative` from every item and returns minified JSON.
 
 ### Build staleness
 
@@ -240,7 +285,7 @@ Ops: `ping`, `cmd`, `lua`, `object`, `children`, `objects`, `dump`, `set`, `setf
 `input.status` and the fake-backend test control `input.fake` (below), since v0.6.0 `input.combo` (below), and since
 v0.7.0 the interaction and sequence ops `input.begin`, `input.extend`, `input.end`, `input.sequence`,
 `input.sequence.status`, `input.sequence.abort` ([below](#interactions-admission-text-and-sequences-plugin-v070-kb-05)), and since
-v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)), and since v0.20.0 the page/executor range guard on every op that takes an object reference ([below](#page-and-executor-ranges-plugin-v0200)), and since v0.21.0 the read-only selection-grid ops `group.read` and `selection.grid` ([below](#selection-grid-reads-plugin-v0210-sb-02)), and since v0.22.0 the read-only preset ops `preset.read` and `preset.context` ([below](#preset-reads-plugin-v0220-sb-03)), and since v0.23.0 the programmer's environment and the phaser layers of programmer and preset steps ([below](#phaser-layers-plugin-v0230-sb-04)), and since v0.24.0 cue-part data with cooked flags in `preset.read` ([below](#cue-part-data-plugin-v0240-sb-05)). See
+v0.8.0 the read-only feedback ops `feedback.describe` and `feedback.read` ([below](#console-feedback-plugin-v080-kb-06)), v0.13.0 `feedback.context`, `feedback.watch` and `feedback.unwatch` ([below](#control-context-plugin-v0130-kb-17)), and v0.14.0 the continuous-control ops `control.bind`, `control.open`, `control.renew`, `control.close`, `control.submit`, `control.status` and `control.recover` ([below](#continuous-control-plugin-v0140-kb-18)), and v0.19.0 the patch ops: reads `patch.state`, `patch.types`, `patch.list`, `patch.check`, `patch.collections` and `patch.fingerprint`, and the guarded, `exclusive`-only `patch.enter`, `patch.add`, `patch.set`, `patch.remove` and `patch.commit` ([tools/patch.md](tools/patch.md)), and since v0.20.0 the page/executor range guard on every op that takes an object reference ([below](#page-and-executor-ranges-plugin-v0200)), and since v0.21.0 the read-only selection-grid ops `group.read` and `selection.grid` ([below](#selection-grid-reads-plugin-v0210-sb-02)), and since v0.22.0 the read-only preset ops `preset.read` and `preset.context` ([below](#preset-reads-plugin-v0220-sb-03)), and since v0.23.0 the programmer's environment and the phaser layers of programmer and preset steps ([below](#phaser-layers-plugin-v0230-sb-04)), and since v0.24.0 cue-part data with cooked flags in `preset.read` ([below](#cue-part-data-plugin-v0240-sb-05)), and since v0.48.0 the read-only `patch.stages` and the guarded, `exclusive`-only `patch.stageEdit`, with `patch.fingerprint`'s `excludeStages` and `bareStages` ([tools/patch.md](tools/patch.md#gma3_patch_stages)). See
 [`plugin/gma3_mcp_bridge.lua`](../plugin/gma3_mcp_bridge.lua).
 
 Error replies are `{"id", "ok": false, "error": "[code] message"}`; since v0.7.0 they also carry `code` (the bracketed
@@ -324,6 +369,11 @@ Two read-only ops (not guarded, usable with Lua disabled):
   StoreSource, ChannelFilter, StoreLook, PresetMode, PresetInputFilter, StoreEmbedded, StoreMAtricks, KeepActivation,
   UpdateModePresets, UpdatePresetMode, UpdateInputFilter, GridMergeMode, RecipeStoreMode, CueOnly, TrackingShield) in
   the edit role and, with `pool`, `{no, exists, name, presetMode, inputFilter}`.
+
+A named store (`gma3_store_preset`, `gma3_build_phaser`) also lists the target pool with the base `children` op
+(`ref: "Preset <pool>"`, fields `No` and `Name`), once per pool and call: the console keeps names unique within a pool
+and stores a taken name as `"<name>#2"`, so a name another preset has is refused before the store (#102). No bridge
+change.
 
 Tools: [tools/presets.md](tools/presets.md).
 

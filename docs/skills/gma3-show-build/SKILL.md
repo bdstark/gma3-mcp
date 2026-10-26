@@ -30,6 +30,8 @@ ask for 3D placement, for haze in the beam check, for the universe budget and fo
   patch work, ask the user to close the Patch menu.
   Then check that the command line's destination is Root and that no modal is open. Leaving the copy with
   `ChangeDestination Root` commits it. There is no discard without the menu.
+- **Check the used numbers before the first store.** `gma3_pool_usage` lists the used and free numbers of the groups,
+  sequences, macros, MAtricks, preset pools and pages in one call; Show Start already fills many of them.
 - **Ask before Art-Net output goes on.** Output drives real fixtures. Configure it with output off, and turn output on
   only when the user says so.
 - **Ask before running a Show Start macro that overwrites,** such as the Position Wizard.
@@ -180,7 +182,8 @@ minutes, stored 68 groups in 5 and placed 93 fixtures in 76 seconds.
 
 ## 3. Patch
 
-1. Run the patch plan through a subagent, as in section 1. Read back with `gma3_patch_list`.
+1. Make the plan's stages first with `gma3_patch_stages` (rename Stage 1, create the others), never with `gma3_lua`.
+   Then run the patch plan through a subagent, as in section 1. Read back with `gma3_patch_list`.
 2. Rename the grouping fixtures at FIDs 1 to 8 to the slot names with `gma3_patch_set`. Leave the rig at the top level
    for now: section 8 moves it under them, after the 3D work.
 3. Save.

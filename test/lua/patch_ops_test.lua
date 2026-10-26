@@ -106,14 +106,44 @@ end
 function Obj:Set(k, v)
   k = k:upper()
   if k == "PATCH" or k == "BREAK1" then self.pv.PATCH = v; self.pv.BREAK1 = v; return end
+  -- #97: a stage's Name. The console drops characters it does not take in a name (MockStageNameFilter stands in);
+  -- an empty Name reads as the default "Stage <no>" (#98).
+  if k == "NAME" and self.class == "Stage" then
+    if MockStageNameFilter then v = MockStageNameFilter(v) end
+    self.named = v ~= ""
+    if v == "" then v = "Stage " .. self.no end
+  end
   if k == "NAME" then self.name = v end
   if self.pv[k] == nil then self.pn[#self.pn + 1] = k end
   self.pv[k] = v
 end
 function Obj:Delete(i)
+  if rawget(self, "failDelete") then error("Delete refused") end
   table.remove(self.kids, i)
+  -- #97 (an assumption, not verified live): the stages after a deleted one move up, and an unnamed one's default
+  -- name follows its number.
+  if self.class == "Stages" then
+    for j = i, #self.kids do local st = self.kids[j]; st.no = st.no - 1; if not st.named then st.name = "Stage " .. st.no; st.pv.NAME = st.name end end
+  end
   -- Deleting a fixture type renumbers the ones after it (live 2026-10-15).
   if self.class == "FixtureTypes" then for j = i, #self.kids do self.kids[j].no = self.kids[j].no - 1 end end
+end
+-- #97: Stages:Acquire('Stage') appends "Stage <n>" with its Spaces and Fixtures children (live 2026-10-25). failAcquire
+-- (a count) lets that many succeed first and then raises.
+function Obj:Acquire(class)
+  if self.class ~= "Stages" or class ~= "Stage" then return nil end
+  local fail = rawget(self, "failAcquire")
+  if fail then
+    if fail <= 0 then error("Acquire refused") end
+    self.failAcquire = fail - 1
+  end
+  local no = #self.kids + 1
+  local st = setmetatable({ class = "Stage", name = "Stage " .. no, no = no, pn = { "NAME" }, pv = { NAME = "Stage " .. no }, addr = "14.10.7." .. no, kids = {} }, Obj)
+  st.Spaces = setmetatable({ class = "Spaces", name = "Spaces", no = 1, pn = { "NAME" }, pv = { NAME = "Spaces" }, kids = {}, addr = st.addr .. ".1" }, Obj)
+  st.Fixtures = setmetatable({ class = "Fixtures", name = "Fixtures", no = 2, pn = { "NAME" }, pv = { NAME = "Fixtures" }, kids = {}, addr = st.addr .. ".2" }, Obj)
+  st.kids = { st.Spaces, st.Fixtures }
+  self.kids[#self.kids + 1] = st
+  return st
 end
 local function obj(class, name, no, props, kids, extra)
   local o = setmetatable({ class = class, name = name, no = no, pn = { "NAME" }, pv = { NAME = name }, kids = kids or {} }, Obj)
@@ -455,7 +485,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.46.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.48.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -1180,6 +1210,127 @@ commit()
 addStage(4, 'The "Pit"')
 r = request("patch.enter", with({ stage = 'The "Pit"' }))
 check("patch.enter refuses a stage name with a double quote, nothing queued", r.ok == false and r.code == "bad-stage" and #console.queue == 0, J(r))
+
+-------------------------------------------------------------------------------
+-- #97: stages (bridge 0.48.0): list, create (Acquire + Name), rename, remove (Delete; empty stages after the first)
+-------------------------------------------------------------------------------
+reset()
+local function stageNames(side) local t = {} for _, s in ipairs(console[side].Stages.kids) do t[#t + 1] = s.name end return table.concat(t, ",") end
+local function fpStages(side, extra)
+  local a = { side = side, collection = "Stages", excludeFids = {} }
+  for k, v in pairs(extra or {}) do a[k] = v end
+  local q = request("patch.fingerprint", a)
+  return q.ok and (tostring(q.result.objects) .. ":" .. tostring(q.result.hash)) or J(q)
+end
+local function edit(t) return request("patch.stageEdit", with(t)) end
+
+r = request("patch.stages")
+local s1 = r.ok and r.result.stages[1]
+check("patch.stages: the live stage with its position, number, default name and fixtures (sub-fixtures included)", r.ok and r.result.side == "live" and r.result.count == 1 and s1.index == 1 and s1.no == 1 and s1.name == "Stage 1"
+  and s1.nameKind == "default" and s1.fixtures == 5 and s1.topLevel == 2 and s1.fixturesList == true and s1.spacesList == false and s1.children[1] == "Fixtures", J(r))
+r = request("patch.stages", { side = "copy" })
+check("patch.stages of the copy outside a session is refused", r.ok == false and r.code == "copy-closed", J(r))
+r = request("patch.stageEdit", with({ action = "create", names = { "Basement" } }))
+check("patch.stageEdit outside a session is refused", r.ok == false and r.code == "copy-closed" and stageNames("live") == "Stage 1", J(r))
+
+enter()
+r = request("patch.enter", X)
+check("stages: patch.enter while the copy is open is refused", r.ok == false and r.code == "copy-open", J(r))
+r = request("patch.stageEdit", { action = "create", names = { "Basement" } })
+check("patch.stageEdit without exclusive is refused", r.ok == false and r.code == "not-exclusive" and console.copy.Stages:Count() == 1, J(r))
+r = edit({ action = "create", names = { "stage 1" } })
+check("create refuses a name another stage has (case-insensitive)", r.ok == false and r.code == "name-taken" and console.copy.Stages:Count() == 1, J(r))
+r = edit({ action = "create", names = { "Basement", "BASEMENT" } })
+check("create refuses a name given twice (case-insensitive)", r.ok == false and r.code == "name-taken" and console.copy.Stages:Count() == 1, J(r))
+r = edit({ action = "create", names = { 'The "Pit"' } })
+check("create refuses a name with a double quote (it could never be entered)", r.ok == false and r.code == "bad-args" and console.copy.Stages:Count() == 1, J(r))
+r = edit({ action = "create", names = { " Basement" } })
+check("create refuses an untrimmed name", r.ok == false and r.code == "bad-args" and console.copy.Stages:Count() == 1, J(r))
+r = edit({ action = "create", names = {} })
+check("create needs at least one name", r.ok == false and r.code == "bad-args", J(r))
+r = edit({ action = "grow" })
+check("an unknown action is refused", r.ok == false and r.code == "bad-args", J(r))
+local copyStages = console.copy.Stages
+copyStages.failAcquire = 1
+r = edit({ action = "create", names = { "Basement", "Outdoors" } })
+check("create: a failing second Acquire deletes the stage the call appended, in the copy", r.ok == false and r.code == "create-failed" and r.detail.undone == true and #r.detail.created == 1 and copyStages:Count() == 1 and r.error:find("Outdoors"), J(r))
+copyStages.failAcquire = nil
+MockStageNameFilter = function(v) return (v:gsub("[.,]", "")) end
+r = edit({ action = "create", names = { "Lvl. 2" } })
+check("create: a name the console does not keep as given is deleted again", r.ok == false and r.code == "create-failed" and copyStages:Count() == 1 and r.error:find("reads Lvl 2"), J(r))
+MockStageNameFilter = nil
+r = edit({ action = "create", names = { "Basement", "Outdoors" } })
+local made = r.ok and r.result.created
+check("create appends a stage per name with Acquire('Stage') and names it", r.ok and #made == 2 and made[1].index == 2 and made[1].name == "Basement" and made[1].nameKind == "explicit" and made[2].name == "Outdoors"
+  and made[1].fixtures == 0 and made[1].spacesList == true and made[1].spaces == 0 and stageNames("copy") == "Stage 1,Basement,Outdoors" and #r.result.stages == 3, J(r))
+check("create: the copy differs from the live patch in Stages", fpStages("copy") ~= fpStages("live"))
+check("create: with the appended stages left out of the copy (excludeStages) Stages hashes like the live patch", fpStages("copy", { excludeStages = { 2, 3 } }) == fpStages("live"), fpStages("copy", { excludeStages = { 2, 3 } }) .. " | " .. fpStages("live"))
+check("create: the whole copy outside Stages still equals the live patch", (function() local a, b = fpAll("copy"), fpAll("live"); local function strip(x) return (x:gsub("Stages:[^,]*,", "")) end; return strip(a) == strip(b) end)())
+
+r = edit({ action = "rename", index = 1, expect = "Main Floor", name = "Main Floor" })
+check("rename refuses when the stage at the position has another name than the client saw", r.ok == false and r.code == "stage-changed" and console.copy.Stages.kids[1].name == "Stage 1", J(r))
+r = edit({ action = "rename", index = 1, expect = "Stage 1", name = "basement" })
+check("rename refuses a name another stage has (case-insensitive)", r.ok == false and r.code == "name-taken", J(r))
+r = edit({ action = "rename", index = 9, expect = "Stage 1", name = "Up" })
+check("rename refuses a position with no stage", r.ok == false and r.code == "no-stage", J(r))
+r = edit({ action = "rename", index = 2, expect = "Basement", name = "Basement" })
+check("rename to the same name changes nothing and is refused", r.ok == false and r.code == "bad-args", J(r))
+r = edit({ action = "rename", index = 2, expect = "Basement", name = "BASEMENT" })
+check("rename may change the case of the stage's own name", r.ok and r.result.stage.name == "BASEMENT", J(r))
+edit({ action = "rename", index = 2, expect = "BASEMENT", name = "Basement" })
+MockStageNameFilter = function(v) return (v:gsub("[.,]", "")) end
+r = edit({ action = "rename", index = 1, expect = "Stage 1", name = "Main. Floor" })
+local first = console.copy.Stages.kids[1]
+check("rename: a name the console does not keep is put back (an unnamed stage gets its empty Name again)", r.ok == false and r.code == "rename-failed" and r.detail.restored == true and first.name == "Stage 1" and first.named == false, J(r))
+MockStageNameFilter = nil
+r = edit({ action = "rename", index = 1, expect = "Stage 1", name = "Main Floor" })
+check("rename sets the stage's Name", r.ok and r.result.before.name == "Stage 1" and r.result.before.nameKind == "default" and r.result.stage.name == "Main Floor" and r.result.stage.nameKind == "explicit" and first.named == true, J(r))
+local isoCopy, isoLive = { excludeStages = { 2, 3 }, bareStages = { 1 } }, { bareStages = { 1 } }
+check("rename: with the renamed stage bare (no Name or number) on both sides Stages hashes alike", fpStages("copy", isoCopy) == fpStages("live", isoLive), fpStages("copy", isoCopy) .. " | " .. fpStages("live", isoLive))
+local parInCopy
+for _, f in ipairs(allFixtures(console.copy)) do if f.FID == 402 then parInCopy = f end end
+parInCopy:Set("CID", "9")
+check("rename: a foreign change to a fixture in the renamed stage is still seen", fpStages("copy", isoCopy) ~= fpStages("live", isoLive))
+parInCopy:Set("CID", "None")
+r = request("patch.fingerprint", { side = "live", collection = "Stages", excludeStages = { "x" } })
+check("excludeStages must be positions", r.ok == false and r.code == "bad-args", J(r))
+
+r = edit({ action = "remove", index = 1, expect = "Main Floor" })
+check("remove refuses the first stage", r.ok == false and r.code == "first-stage" and console.copy.Stages:Count() == 3, J(r))
+local basement = console.copy.Stages.kids[2]
+basement.Fixtures.kids[1] = fixture("Lonely", 960, MODE1, "")
+r = edit({ action = "remove", index = 2, expect = "Basement" })
+check("remove refuses a stage that holds fixtures", r.ok == false and r.code == "stage-not-empty" and r.error:find("1 fixture") and console.copy.Stages:Count() == 3, J(r))
+basement.Fixtures.kids[1] = nil
+basement.Spaces.kids[1] = obj("Space", "Bar", 1, {})
+r = edit({ action = "remove", index = 2, expect = "Basement" })
+check("remove refuses a stage with a space", r.ok == false and r.code == "stage-not-empty" and r.error:find("1 space") and console.copy.Stages:Count() == 3, J(r))
+basement.Spaces.kids[1] = nil
+console.copy.Stages.failDelete = true
+r = edit({ action = "remove", index = 2, expect = "Basement" })
+check("remove: a Delete that raises is reported", r.ok == false and r.code == "remove-failed" and console.copy.Stages:Count() == 3, J(r))
+console.copy.Stages.failDelete = nil
+
+request("patch.commit", X); frame()
+r = request("patch.stages")
+local ls = r.ok and r.result.stages or {}
+check("after the commit LivePatch.Stages reads the three stages", r.ok and r.result.count == 3 and ls[1].name == "Main Floor" and ls[1].nameKind == "explicit" and ls[1].fixtures == 5 and ls[2].name == "Basement" and ls[3].name == "Outdoors" and console.dest == "Root" and console.copyOpen == false, J(r))
+
+enter()
+r = edit({ action = "remove", index = 2, expect = "Basement" })
+check("remove deletes an empty stage after the first and reports the ones that moved up", r.ok and r.result.removed.name == "Basement" and #r.result.renumbered == 1 and r.result.renumbered[1].from == 3 and r.result.renumbered[1].to == 2
+  and r.result.renumbered[1].name == "Outdoors" and stageNames("copy") == "Main Floor,Outdoors", J(r))
+local remCopy, remLive = { bareStages = { 2 } }, { excludeStages = { 2 }, bareStages = { 3 } }
+check("remove: the removed stage left out of the live side, the moved ones bare: Stages hashes alike", fpStages("copy", remCopy) == fpStages("live", remLive), fpStages("copy", remCopy) .. " | " .. fpStages("live", remLive))
+check("remove: without leaving it out the fingerprints differ", fpStages("copy") ~= fpStages("live"))
+request("patch.commit", X); frame()
+check("after the commit the live patch has Main Floor and Outdoors", stageNames("live") == "Main Floor,Outdoors", stageNames("live"))
+
+reset()
+enter()
+r = edit({ action = "remove", index = 1, expect = "Stage 1" })
+check("remove refuses the only stage", r.ok == false and r.code == "last-stage" and console.copy.Stages:Count() == 1, J(r))
+request("patch.commit", X); frame()
 
 print(string.format("%d passed, %d failed", passes, failures))
 if failures > 0 then print("FAILED"); os.exit(1) end
