@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness } from "./helpers/tool-harness.js";
 import { BridgeReplyError, SILENT } from "./helpers/fake-bridge.js";
-import { registerPatchStagesTool, findStage, type StageRow } from "../src/tools/patchstages.js";
+import { registerPatchStagesTool, findStage, notEmpty, removalClash, type StageRow } from "../src/tools/patchstages.js";
 
 /**
  * gma3_patch_stages (#97) against a fake bridge whose patch.* ops behave like the bridge's (0.48.0): the copy opens
@@ -17,6 +17,8 @@ interface St {
   fixtures: number;
   spaces?: number;
   children?: string[];
+  /** Fields of the bridge's row to override (fixtures: undefined for an unreadable count; the *Error fields). */
+  row?: Partial<StageRow>;
 }
 
 class StageWorld {
@@ -31,11 +33,13 @@ class StageWorld {
   commitLoses = false;
   /** A bridge before 0.48.0. */
   oldBridge = false;
+  /** Runs on the live stages right after a commit (something else changing them). */
+  onCommit: ((live: St[]) => void) | null = null;
 
   static rows(list: St[]): StageRow[] {
     return list.map((s, i) => {
       const name = s.name ?? `Stage ${i + 1}`;
-      return { index: i + 1, no: i + 1, name, nameKind: s.name === undefined || s.name === `Stage ${i + 1}` ? "default" : "explicit", children: s.children ?? ["Spaces", "Fixtures"], fixturesList: true, fixtures: s.fixtures, topLevel: s.fixtures, otherObjects: 0, spacesList: true, spaces: s.spaces ?? 0 };
+      return { index: i + 1, no: i + 1, name, nameKind: s.name === undefined || s.name === `Stage ${i + 1}` ? "default" : "explicit", children: s.children ?? ["Spaces", "Fixtures"], fixturesList: true, fixtures: s.fixtures, topLevel: s.fixtures, otherObjects: 0, spacesList: true, spaces: s.spaces ?? 0, ...(s.row ?? {}) };
     });
   }
 
@@ -46,6 +50,7 @@ class StageWorld {
         this.dest = this.live[0].name ? `Stage 1 '${this.live[0].name}'.Fixtures` : "Stage 1.Fixtures";
       } else if (cmd === "root") {
         if (this.copy && !this.commitLoses) this.live = this.copy;
+        this.onCommit?.(this.live);
         this.copy = null;
         this.dest = "Root";
       }
@@ -329,6 +334,79 @@ test("gma3_patch_stages: an older bridge without patch.stages is named, for list
     assert.equal(result.outcome, "failed");
     assert.match(result.summary, /nothing was sent.*bridge 0\.48\.0/);
     assert.ok(!ops().includes("patch.enter"));
+  } finally {
+    await h.close();
+  }
+});
+
+test("removalClash and notEmpty: the review of #112 (a default name moving up onto an explicit one; unreadable children)", () => {
+  const rows = StageWorld.rows([{ name: "Stage 2", fixtures: 1 }, { name: "Basement", fixtures: 0 }, { fixtures: 0 }]);
+  assert.match(removalClash(rows, 2)!, /moves stage 3 \("Stage 3", a default name\) up to read "Stage 2", which stage 1 is named/);
+  assert.equal(removalClash(StageWorld.rows([{ name: "Main Floor", fixtures: 1 }, { name: "Basement", fixtures: 0 }, { fixtures: 0 }, { fixtures: 0 }]), 2), undefined, "unnamed stages moving up together do not clash");
+  assert.equal(removalClash(StageWorld.rows([{ name: "Main Floor", fixtures: 1 }, { name: "Basement", fixtures: 0 }, { name: "Stage 2", fixtures: 0 }]), 2), undefined, "an explicit name that does not move is no clash");
+  const empty = StageWorld.rows([{ fixtures: 0 }, { name: "Attic", fixtures: 0 }])[1];
+  assert.equal(notEmpty(empty), undefined);
+  assert.match(notEmpty({ ...empty, spacesList: undefined, spacesError: "Spaces not readable" })!, /Spaces cannot be read \(Spaces not readable\)/);
+  assert.match(notEmpty({ ...empty, spacesList: false })!, /child Spaces that cannot be read as its Spaces list/, "a bridge before 0.49.0 reports a raising Spaces read as no Spaces list");
+  assert.match(notEmpty({ ...empty, childrenError: "x", children: [] })!, /children cannot be read/);
+  assert.match(notEmpty({ ...empty, fixtures: undefined, fixturesError: "walk failed" })!, /fixtures cannot be read \(walk failed\)/);
+});
+
+test("gma3_patch_stages remove: refused before anything is sent when it would leave two stages with one name, or the stage cannot be inspected (review of #112)", async () => {
+  const { h, w, ops } = await setup();
+  try {
+    const refused = async (pattern: RegExp) => {
+      h.fake.requests.length = 0;
+      const { result } = await h.callJson("gma3_patch_stages", { action: "remove", stage: 2, exclusive: true });
+      assert.equal(result.outcome, "failed");
+      assert.match(result.summary, /nothing was sent/);
+      assert.match(result.summary, pattern);
+      assert.deepEqual(ops(), ["patch.state", "patch.stages"]);
+    };
+    w.live = [{ name: "Stage 2", fixtures: 1 }, { name: "Basement", fixtures: 0 }, { fixtures: 0 }];
+    await refused(/up to read "Stage 2", which stage 1 is named; rename one of them first/);
+    assert.deepEqual(names(w), ["Stage 2", "Basement", "Stage 3"]);
+    w.live = [{ fixtures: 1 }, { name: "Basement", fixtures: 0, row: { spacesList: undefined, spacesError: "Spaces not readable" } }];
+    await refused(/Spaces cannot be read/);
+    w.live = [{ fixtures: 1 }, { name: "Basement", fixtures: 0, row: { spacesList: false } }];
+    await refused(/child Spaces that cannot be read as its Spaces list/);
+    w.live = [{ fixtures: 1 }, { name: "Basement", fixtures: 0, row: { children: [], childrenError: "children not readable" } }];
+    await refused(/children cannot be read/);
+    w.live = [{ fixtures: 1 }, { name: "Basement", fixtures: 0, row: { fixtures: undefined, fixturesError: "walk failed" } }];
+    await refused(/fixtures cannot be read/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_stages read-back: an unreadable fixture count is unavailable, never matched; two stages sharing a name are a mismatch (review of #112)", async () => {
+  const { h, w } = await setup();
+  try {
+    // The count unreadable before the session (create): the names match, the count is not checked.
+    w.live = [{ fixtures: 5, row: { fixtures: undefined, fixturesError: "walk failed" } }];
+    let { result } = await h.callJson("gma3_patch_stages", { action: "create", name: "Basement", exclusive: true });
+    assert.equal(result.committed, true);
+    assert.equal(result.verification.status, "unavailable", JSON.stringify(result.verification));
+    assert.match(result.verification.detail, /not checked: the fixture count of stage 1 .*unreadable before the session.*\(the names matched\)/);
+    assert.match(result.summary, /Read-back unavailable/);
+
+    // The count unreadable in the read-back (rename).
+    w.live = [{ fixtures: 5 }];
+    w.onCommit = (live) => {
+      live[0].row = { fixtures: undefined, fixturesError: "walk failed" };
+    };
+    ({ result } = await h.callJson("gma3_patch_stages", { action: "rename", stage: 1, name: "Main Floor", exclusive: true }));
+    assert.equal(result.verification.status, "unavailable", JSON.stringify(result.verification));
+    assert.match(result.verification.detail, /unreadable in the read-back/);
+
+    // Two stages reading one name after the commit.
+    w.live = [{ fixtures: 5 }];
+    w.onCommit = (live) => {
+      live[0].name = "deck";
+    };
+    ({ result } = await h.callJson("gma3_patch_stages", { action: "create", name: "Deck", exclusive: true }));
+    assert.equal(result.verification.status, "mismatched");
+    assert.match(result.verification.detail, /stages 1 and 2 are both named "deck"/);
   } finally {
     await h.close();
   }
