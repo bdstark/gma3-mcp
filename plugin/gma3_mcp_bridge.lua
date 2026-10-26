@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.48.0"
+local VERSION      = "0.49.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4443,15 +4443,18 @@ end
 -- A stage's row. name is as Lua reads it: an empty Name reads as "Stage <no>", so a name of that form is "default"
 -- (empty, or set to that text: Lua cannot tell them apart, #98). fixtures counts every fixture under the stage's
 -- Fixtures, sub-fixtures included; absent when the list cannot be read. spaces: the Spaces child's children.
+-- 0.49.0 (review of #112): a read that raised is kept apart from an absent child: childrenError, fixturesError and
+-- spacesError say what could not be read (spacesList / fixturesList are then left out, not false).
 function patchStages.info(s, i)
   local no = tonumber(safeProp(s, "no")) or i
   local name = tostring(safeProp(s, "name"))
   local row = { index = i, no = no, name = name, nameKind = (name == "" or name == "Stage " .. no) and "default" or "explicit", children = {} }
   local okK, kids = pcall(function() return s:Children() end)
-  if okK and type(kids) == "table" then for _, c in ipairs(kids) do row.children[#row.children + 1] = tostring(safeProp(c, "name")) end end
+  if okK and type(kids) == "table" then for _, c in ipairs(kids) do row.children[#row.children + 1] = tostring(safeProp(c, "name")) end
+  else row.childrenError = okK and "Children() returned no list" or tostring(kids) end
   row.children = emptyArray(row.children)
   local okF, fx = pcall(function() return s.Fixtures end)
-  row.fixturesList = okF and fx ~= nil
+  if okF then row.fixturesList = fx ~= nil else row.fixturesError = tostring(fx) end
   if row.fixturesList then
     local n, top, other = 0, 0, 0
     local function walk(h, d)
@@ -4465,15 +4468,57 @@ function patchStages.info(s, i)
         end
       end
     end
-    if pcall(walk, fx, 0) then row.fixtures, row.topLevel, row.otherObjects = n, top, other end
+    local okW, errW = pcall(walk, fx, 0)
+    if okW then row.fixtures, row.topLevel, row.otherObjects = n, top, other else row.fixturesError = tostring(errW) end
   end
   local okS, sp = pcall(function() return s.Spaces end)
-  row.spacesList = okS and sp ~= nil
+  if okS then row.spacesList = sp ~= nil else row.spacesError = tostring(sp) end
   if row.spacesList then
     local okC, c = pcall(function() return sp:Count() end)
-    if okC and type(c) == "number" then row.spaces = c end
+    if okC and type(c) == "number" then row.spaces = c else row.spacesError = okC and "Count() returned no number" or tostring(c) end
   end
   return row
+end
+
+-- Why a stage cannot be removed (nil when it can): it must be proven empty. Every read that failed is a refusal,
+-- never taken for an absent child (review of #112).
+function patchStages.notEmpty(row)
+  local what = "stage " .. row.index .. " (" .. row.name .. ")"
+  if row.childrenError then return what .. ": its children cannot be read (" .. row.childrenError .. ")" end
+  if row.fixturesError then return what .. ": its fixtures cannot be read (" .. row.fixturesError .. ")" end
+  if row.spacesError then return what .. ": its Spaces cannot be read (" .. row.spacesError .. ")" end
+  if row.fixtures == nil and row.fixturesList then return what .. ": its fixtures cannot be read" end
+  if (row.fixtures or 0) > 0 or (row.otherObjects or 0) > 0 then return what .. " holds " .. (row.fixtures or 0) .. " fixture(s)" .. ((row.otherObjects or 0) > 0 and (" and " .. row.otherObjects .. " other object(s)") or "") end
+  if row.spacesList and row.spaces ~= 0 then return what .. " has " .. tostring(row.spaces) .. " space(s)" end
+  for _, c in ipairs(row.children) do
+    if c ~= "Fixtures" and c ~= "Spaces" then return what .. " has a child " .. c .. " besides Fixtures and Spaces" end
+    if (c == "Fixtures" and not row.fixturesList) or (c == "Spaces" and not row.spacesList) then return what .. " has a child " .. c .. " that cannot be read as its " .. c .. " list" end
+  end
+  return nil
+end
+
+-- A name two stages would share after removing the stage at position k (nil when none). The stages after it move up
+-- a place, and one with a default name then reads "Stage <its new number>" (the harness models it this way; not
+-- verified live), which another stage may already have explicitly (review of #112: "Stage 2" explicit, Basement,
+-- "Stage 3" unnamed; removing Basement leaves two "Stage 2").
+function patchStages.removalClash(rows, k)
+  local left = {}
+  for _, r in ipairs(rows) do
+    if r.index ~= k then
+      local moved = r.index > k and r.nameKind == "default"
+      left[#left + 1] = { row = r, moved = moved, name = moved and ("Stage " .. (r.no - 1)) or r.name }
+    end
+  end
+  for a = 1, #left do
+    for b = a + 1, #left do
+      local x, y = left[a], left[b]
+      if (x.moved or y.moved) and x.name:lower() == y.name:lower() then
+        local m, o = x.moved and x or y, x.moved and y or x
+        return "removing stage " .. k .. " moves stage " .. m.row.index .. " (" .. m.row.name .. ", a default name) up to read " .. m.name .. ", which stage " .. o.row.index .. (o.moved and " would read too" or " is named") .. "; rename one of them first"
+      end
+    end
+  end
+  return nil
 end
 
 function patchStages.rows(p)
@@ -4580,11 +4625,11 @@ ops["patch.stageEdit"] = function(args)
     if count <= 1 then raise("[last-stage] the patch has one stage; it cannot be removed") end
     if i == 1 then raise("[first-stage] the first stage is not removed (sessions and gma3_patch_add default to it)") end
     local row = patchStages.info(s, i)
-    if row.fixtures ~= 0 or row.otherObjects ~= 0 then raise({ code = "stage-not-empty", message = "stage " .. i .. " (" .. row.name .. ") " .. (row.fixtures == nil and "has a Fixtures list that cannot be read" or ("holds " .. row.fixtures .. " fixture(s)" .. ((row.otherObjects or 0) > 0 and (" and " .. row.otherObjects .. " other object(s)") or ""))) .. "; nothing was removed", stage = row }) end
-    if row.spacesList and row.spaces ~= 0 then raise({ code = "stage-not-empty", message = "stage " .. i .. " (" .. row.name .. ") " .. (row.spaces == nil and "has a Spaces list that cannot be read" or ("has " .. row.spaces .. " space(s)")) .. "; nothing was removed", stage = row }) end
-    for _, c in ipairs(row.children) do
-      if c ~= "Fixtures" and c ~= "Spaces" then raise({ code = "stage-not-empty", message = "stage " .. i .. " (" .. row.name .. ") has a child " .. c .. " besides Fixtures and Spaces; nothing was removed", stage = row }) end
-    end
+    -- A stage without a Fixtures list at all is not one this op knows how to prove empty either.
+    local why = patchStages.notEmpty(row) or (not row.fixturesList and ("stage " .. i .. " (" .. row.name .. ") has no Fixtures list") or nil)
+    if why then raise({ code = "stage-not-empty", message = why .. "; nothing was removed", stage = row }) end
+    local clash = patchStages.removalClash(patchStages.rows(p), i)
+    if clash then raise({ code = "name-clash", message = clash .. "; nothing was removed" }) end
     local after = {}
     for k = i + 1, count do after[#after + 1] = { name = tostring(safeProp(stages:Children()[k], "name")), from = safeProp(stages:Children()[k], "no") } end
     local okD, errD = pcall(function() stages:Delete(i) end)

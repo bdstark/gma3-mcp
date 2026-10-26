@@ -93,7 +93,7 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_patch_set` | Readdress (swaps and moves across a fixture's own range work), unpatch or rename fixtures |
 | `gma3_patch_remove` | Delete fixtures (not ones with sub-fixtures) |
 | `gma3_patch_move` | Move fixtures under a top-level grouping fixture (the MA Show Start's FID 1-8) or back to the top level: Cut, ChangeDestination, Paste and the console's Move Fixtures dialog (absolute or relative 3D placement) answered by the bridge; read back against the state before: parent, address, groups, 3D pose (bridge 0.42.0) |
-| `gma3_patch_stages` | List the stages (position, name, fixtures, spaces), or create, rename or remove (only empty ones after the first) stages in one patch session; names unique ignoring case; read back from the live patch (bridge 0.48.0) |
+| `gma3_patch_stages` | List the stages (position, name, fixtures, spaces), or create, rename or remove (only empty ones after the first) stages in one patch session; names unique ignoring case, also after a removal; read back from the live patch (bridge 0.48.0; 0.49.0 for the bridge-side removal checks) |
 | `gma3_patch_retype` | Move fixtures to another fixture type with the same DMX mode, e.g. from an old GDTF import to a fixed one (the session of `gma3_assign_cell_layout`; bridge 0.29.0) |
 | `gma3_patch_library` | Read-only: search the fixture-type library (grandMA3, grandMA2, user, WorldServer) by manufacturer and model; modes when readable; which show types match; `compact` for file names only; every page fits the client (bridge 0.26.0) |
 | `gma3_patch_import` | Import one library file into the show: duplicate check, wait for exactly one new type, committed, read back with its modes (bridge 0.26.0) |

@@ -19,7 +19,7 @@ the live test procedure on a disposable show.
 | Fixture-type library (SU-03, bridge 0.26.0; changes need `exclusive: true`) | `gma3_patch_library`, `gma3_patch_import`, `gma3_patch_remove_type` | [patch.md](patch.md) |
 | Fixture-type files into the user library (SU-22, bridge 0.38.0) | `gma3_patch_library_add` | [patch.md](patch.md#gma3_patch_library_add) |
 | Fixtures under a grouping fixture, retyping (bridge 0.42.0 / 0.29.0; need `exclusive: true`) | `gma3_patch_move`, `gma3_patch_retype` | [patch.md](patch.md#gma3_patch_move) |
-| Stages: list, create, rename, remove empty ones (#97, bridge 0.48.0; changes need `exclusive: true`) | `gma3_patch_stages` | [patch.md](patch.md#gma3_patch_stages) |
+| Stages: list, create, rename, remove empty ones (#97, bridge 0.48.0, 0.49.0 for the bridge-side removal checks; changes need `exclusive: true`) | `gma3_patch_stages` | [patch.md](patch.md#gma3_patch_stages) |
 | Console dialogs (KB-27 in part, bridge 0.42.0; pressing needs `exclusive: true`) | `gma3_dialog` | [dialog.md](dialog.md) |
 | Fixture-type structure (SU-07, bridge 0.28.0; read-only) | `gma3_patch_type_structure` (and cell counts in `gma3_patch_types`, `gma3_patch_list`) | [patch.md](patch.md) |
 | Fixture positions in 3D (SU-04; no undo, refused while the patch copy is open) | `gma3_fixture_positions`, `gma3_place_fixtures` | [positions.md](positions.md) |
