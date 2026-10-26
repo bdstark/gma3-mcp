@@ -485,7 +485,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.48.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.49.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -1330,6 +1330,74 @@ reset()
 enter()
 r = edit({ action = "remove", index = 1, expect = "Stage 1" })
 check("remove refuses the only stage", r.ok == false and r.code == "last-stage" and console.copy.Stages:Count() == 1, J(r))
+request("patch.commit", X); frame()
+
+
+-------------------------------------------------------------------------------
+-- 0.49.0 (Codex review of #112): unreadable children are never taken for absent ones, and a removal that would leave
+-- two stages with one name (a default name moving up onto an explicit one) is refused.
+-------------------------------------------------------------------------------
+reset()
+local function liveStage(no, name, named)
+  local st = obj("Stage", name, no, {}, { obj("Spaces", "Spaces", 1, {}, {}), obj("Fixtures", "Fixtures", 2, {}, {}) }, { named = named, addr = "14.9.7." .. no })
+  st.Spaces = st.kids[1]; st.Fixtures = st.kids[2]; st.Fixtures.addr = st.addr .. ".2"
+  local ss = console.live.Stages
+  ss.kids[#ss.kids + 1] = st
+  return st
+end
+-- The review's case: stage 1 named "Stage 2" explicitly, Basement, and an unnamed stage 3.
+console.live.Stages.kids[1].name = "Stage 2"; console.live.Stages.kids[1].pv.NAME = "Stage 2"; console.live.Stages.kids[1].named = true
+liveStage(2, "Basement", true)
+liveStage(3, "Stage 3", false)
+enter()
+r = request("patch.stageEdit", with({ action = "remove", index = 2, expect = "Basement" }))
+check("remove refuses when the stage moving up would read a name another stage has (review of #112)", r.ok == false and r.code == "name-clash" and r.error:find("moves stage 3 (Stage 3, a default name) up to read Stage 2, which stage 1 is named", 1, true) and console.copy.Stages:Count() == 3, J(r))
+request("patch.commit", X); frame()
+-- Two unnamed stages after the removed one move up without a clash.
+reset()
+console.live.Stages.kids[1].name = "Main Floor"; console.live.Stages.kids[1].pv.NAME = "Main Floor"; console.live.Stages.kids[1].named = true
+liveStage(2, "Basement", true)
+liveStage(3, "Stage 3", false)
+liveStage(4, "Stage 4", false)
+enter()
+r = request("patch.stageEdit", with({ action = "remove", index = 2, expect = "Basement" }))
+check("remove with unnamed stages after it that do not clash still works", r.ok and stageNames("copy") == "Main Floor,Stage 2,Stage 3", J(r))
+request("patch.commit", X); frame()
+
+-- Spaces whose read raises, and a Spaces count that cannot be read: refused, never taken for "no Spaces".
+reset()
+liveStage(2, "Basement", true)
+enter()
+local copyBasement = console.copy.Stages.kids[2]
+local plainMeta = getmetatable(copyBasement)
+setmetatable(copyBasement, { __index = function(t, k) if k == "Spaces" then error("Spaces not readable") end return Obj.__index(t, k) end })
+rawset(copyBasement, "Spaces", nil)
+r = request("patch.stages", { side = "copy" })
+local row2 = r.ok and r.result.stages[2]
+check("patch.stages: a Spaces read that raises is spacesError, not spacesList false", r.ok and row2.spacesError ~= nil and row2.spacesList == nil and row2.children[1] == "Spaces", J(r))
+r = request("patch.stageEdit", with({ action = "remove", index = 2, expect = "Basement" }))
+check("remove refuses a stage whose Spaces cannot be read (review of #112)", r.ok == false and r.code == "stage-not-empty" and r.error:find("Spaces cannot be read") and console.copy.Stages:Count() == 2, J(r))
+setmetatable(copyBasement, plainMeta)
+rawset(copyBasement, "Spaces", copyBasement.kids[1])
+copyBasement.Spaces.Count = function() error("count not readable") end
+r = request("patch.stageEdit", with({ action = "remove", index = 2, expect = "Basement" }))
+check("remove refuses a stage whose Spaces cannot be counted", r.ok == false and r.code == "stage-not-empty" and r.error:find("Spaces cannot be read") and console.copy.Stages:Count() == 2, J(r))
+copyBasement.Spaces.Count = nil
+-- A Fixtures list whose walk raises: fixturesError, refused.
+copyBasement.Fixtures.Children = function() error("fixtures not readable") end
+r = request("patch.stages", { side = "copy" })
+row2 = r.ok and r.result.stages[2]
+check("patch.stages: a fixture walk that raises is fixturesError and no count", r.ok and row2.fixturesError ~= nil and row2.fixtures == nil, J(r))
+r = request("patch.stageEdit", with({ action = "remove", index = 2, expect = "Basement" }))
+check("remove refuses a stage whose fixtures cannot be read", r.ok == false and r.code == "stage-not-empty" and r.error:find("fixtures cannot be read") and console.copy.Stages:Count() == 2, J(r))
+copyBasement.Fixtures.Children = nil
+-- Children that cannot be read: refused.
+copyBasement.Children = function() error("children not readable") end
+r = request("patch.stageEdit", with({ action = "remove", index = 2, expect = "Basement" }))
+check("remove refuses a stage whose children cannot be read", r.ok == false and r.code == "stage-not-empty" and r.error:find("children cannot be read") and console.copy.Stages:Count() == 2, J(r))
+copyBasement.Children = nil
+r = request("patch.stageEdit", with({ action = "remove", index = 2, expect = "Basement" }))
+check("(with everything readable again the empty stage is removed)", r.ok and console.copy.Stages:Count() == 1, J(r))
 request("patch.commit", X); frame()
 
 print(string.format("%d passed, %d failed", passes, failures))

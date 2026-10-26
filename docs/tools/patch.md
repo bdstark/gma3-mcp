@@ -8,7 +8,8 @@ the [SU-03 record](../probes/su-03-import-macos-2.5.1.md). `gma3_patch_library_a
 SU-22): bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md). Imports name the library folder
 from bridge 0.41.0 ([record](../probes/import-library-listing-macos-2.5.1.md)). `gma3_patch_move` (fixtures under a
 grouping fixture) and `gma3_patch_retype` (fixtures to another type of the same mode): bridge 0.42.0 and 0.29.0.
-`gma3_patch_stages` (list, create, rename and remove stages, #97): bridge 0.48.0.
+`gma3_patch_stages` (list, create, rename and remove stages, #97): bridge 0.48.0; 0.49.0 for the bridge's own
+re-check of a removal (unreadable lists, a name clash: review of #112).
 
 ## Common behaviour
 
@@ -264,7 +265,9 @@ about 35 s). What worked there (live, onPC 2.5.1, 2026-10-25) is what the bridge
 
 **list** (`patch.stages`, the live patch): per stage its `index`, `no`, `name`, `nameKind`, `fixtures` (every
 fixture under its Fixtures, sub-fixtures included; absent when the list cannot be read), `topLevel`, `spacesList`
-(whether it has a Spaces child) and `spaces` (how many), and `children`. Lua reads an empty Name as "Stage <no>" (#98),
+(whether it has a Spaces child) and `spaces` (how many), and `children`. From bridge 0.49.0 a read that raised is
+kept apart from an absent child: `childrenError`, `fixturesError` or `spacesError` says what could not be read, and
+the list flag is then left out rather than false. Lua reads an empty Name as "Stage <no>" (#98),
 so a name of that form is `nameKind: "default"` (empty, or set to that text: the two cannot be told apart) and any other
 is `"explicit"`.
 
@@ -274,12 +277,19 @@ change the case of its own name; renaming to the same name is refused as changin
 
 **Pre-flight** (`patch.stages`), nothing sent on failure: a new name is not taken; the stage exists; a removal is not
 of the first or only stage, and the stage holds no fixtures and no other objects, has no spaces and no children
-besides Fixtures and Spaces (any of these unreadable is a refusal too).
+besides Fixtures and Spaces. Anything unreadable is a refusal too: the children, the fixtures, the Spaces (an error,
+or a child named Spaces that is not reported as the Spaces list, which is how a bridge before 0.49.0 reports a Spaces
+read that raised). A removal is also refused when a stage after it with a default name would move up onto a name
+another stage has: with "Stage 2" (explicit), "Basement" and an unnamed stage 3, removing Basement would leave two
+"Stage 2", and `gma3_patch_add` on "Stage 2" would find the first (review of #112). The names after the removal are
+projected as the stages renumbering, a default name following its new number; unnamed stages moving up together do
+not clash.
 
 **The session.** Every change runs the common session, entered at the first stage's Fixtures like every other patch
 session; the step is `create_stage(s)`, `rename_stage` or `remove_stage` (`patch.stageEdit`). The bridge re-checks in
 the copy: the stage at the position still has the name the pre-check saw (`[stage-changed]` otherwise), the names,
-emptiness, and first and last stage. A create calls `Acquire('Stage')` and sets the Name per stage, checks the new
+emptiness (from 0.49.0 with the same refusals for unreadable lists), first and last stage, and from 0.49.0 the name
+clash a removal would cause (`[name-clash]`). A create calls `Acquire('Stage')` and sets the Name per stage, checks the new
 object and the name it reads, and deletes every stage it appended on any problem; a rename puts the old name back
 (an empty Name for a default one) when the console does not keep the new one.
 
@@ -290,8 +300,10 @@ stages after it, which move up a place, on both sides. Everything inside every s
 still compared. If the console derives other texts from a stage's name or number (not seen; not checked live), the
 check fails and the copy is left open, as for any mismatch.
 
-**Read-back** (`patch.stages`, live): the names in order (a default name may read a new number after a removal) and
-every stage's fixture count against the state before. The result has `before`, the bridge's `edit` reply (created,
+**Read-back** (`patch.stages`, live): the names in order (a default name may read a new number after a removal), no
+two stages with one name (ignoring case), every stage's fixture count against the state before, and none in a new
+stage. A count that cannot be read, before the session or in the read-back, is not checked and says so: the
+verification is then `unavailable` ("not checked: the fixture count of stage N ..."), never `matched`. The result has `before`, the bridge's `edit` reply (created,
 renamed or removed stages, `renumbered` after a removal) and `stages`.
 
 **Unverified.** Removal uses `Delete` on Stages, the call that deletes fixtures and fixture types; it has not been
