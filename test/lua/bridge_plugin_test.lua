@@ -2357,6 +2357,72 @@ do
 end
 
 -------------------------------------------------------------------------------
+-- #99 (0.46.0): a preset range or list with a pool on the second number is expanded into single lookups.
+-- On onPC 2.5.1 ObjectList("Preset 4.1 Thru 4.3") and ("Preset 4.1 + 4.2") answer an empty list; "Preset 4.1
+-- Thru 3" and "Preset 4.2" resolve (live 2026-10-25).
+-------------------------------------------------------------------------------
+do
+  local function H(name) return { name = name, GetClass = function() return "Preset" end } end
+  local stored = { ["4.1"] = H("White"), ["4.2"] = H("CTO"), ["4.3"] = H("CTB"), ["21.2"] = H("Sine"), ["21.3"] = H("Linear") }
+  local calls = {}
+  local savedObjectList = ObjectList
+  ObjectList = function(ref)
+    calls[#calls + 1] = ref
+    local p, n = ref:match("^Preset (%d+)%.(%d+)$")
+    if p then local h = stored[p .. "." .. n]; return h and { h } or {} end
+    -- The console's own forms: an unqualified range end works, a qualified one or a + list gives nothing.
+    if ref == "Preset 4.1 Thru 3" then return { stored["4.1"], stored["4.2"], stored["4.3"] } end
+    return {}
+  end
+  local function names(res) local t = {}; for _, it in ipairs(res.items or {}) do t[#t + 1] = it.name end; return table.concat(t, ",") end
+  local function reset() calls = {} end
+
+  reset()
+  r = request("objects", { ref = "Preset 4.1 Thru 4.3", fields = { "No" } })
+  check("objects: 'Preset 4.1 Thru 4.3' is expanded into single lookups and finds the three presets", r.ok and r.result.total == 3 and names(r.result) == "White,CTO,CTB" and #calls == 3 and calls[1] == "Preset 4.1" and calls[3] == "Preset 4.3", J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Preset 4.1 + 4.3 + 21.2 Thru 21.4" })
+  check("objects: + lists across pools and a qualified range, empty slots skipped", r.ok and names(r.result) == "White,CTB,Sine,Linear" and #calls == 5, J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "preset 4.3 thru 4.1 + 4.2" })
+  check("objects: a descending range keeps its order and a repeated preset comes once (lower-case keywords)", r.ok and names(r.result) == "CTB,CTO,White" and #calls == 3, J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Preset 4.1 + 3" })
+  check("objects: a bare number after + is not guessed: the reference goes to ObjectList unchanged", r.ok and #calls == 1 and calls[1] == "Preset 4.1 + 3", J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Preset 4.1 Thru 3" })
+  check("objects: the console's own form (unqualified end) goes to ObjectList unchanged", r.ok and names(r.result) == "White,CTO,CTB" and #calls == 1 and calls[1] == "Preset 4.1 Thru 3", J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Preset 4.2" })
+  check("objects: a single preset goes to ObjectList unchanged", r.ok and names(r.result) == "CTO" and #calls == 1, J({ r, calls }))
+  for _, ref in ipairs({ "Preset 4.*", 'Preset "White" + "CTO"', "Preset 4.1 Thru", "Preset Thru", "Sequence 1 Thru 3" }) do
+    reset()
+    r = request("objects", { ref = ref })
+    check("objects: a form the preset parser does not read goes to ObjectList unchanged (" .. ref .. ")", r.ok and #calls == 1 and calls[1] == ref, J({ r, calls }))
+  end
+  reset()
+  r = request("objects", { ref = "Preset 4.1 Thru 5.3" })
+  check("objects: a preset range across pools is refused before any lookup", r.ok == false and r.error:find("across pools", 1, true) ~= nil and #calls == 0, J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Preset 4.1 Thru 4.2000" })
+  check("objects: a preset range over 1000 presets is refused before any lookup", r.ok == false and r.error:find("more than 1000", 1, true) ~= nil and #calls == 0, J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Preset 4.1 Thru 2000" })
+  check("objects: a console-native range over 1000 presets (unqualified end) goes to ObjectList unchanged, not refused", r.ok and #calls == 1 and calls[1] == "Preset 4.1 Thru 2000", J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Preset 4.1 Thru 600 + 4.700 Thru 4.1300" })
+  check("objects: the 1000-preset bound counts every range of a list together", r.ok == false and r.error:find("more than 1000", 1, true) ~= nil and #calls == 0, J({ r, calls }))
+  reset()
+  r = request("objects", { ref = "Preset 1000.1 Thru 1000.3" })
+  check("objects: a pool number out of 1..999 is not expanded (ObjectList answers it)", r.ok and #calls == 1, J({ r, calls }))
+  reset()
+  r = request("object", { ref = "Preset 4.2 Thru 4.3", properties = false })
+  check("object: resolve() shares the expansion and returns the first preset found", r.ok and r.result.name == "CTO", J({ r, calls }))
+
+  ObjectList = savedObjectList
+end
+
+-------------------------------------------------------------------------------
 -- SU-16 (0.32.0): a sequence's current cue in object, children (playback) and executors reads
 -------------------------------------------------------------------------------
 do

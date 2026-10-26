@@ -23,10 +23,10 @@
  */
 import { z } from "zod";
 import { BridgeError } from "../bridge.js";
-import { asRead, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
+import { asRead, compactItems, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { Validator } from "../validate.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
-import { EXCLUSIVE_DESC, SESSION_DESC, VERIFY_DESC, fidNumber, listFids, requireExclusive, runSession, type FixtureRow } from "./patch.js";
+import { DETAIL_DESC, EXCLUSIVE_DESC, SESSION_DESC, VERIFY_DESC, fidNumber, listFids, requireExclusive, runSession, type FixtureRow } from "./patch.js";
 import { readPoses, type FixturePose, type Quat } from "./positions.js";
 import { assignCellLayout } from "./celllayout.js";
 import { describeDialog, type DialogRow } from "./dialog.js";
@@ -122,6 +122,7 @@ interface MoveArgs {
   position?: unknown;
   exclusive?: unknown;
   verify?: unknown;
+  detail?: unknown;
 }
 
 interface Before {
@@ -320,7 +321,7 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
     return { rows, poses, groups, groupsError };
   }
 
-  return runSession(ctx, {
+  const result = await runSession(ctx, {
     operation: op,
     target,
     touchedFids: fids,
@@ -349,6 +350,14 @@ export async function patchMove(ctx: ToolContext, raw: MoveArgs): Promise<Operat
     isolation: () => ({ fixturePositions: false }),
     extra: () => ({ ...(check ? { stage: check.stage, from: check.source, to: check.target } : {}), position, ...(dialog ? { dialog } : {}) }),
     readBack: async () => readBack(),
+  });
+  // #100: on a clean success, per fixture its FID and [before, after] parent ("root": the top level) instead of its
+  // rows, groups and poses.
+  const after = new Map(((result.fixtures as Array<{ fid: number; parentFid: number | null }> | undefined) ?? []).map((f) => [f.fid, f.parentFid ?? "root"]));
+  return compactItems(result, raw.detail === true, {
+    drop: ["fixtures"],
+    items: fids.map((fid) => ({ fid, parent: [check?.source.fid ?? null, after.get(fid) ?? parent] })),
+    hint: "detail: true returns every step's detail and each fixture's parent, address, groups and 3D pose before and after",
   });
 
   async function readBack(): Promise<{ steps: StepResult[]; verification: Verification; extra?: Record<string, unknown> }> {
@@ -450,13 +459,14 @@ export const registerPatchMoveTools: RegisterTools = (server, ctx) => {
         "Pre-checks (nothing sent on failure): every FID exists, holds no fixtures itself, all share one parent (the top level or one top-level grouping fixture) in one stage, and the target is another top-level grouping fixture of that stage (type Grouping) or the top level. Move fixtures with different parents in one call each. " +
         "In the copy: Cut, ChangeDestination, Paste, and the console's \"Move Fixtures\" dialog answered by the bridge, each step checked before the next (a failure cancels the dialog). The isolation check compares fixtures without their list positions, because a move renumbers the fixtures after the moved ones. " +
         SESSION_DESC +
-        " verify compares each fixture with its state before the session: parent, address, name, its groups, and its 3D pose (absolute: in the world; relative: to the parent). Needs bridge 0.42.0.",
+        " verify compares each fixture with its state before the session: parent, address, name, its groups, and its 3D pose (absolute: in the world; relative: to the parent). A clean success lists each fixture as {fid, parent: [before, after]} in items (detail: true for the poses, groups and rows). Needs bridge 0.42.0.",
       inputSchema: {
         fids: z.array(z.number()).describe(`Fixture IDs to move (1-${MAX_MOVE}), all with the same parent.`),
         parent: z.union([z.number(), z.literal("root")]).describe('FID of the target grouping fixture, or "root" for the top level of the stage.'),
         position: z.enum(["absolute", "relative"]).optional().describe('How the 3D placement is kept (default "absolute": the place and rotation in the world).'),
         exclusive: z.boolean().optional().describe(EXCLUSIVE_DESC),
         verify: z.boolean().optional().describe(VERIFY_DESC),
+        detail: z.boolean().optional().describe(DETAIL_DESC),
       },
     },
     async (args) => operation(() => patchMove(ctx, args as MoveArgs)),
@@ -469,12 +479,13 @@ export const registerPatchMoveTools: RegisterTools = (server, ctx) => {
       description:
         "Moves fixtures to another fixture type in the show whose DMX mode of the same name has the same channels and footprint (refused otherwise), keeping FIDs, addresses, cells, groups and preset values. " +
         "Use it after importing a fixed revision of a GDTF or library type: the fixtures move from the old import to the new one, then gma3_patch_remove_type removes the old type. Also moves fixtures between a type and its layout copy (the same as gma3_assign_cell_layout). " +
-        "Runs one patch session (isolation-checked, committed with NO UNDO); requires exclusive: true. The read-back checks each fixture's type. Needs bridge 0.29.0.",
+        "Runs one patch session (isolation-checked, committed with NO UNDO); requires exclusive: true. The read-back checks each fixture's type; a clean success lists each fixture as {fid, type: [before, after]} in items (detail: true for the rows). Needs bridge 0.29.0.",
       inputSchema: {
         fixtures: z.array(z.number()).describe("FIDs to retype."),
         type: z.union([z.number(), z.string()]).describe("The target fixture type, by number or name (a number when two types share a name, e.g. two imports of one GDTF)."),
         exclusive: z.boolean().optional().describe(EXCLUSIVE_DESC),
         verify: z.boolean().optional().describe(VERIFY_DESC),
+        detail: z.boolean().optional().describe(DETAIL_DESC),
       },
     },
     async (args) => operation(() => assignCellLayout(ctx, args as Record<string, unknown>, "patch_retype")),

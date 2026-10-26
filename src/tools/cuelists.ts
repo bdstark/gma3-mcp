@@ -40,7 +40,7 @@ import {
   type StepResult,
   type Verification,
 } from "../results.js";
-import { Validator, ValidationError, attributeName, cueNumber, finiteNumber, fixtureSelection, objectName, objectNumber, oneOf, percent, timeSeconds } from "../validate.js";
+import { Validator, ValidationError, attributeName, cueNumber, finiteNumber, fixtureSelection, noteText, objectName, objectNumber, oneOf, percent, timeSeconds } from "../validate.js";
 import { cueRef, exists } from "./common.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
 import { BATCH_NOTE, batchOptionShape, compactResult, duplicates, runBatchCall } from "../batch.js";
@@ -104,6 +104,8 @@ export interface CueSpec {
   looks: LookSpec[];
   /** SU-14: the cue's command (Part 0 Command), run when the cue is called. */
   command?: string;
+  /** #101: the cue's Note (scene metadata a plugin reads), written after the store and read back. */
+  note?: string;
   timing: Partial<Record<Exclude<TimingKey, "snap_delay">, number>>;
   trigger?: TriggerKey;
   time?: number;
@@ -278,11 +280,12 @@ function validateCues(v: Validator, raw: unknown, defaultFixtures: string | unde
     const cue = v.check(() => cueNumber(`${path}.cue`, r.cue));
     const name = v.check(() => objectName(`${path}.name`, r.name, { optional: true }));
     const command = v.check(() => cueCommand(`${path}.command`, r.command));
+    const note = v.check(() => noteText(`${path}.note`, r.note, { optional: true }));
     const looks = validateLooks(v, r, path, defaultFixtures, command !== undefined);
     const timing = validateTiming(v, r, `${path}.`);
     const trig = validateTrigger(v, r.trigger, r.time, `${path}.`);
     if (cue && out.some((x) => Number(x.cue) === Number(cue))) v.fail(`${path}: cue ${cue} appears twice`);
-    if (cue) out.push({ cue, name, looks, ...(command !== undefined ? { command } : {}), timing, ...trig });
+    if (cue) out.push({ cue, name, looks, ...(command !== undefined ? { command } : {}), ...(note !== undefined ? { note } : {}), timing, ...trig });
   });
   return out;
 }
@@ -769,6 +772,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
     if (c.trigger) store.push(setStep(bridge, `${pre}trigger`, cueObj, "TrigType", TRIGGERS[c.trigger], t));
     if (c.time !== undefined) store.push(setStep(bridge, `${pre}trigger_time`, cueObj, "TrigTime", c.time, t));
     if (c.command !== undefined) store.push(setStep(bridge, `${pre}command`, part0, "Command", c.command, t));
+    if (c.note !== undefined) store.push(setStep(bridge, `${pre}note`, cueObj, "Note", c.note, t));
     return { prefix: pre, looks: c.looks, store };
   });
   // replace: every existing cue is deleted once everything was checked (Delete ... Cue 1 Thru keeps the sequence object,
@@ -831,10 +835,10 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
         ...Object.fromEntries(Object.entries(c.timing).map(([k, val]) => [TIMING_PROPS[k as keyof CueSpec["timing"]], val])),
         ...(c.command !== undefined ? { Command: c.command } : {}),
       };
-      const checked = `cue ${c.cue} exists${c.name !== undefined ? ", its name" : ""}${Object.keys(c.timing).length ? ", its timing" : ""}${c.trigger ? ", its trigger" : ""}${c.command !== undefined ? ", its command" : ""}`;
+      const checked = `cue ${c.cue} exists${c.name !== undefined ? ", its name" : ""}${Object.keys(c.timing).length ? ", its timing" : ""}${c.trigger ? ", its trigger" : ""}${c.command !== undefined ? ", its command" : ""}${c.note !== undefined ? ", its note" : ""}`;
       let props: Verification;
       try {
-        const cueRes = (await bridge.request("objects", { ref: cueRef(b.sequence, c.cue), fields: ["Name", "TrigType", "TrigTime"], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
+        const cueRes = (await bridge.request("objects", { ref: cueRef(b.sequence, c.cue), fields: ["Name", "TrigType", "TrigTime", ...(c.note !== undefined ? ["Note"] : [])], limit: 1 }, t)) as { items?: Array<{ fields?: Record<string, unknown> }> };
         const cf = cueRes.items?.[0]?.fields;
         if (!cf) props = { status: "mismatched", checked, detail: `cue ${c.cue} does not exist after the store` };
         else {
@@ -845,6 +849,11 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
             actual = { ...actual, ...(pr.items?.[0]?.fields ?? {}) };
           }
           props = compareFields(checked, { ...expected, ...timingExpected }, actual, { normalize: TIME_NORMALIZERS });
+          // The note is compared exactly (compareFields ignores case): it is data a plugin parses.
+          if (c.note !== undefined && String(cf.Note ?? "").trim() !== c.note) {
+            const d = `Note: expected ${JSON.stringify(c.note)}, read ${JSON.stringify(cf.Note ?? null)}`;
+            props = { ...props, status: "mismatched", detail: props.status === "mismatched" && props.detail ? `${props.detail}; ${d}` : d };
+          }
         }
         readBack.push(asRead({ name: `cue ${c.cue}: read_back`, status: "succeeded", op: "objects", detail: { verification: props.status } }));
       } catch (err) {
@@ -1758,7 +1767,8 @@ export function compactCueResult(r: OperationResult, detail: boolean): Operation
 }
 
 const commandSchema = z.string().optional().describe('The cue\'s command (Part 0 Command), run when the cue is called, e.g. "Go+ Macro 20". A cue with a command needs no look.');
-const cueSchema = z.object({ cue: z.union([z.number(), z.string()]), name: z.string().optional(), command: commandSchema, ...contentShape, ...timingShape, ...triggerShape });
+const noteSchema = z.string().optional().describe('The cue\'s Note, e.g. scene metadata a plugin reads (one line; trimmed; "" clears it); written after the store and read back exactly.');
+const cueSchema = z.object({ cue: z.union([z.number(), z.string()]), name: z.string().optional(), command: commandSchema, note: noteSchema, ...contentShape, ...timingShape, ...triggerShape });
 const presetRangeSchema = z.object({ pool: z.number(), from: z.number(), to: z.number() });
 const sequenceSettingsShape = {
   sequence_settings: z.record(z.string(), z.unknown()).optional().describe("Sequence settings applied after the build, as gma3_configure_sequence takes them (priority, off_when_overridden, wrap_around, ...)."),
@@ -1770,7 +1780,7 @@ const COMPACT_NOTE =
 
 const BUILD_NOTE =
   "Built in the console's Preview environment: its own programmer and selection, so nothing is output and the operator's Normal programmer is untouched (checked before and after). Each cue starts from an empty programmer (ClearAll, sent only in Preview), its looks are applied in order (presets, then intensity, then values; a later look wins on shared fixtures), each look is checked in the programmer (preset links, values per fixture and cell), then the cue is stored. " +
-  "A look that did not apply stops the batch before that cue is stored; the cues already stored stay (nothing is undone or retried) and the result lists every cue with its status. A cue's stored values cannot be read back on 2.5.1; the cue's existence, name, timing and trigger are. A cue stored without a name takes the preset's name. Requires exclusive: true.";
+  "A look that did not apply stops the batch before that cue is stored; the cues already stored stay (nothing is undone or retried) and the result lists every cue with its status. A cue's stored values cannot be read back on 2.5.1; the cue's existence, name, timing, trigger, command and note are. A cue stored without a name takes the preset's name. Requires exclusive: true.";
 
 export const registerCueListTools: RegisterTools = (server, ctx) => {
   server.registerTool(
@@ -1778,7 +1788,7 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
     {
       title: "Store a list of cues from explicit content",
       description:
-        "Store several cues of one sequence in one call, each from explicit content: a look (fixtures with presets, intensity, attribute values and/or a phaser) or several looks, with an optional name, timing, trigger and command per cue; a cue with a command needs no look (stored empty). mode create refuses (nothing sent) when any of the cues exists; merge and overwrite store into existing cues. The store creates the sequence when it does not exist; sequence_name names it. " +
+        "Store several cues of one sequence in one call, each from explicit content: a look (fixtures with presets, intensity, attribute values and/or a phaser) or several looks, with an optional name, timing, trigger, command and note (the cue's Note, e.g. scene metadata a plugin reads) per cue; a cue with a command needs no look (stored empty). mode create refuses (nothing sent) when any of the cues exists; merge and overwrite store into existing cues. The store creates the sequence when it does not exist; sequence_name names it. " +
         "presets {pool, from, to} (instead of cues): one cue per existing preset of the range on fixtures, named after it, with the call's timing and trigger. replace: true deletes the existing cues first (the sequence object, its settings and executor assignments stay, checked). sequence_settings (as gma3_configure_sequence) are applied after the build in the same call; a priority above ltp lists the running sequences it would switch off (Off When Overridden on), and protect_running: true turns that off on them. " +
         BUILD_NOTE +
         " " +

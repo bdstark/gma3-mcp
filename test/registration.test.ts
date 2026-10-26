@@ -126,6 +126,7 @@ const WORKFLOW_TOOLS = [
   "gma3_recipes",
   "gma3_edit_recipe",
   "gma3_cook_recipes",
+  "gma3_store_recipe_cues",
   "gma3_speed_masters",
   "gma3_configure_speed_master",
   "gma3_speed_master_action",

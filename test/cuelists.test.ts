@@ -38,6 +38,8 @@ interface Cue {
   name: string;
   trigType: string;
   trigTime: number;
+  /** #101: the cue object's Note. */
+  note?: string;
   part0: Record<string, string>;
   /** fid -> attribute -> value, what was stored. */
   data: Record<string, Record<string, number>>;
@@ -227,7 +229,7 @@ class Console {
     if ((m = ref.match(/^Sequence (\d+) Cue ([\d.]+)(?: Part 0)?$/))) {
       const c = this.cue(+m[1], +m[2]);
       if (!c) return none;
-      const all: Record<string, unknown> = ref.endsWith("Part 0") ? { ...c.part0, Name: c.name } : { Name: c.name, TrigType: c.trigType, TrigTime: consoleTime(c.trigTime), No: String(c.no) };
+      const all: Record<string, unknown> = ref.endsWith("Part 0") ? { ...c.part0, Name: c.name } : { Name: c.name, TrigType: c.trigType, TrigTime: consoleTime(c.trigTime), No: String(c.no), Note: c.note ?? "" };
       return { total: 1, items: [{ name: c.name, class: ref.endsWith("Part 0") ? "Part" : "Cue", fields: Object.fromEntries(fields.map((f) => [f, all[f]])) }] };
     }
     if (ref === "Sequence Thru") {
@@ -273,6 +275,7 @@ class Console {
         // SU-14: a trigger other than Time sets TrigTime to 0, and a switch back keeps the 0 (live 2026-10-15).
         if (value !== "Time") c.trigTime = 0;
       } else if (prop === "TrigTime") c.trigTime = Number(value);
+      else if (prop === "Note") c.note = value;
     } else if ((m = ref.match(/^Sequence (\d+)$/))) {
       const s = this.seqs.get(+m[1]);
       if (!s) throw new Error(`no object found for '${ref}'`);
@@ -1065,6 +1068,40 @@ test("SU-15: cue commands' $variables must exist or be set by an earlier cue com
     assert.match(errors(delFirst), /\$HexCol \(cue 3\) do not exist/, "a delete in a lower-numbered cue applies first");
     const edit = await h.callJson("gma3_edit_cues", { sequence: 991, cues: [1], command: "Go+ Macro $Nope" });
     assert.match(errors(edit), /\$Nope \(cue 1\) do not exist/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues (#101): a note per cue is written on the cue and read back exactly", async () => {
+  const { h, c } = await setup();
+  try {
+    const note = 'genres ABC | ch 1,2,3 | motif "gears" | bank A';
+    const { result, isError } = await h.callJson("gma3_store_cues", { sequence: 951, mode: "create", fixtures: "101", exclusive: true, cues: [{ cue: 1, intensity: 10, note }, { cue: 2, intensity: 20 }] });
+    assert.equal(isError, false, JSON.stringify(result, null, 2));
+    assert.equal(result.verification.status, "matched");
+    assert.equal(c.cue(951, 1)?.note, note);
+    assert.equal(c.cue(951, 2)?.note, undefined, "no note given: none written");
+    const noteSets = h.fake.requests.filter((r) => r.op === "set" && r.args.property === "Note");
+    assert.deepEqual(noteSets.map((r) => r.args.ref), ["Sequence 951 Cue 1"]);
+    // A note the console keeps (or changes) is a mismatch on that cue.
+    c.ignoreSet = /^Sequence 951 Cue 3 Note$/;
+    const kept = await h.callJson("gma3_store_cues", { sequence: 951, mode: "merge", fixtures: "101", exclusive: true, cues: [{ cue: 3, intensity: 10, note: "Bank B" }] });
+    assert.equal(kept.result.verification.status, "mismatched");
+    assert.match(kept.result.verification.detail, /Note: expected "Bank B", read ""/);
+    c.ignoreSet = undefined;
+    // A console that reads the note back in another case.
+    const objects = h.fake.handlerFor("objects")!;
+    h.fake.on("objects", async (args, req) => {
+      const res = (await objects(args, req)) as { items?: Array<{ fields?: Record<string, unknown> }> };
+      const f = args.ref === "Sequence 951 Cue 4" ? res.items?.[0]?.fields : undefined;
+      if (f && typeof f.Note === "string") f.Note = f.Note.toLowerCase();
+      return res;
+    });
+    const cased = await h.callJson("gma3_store_cues", { sequence: 951, mode: "merge", fixtures: "101", exclusive: true, cues: [{ cue: 4, intensity: 10, note: "Bank B" }] });
+    assert.match(cased.result.verification.detail ?? "", /Note: expected "Bank B", read "bank b"/, "compared exactly, not ignoring case");
+    const bad = await h.callJson("gma3_store_cues", { sequence: 951, mode: "merge", fixtures: "101", exclusive: true, cues: [{ cue: 5, intensity: 10, note: "a\nb" }] });
+    assert.match(bad.result.validationErrors.join(), /cues\[0\]\.note must be one line/);
   } finally {
     await h.close();
   }

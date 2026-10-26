@@ -24,7 +24,7 @@
 | `gma3_lua_api` | Search the live Lua API descriptor (names, arguments, returns) |
 | `gma3_get_object` | Properties (and optionally children and schema) of any object |
 | `gma3_list_children` | Children of an object with selected property values, paginated |
-| `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)) |
+| `gma3_objects` | Resolve a range like `Fixture 1 Thru 20` to objects with property values. Page and executor lists are expanded by the bridge (v0.20.0, [below](#page-and-executor-ranges-plugin-v0200)), and so are preset ranges and `+` lists that name the pool (v0.46.0, [below](#preset-ranges-plugin-v0460)) |
 | `gma3_dump` | Raw `Dump()` text of an object |
 | `gma3_set_property` | `Set()` a property and read it back: plain values (Yes/No, enums, numbers, exact text) are verified, a kept value is an error naming the lock (or saying its state is unknown); references, a macro line's Command and Wait, Tags and reformatted values are returned unverified with the typed tool that checks them |
 | `gma3_playback` | Go+, Go-, Pause, Off, Top, Flash, Load, ReSync, ... on a sequence, executor or tag; reads the playback state back a frame later (for a tag, every tagged sequence) ([docs](tools/live-reads.md), [resync](tools/tempo-sync.md#resync)) |
@@ -47,9 +47,11 @@ Workflow tools (shared result model, see [below](#workflow-tools); details in [`
 | `gma3_store_cue`, `gma3_store_cue_part` | `Store ... /NoConfirmation` with explicit create / merge / overwrite mode, name and timing set as separate verified steps ([docs](tools/cues.md)) |
 | `gma3_set_cue_timing`, `gma3_set_cue_trigger` | Edit part timing (fade, delay, out fade, out delay, snap delay) and trigger (Go, Time, Follow, Sound, BPM) with read-back ([docs](tools/cues.md)) |
 | `gma3_goto_cue`, `gma3_delete_cue` | `Goto` (a playback mutation) and single-cue `Delete ... /NoConfirmation` with existence checks ([docs](tools/cues.md)) |
-| `gma3_store_cues` | A list of cues in one call, each from explicit looks (fixtures + presets, intensity, attribute values), with names, timing and triggers; built in the Preview environment (nothing output, Normal programmer untouched), each look checked before its store, reported per cue ([docs](tools/cuelists.md)) |
+| `gma3_store_cues` | A list of cues in one call, each from explicit looks (fixtures + presets, intensity, attribute values), with names, timing, triggers, commands and notes; built in the Preview environment (nothing output, Normal programmer untouched), each look checked before its store, reported per cue ([docs](tools/cuelists.md)) |
 | `gma3_edit_cues` | The same trigger and timing, and one name per cue, on a list, range or all cues of a sequence, read back per cue ([docs](tools/cuelists.md)) |
 | `gma3_build_chase` | A looping chase into an empty sequence (one cue per look or preset, Time triggers, Wrap Around), then plays it and verifies one observed cycle through the wrap ([docs](tools/cuelists.md)) |
+| `gma3_recipes`, `gma3_edit_recipe`, `gma3_cook_recipes` | Read, add, change, move or remove one recipe line of a preset or cue part (references checked, every line read back); cook a preset, part, cue or sequence with an explicit option, verified ([docs](tools/recipes.md)) |
+| `gma3_store_recipe_cues` | The recipe lines of up to 100 cue parts of one sequence in one call (replace or append; group, preset, MAtricks, the per-line MAtricks and fade columns), with the cue's name and note; references checked once up front, a compact read-back per cue (line count and mismatches), an optional cook of every part ([docs](tools/recipes.md#gma3_store_recipe_cues)) |
 | `gma3_assign_to_executor`, `gma3_label_executor` | Inspect, then `Assign Sequence n At Page p.e` (replacing only with `replace`), label, read back ([docs](tools/executors.md)) |
 
 Structured inspection tools (read-only; work with Lua execution disabled; need plugin v0.3.0 or newer, see
@@ -164,6 +166,29 @@ whether to continue, inspect console state, or stop:
   `skipped`. An operation with some steps done and one not is `partial`.
 * Any outcome other than `succeeded`, and any `mismatched` read-back, is returned as an MCP tool error with the
   full result in the error text.
+* Results are compact JSON, without indentation (every tool; the 2-space indentation more than doubled a large
+  result, #100).
+* The batch patch tools (`gma3_patch_set`, `gma3_patch_add` with `count` above 1, `gma3_patch_move`,
+  `gma3_patch_retype`, `gma3_assign_cell_layout` and `gma3_place_fixtures`) return a compact form on a clean success
+  (outcome `succeeded`, read-back `matched` or `not_requested`): `items` with one entry per fixture, its `fid` and
+  `[before, after]` of the fields the call changed (`gma3_patch_add`: each new fixture's `name` and `address`;
+  `gma3_place_fixtures`: the pose it now has), the steps with their names and statuses but without their `detail`,
+  the verification without `expected` and `actual`, and no per-fixture state dumps (`before`, `after`, `fixtures`);
+  `detailHint` says what `detail: true` adds. Anything else (a failure, a mismatch, an unknown or unavailable
+  read-back) is returned whole, and `detail: true` returns the whole result on a success too. Renaming 88 fixtures
+  went from 171 KB to about 6 KB; placing 93 fixtures from 214 KB to about 18 KB, most of it `restore`, which stays
+  because `Oops` does not undo positions:
+
+  ```jsonc
+  {
+    "operation": "patch_set", "target": { "edits": 88 }, "outcome": "succeeded",
+    "verification": { "status": "matched", "checked": "each edited fixture's patch address and/or name" },
+    "steps": [ { "name": "check_state", "status": "succeeded", "kind": "read", "op": "patch.state" }, ... ],
+    "committed": true, "copyLeftOpen": false,
+    "items": [ { "fid": 1001, "name": ["MHPar06 1", "Halloween Spot 01 SL"] }, ... ],
+    "detailHint": "detail: true returns the edits, every step's detail, the fixtures before and the read-back rows"
+  }
+  ```
 * Inputs are validated before anything is sent (finite numbers, zero accepted as a deliberate value, cue numbers
   with up to three decimals, mutually exclusive options). Object names may not contain any of
   `\ " $ & * ? , . ; ^ { } | ~`: onPC 2.5.1 silently removes those characters from a name whether it arrives
@@ -251,6 +276,17 @@ the reference first:
 
 The guard does not cover `gma3_lua`: a script that calls `ObjectList` with an executor range still hangs the console.
 Evidence: [probes/objectlist-hang-macos-2.5.1.md](probes/objectlist-hang-macos-2.5.1.md).
+
+### Preset ranges (plugin v0.46.0)
+
+On onPC 2.5.1, `ObjectList` answers an empty list, without an error, for a preset range whose end names the pool
+(`Preset 4.1 Thru 4.3`) and for a `+` list of presets (`Preset 4.1 + 4.2`). The console's own range form
+`Preset 4.1 Thru 3` and a single `Preset 4.2` resolve (live 2026-10-25, #99). Since v0.46.0 the same ops expand
+`Preset P.N Thru P.M` and `+` lists of `P.N` terms and such ranges (across pools in a list; an unqualified range end
+stays in its pool) into single `Preset P.N` lookups, in the given order, duplicates once, at most 1000 presets, pools 1–999,
+presets 1–9999. Empty slots are skipped. A range across pools (`Preset 4.1 Thru 5.3`) is refused before any lookup.
+Every other form (`Preset 4.1 Thru 3`, a single preset, names, `*`, open ranges, a bare number after `+`) goes to `ObjectList`
+unchanged. An older bridge returns nothing for the qualified forms; write `Preset 4.1 Thru 20` there.
 
 ### Selection-grid reads (plugin v0.21.0, SB-02)
 
