@@ -379,7 +379,8 @@ server.registerTool(
     title: "Resolve an object range",
     description:
       "Resolve a command-line object range to a list of objects with optional property values. " +
-      'Examples: "Fixture 1 Thru 20", "Fixture Thru" (all fixtures), "Group Thru", "Sequence 1 Thru 10", "Preset 4.1 Thru 4.20", "Page 1.201 Thru 1.215".',
+      'Examples: "Fixture 1 Thru 20", "Fixture Thru" (all fixtures), "Group Thru", "Sequence 1 Thru 10", "Preset 4.1 Thru 20", "Page 1.201 Thru 1.215". ' +
+      '"Preset 4.1 Thru 4.20" and "Preset 4.1 + 21.2" need bridge 0.46.0 (an older bridge returns nothing for them; a range across pools is refused).',
     inputSchema: {
       ref: z.string().describe("Command-line object range"),
       fields: z.array(z.string()).optional().describe("Property names to read for each object"),
