@@ -198,6 +198,10 @@ they are still at the top level of the patch: `gma3_place_fixtures` refuses a fi
 - Rotations confirmed on onPC 2.5.1: rotation 0 hangs the fixture with the beam along −Z. A floor uplight is X 180.
   Facing downstage is X −90. A vertical bar facing downstage is X −90 with Y 90. See
   [positions.md](../../tools/positions.md) for the axes.
+- Keep the stages independent. Each stage has its own origin at 0, 0, so lay out each stage's fixtures around its own
+  origin, as if it were the only stage. Never offset a stage to the side of another as if they shared one screen; the
+  Halloween build did that with Basement and Outdoors. See
+  [positions.md](../../tools/positions.md#axes-and-units).
 - For strings and pixel strands, lay out the cells with `gma3_layout_cells` before the groups use them.
 - The Show Start helper "Moving Head" has no FID, CID 1. It holds the universal LOS presets 2.19 and 2.20 and sits at
   the origin, below the floor. `gma3_place_fixtures` needs an FID, so leave the helper where it is. The eight

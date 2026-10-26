@@ -18,6 +18,13 @@ or `in`; rotations are always degrees.
 | rotation Y | about its own Y axis: its top tilts stage left |
 | rotation Z | about its own Z axis: counter-clockwise seen from above |
 
+**Every stage has its own origin.** A fixture's position is in its own stage's space, and each stage's origin is
+0, 0. The stages are separate spaces, not areas of one shared floor. Place each stage's fixtures around its own
+origin, as if it were the only stage. Don't offset a stage's fixtures to the side to keep them clear of another
+stage's. The tools neither add nor check a stage offset: positions are written and read as given. The Halloween 2026
+build placed Basement 9 to 14 m stage left and Outdoors about 11 m stage right, as if the three stages shared one
+screen. That is wrong (noted by the maintainer, 2026-10-26).
+
 **Rotations.** The console renormalizes the three angles a frame after they are written, keeping the rotation:
 (0, 180, 0) reads back as (180, 0, 180), (30, 100, 20) as (−150, 80, −160). So:
 - A rotation is always given as all three angles. One axis cannot be changed on its own, because the other two as the
