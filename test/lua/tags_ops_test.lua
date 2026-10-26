@@ -183,7 +183,7 @@ local function byClass(refs, cls) for _, r in ipairs(refs or {}) do if r.class =
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.36.0", r.ok and r.result.bridgeVersion == "0.45.0", J(r))
+check("ping reports bridge 0.36.0", r.ok and r.result.bridgeVersion == "0.46.0", J(r))
 
 r = request("tags", {})
 check("tags lists the pool", r.ok and r.result.count == 2 and r.result.total == 2 and r.result.incomplete == false and r.result.items[1].no == 950 and r.result.items[2].name == "McpTag:C", J(r))

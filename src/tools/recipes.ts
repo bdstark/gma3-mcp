@@ -4,6 +4,8 @@
  *   gma3_recipes        read-only: the recipe lines of a preset or cue part (selection, values, MAtricks, filter, state,
  *                       dangling references) and what the target holds cooked and uncooked per fixture
  *   gma3_edit_recipe    add, set, move or remove one standard recipe line (the definition)
+ *   gma3_store_recipe_cues  the standard lines of many cue parts in one call (replace or append), with the per-line
+ *                       MAtricks columns, the cue's name and note; references checked once, a compact read-back (#101)
  *   gma3_cook_recipes   cook a preset, a cue part, a cue or a whole sequence with an explicit option, after showing every
  *                       affected target, the coverage it should get and what happens to uncooked data
  *
@@ -16,8 +18,9 @@
  * Remove options, and the list of affected targets beforehand.
  *
  * First release: standard recipe lines with a group selection, a preset as values, a MAtricks reference, Enabled, Name and
- * SelectionMode. Phaser recipe lines, filters, worlds, shapes, SelectionFromValue and the per-line timing columns are
- * listed and kept but not edited, and their coverage is not predicted (reported as not predicted).
+ * SelectionMode. Phaser recipe lines, filters, worlds, shapes and SelectionFromValue are listed and kept but not edited,
+ * and their coverage is not predicted (reported as not predicted). The per-line MAtricks columns (XBlock, X, FadeFromX,
+ * ...) are written only by gma3_store_recipe_cues (not verified on a console: the #101 build set them from Lua).
  *
  * Console facts this module relies on (onPC 2.5.1, docs/probes/sb-05-recipes-macos-2.5.1.md):
  *   - Lines are StandardRecipe children of a cue part or preset, addressed `Sequence S Cue C Part P.L` / `Preset N.M.L`;
@@ -36,6 +39,10 @@ import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
 import { presetId, type PresetRead, type PresetRow } from "./presets.js";
+import { cueRef, readObjects } from "./common.js";
+import { axisSettingsShape, matricksValue, matricksWanted } from "./groups.js";
+import { MAX_BATCH_ITEMS, batchOptionShape, duplicates, hasUncertainStep, itemOk, runBatch } from "../batch.js";
+import { HeldLock } from "../mutations.js";
 import {
   asRead,
   buildResult,
@@ -44,12 +51,15 @@ import {
   requestStep,
   runSteps,
   stepFromError,
+  unavailable,
   validationFailure,
   type OperationResult,
+  type StepFn,
   type StepResult,
+  type StepStatus,
   type Verification,
 } from "../results.js";
-import { ValidationError, Validator, describe, finiteNumber, objectName, objectNumber, cueNumber } from "../validate.js";
+import { ValidationError, Validator, describe, finiteNumber, noteText, objectName, objectNumber, oneOf, partNumber, cueNumber } from "../validate.js";
 
 // ---------------------------------------------------------------------------
 // Targets
@@ -122,10 +132,29 @@ export interface Line {
   filter: string | null;
   selectionMode?: string;
   selectionFromValue?: boolean | null;
+  /** The line's own X / Y / Z column when it is set ("X 1"): only part of the group gets values (#101). */
+  axisSelect?: string;
   status: { failedCookedPart?: string; emptyLastCooking?: boolean | null };
 }
 
-const LINE_FIELDS = ["Name", "Enabled", "Selection", "Values", "MAtricks", "Filter", "SelectionMode", "SelectionFromValue", "FailedCookedPart", "EmptyLastCooking"];
+const LINE_FIELDS = ["Name", "Enabled", "Selection", "Values", "MAtricks", "Filter", "SelectionMode", "SelectionFromValue", "FailedCookedPart", "EmptyLastCooking", "X", "Y", "Z"];
+
+/**
+ * The X / Y / Z columns of a line that select part of its group: a number from 1, as a number or text (also "<2>", the
+ * way a column inherited from a MAtricks reference reads). None, empty, 0 or an unread column select nothing; any
+ * other text is kept as set, so the line is not predicted rather than predicted wrongly.
+ */
+export function axisSelection(fields: Record<string, unknown>): string | undefined {
+  const set: string[] = [];
+  for (const a of ["X", "Y", "Z"]) {
+    const v = fields[a];
+    if (v === undefined || v === null || v === false) continue;
+    const text = String(v).trim().replace(/^<(.*)>$/, "$1").trim();
+    if (text === "" || /^none$/i.test(text) || /^0+(\.0+)?$/.test(text)) continue;
+    set.push(`${a} ${text}`);
+  }
+  return set.length ? set.join(", ") : undefined;
+}
 
 const bool = (v: unknown): boolean | null => (typeof v === "boolean" ? v : typeof v === "string" ? (/^(yes|true|on)$/i.test(v) ? true : /^(no|false|off)$/i.test(v) ? false : null) : null);
 const handle = (v: unknown): Handle | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Handle) : null);
@@ -166,6 +195,7 @@ export async function readLines(bridge: Gma3Bridge, t: Target, timeout: number):
       filter: flt ? flt.name ?? "?" : null,
       selectionMode: typeof f.SelectionMode === "string" ? f.SelectionMode : undefined,
       selectionFromValue: bool(f.SelectionFromValue),
+      ...(axisSelection(f) ? { axisSelect: axisSelection(f) } : {}),
       status: { failedCookedPart: typeof f.FailedCookedPart === "string" ? f.FailedCookedPart : undefined, emptyLastCooking: bool(f.EmptyLastCooking) },
     });
   });
@@ -272,6 +302,8 @@ export async function analyzeLines(bridge: Gma3Bridge, lines: Line[], t: number,
       if (g.unreadable || g.truncated) { expected.unknownReach = true; expected.unpredicted++; rep.notPredicted = `Group ${l.selection.group} was not read completely; its reach is unknown`; }
     }
     if (l.class !== "StandardRecipe") { unpredictable(`${l.class} lines are listed and kept, not modelled by this release`, g); continue; }
+    // The X / Y / Z column gives values to only part of the group (one element, one block): which part is not modelled.
+    if (l.axisSelect) { unpredictable(`the line's MAtricks selects part of its group (${l.axisSelect}); coverage not predicted`, g); continue; }
     if (!l.values) { rep.problems.push("no values: the preset is missing (deleted?) or was never assigned"); continue; }
     if (l.filter) { unpredictable(`a filter (${l.filter}) limits the attributes; coverage not predicted`, g); continue; }
     if (!g || !g.exists || !g.members.length) continue;
@@ -397,7 +429,7 @@ interface EditArgs {
   line?: number;
   to?: number;
   selection?: number;
-  values?: string | null;
+  values?: string | number | null;
   matricks?: number;
   enabled?: boolean;
   name?: string;
@@ -406,6 +438,20 @@ interface EditArgs {
 }
 
 const SELECTION_MODES = { strict: "Strict", normal: "Normal" } as const;
+
+/**
+ * A line's values preset, "<pool>.<number>" as a plain string. A number is refused, whatever it is: 4.20 and 4.2 are
+ * the same number but different presets (preset 20 and preset 2 of pool 4). A string with quotes inside it is the
+ * same form quoted twice (#101: `values: "\"4.2\""` was refused without saying that "4.2" was wanted).
+ */
+export function valuesPreset(field: string, value: unknown): { pool: number; number: number } {
+  if (typeof value === "number") throw new ValidationError(`${field} must be the plain string ${Number.isInteger(value) ? '"<pool>.<number>" such as "4.2"' : `"${String(value)}" ("<pool>.<number>")`}, not a number: as numbers 4.20 and 4.2 are the same, as presets they are different (4.20 is preset 20, 4.2 is preset 2)`, field);
+  if (typeof value === "string" && /["']/.test(value)) {
+    const bare = value.replace(/["'\s]/g, "");
+    throw new ValidationError(`${field} must be the plain string ${/^\d+\.\d+$/.test(bare) ? `"${bare}"` : '"<pool>.<number>"'}, without quotes inside it (got ${describe(value)})`, field);
+  }
+  return presetId(field, value);
+}
 
 function sameLine(a: Line, b: Line): boolean {
   return a.class === b.class && (a.selection?.group ?? null) === (b.selection?.group ?? null) && (a.values?.addr ?? null) === (b.values?.addr ?? null) && (a.matricks?.no ?? null) === (b.matricks?.no ?? null) && a.enabled === b.enabled && (a.name ?? "") === (b.name ?? "") && (a.selectionMode ?? "").toLowerCase() === (b.selectionMode ?? "").toLowerCase() && (a.filter ?? null) === (b.filter ?? null);
@@ -440,14 +486,15 @@ export async function editRecipe(ctx: ToolContext, raw: EditArgs): Promise<Opera
   const line = raw.line === undefined ? undefined : v.check(() => finiteNumber("line", raw.line, { integer: true, min: 1, max: 1000 }));
   const to = raw.to === undefined ? undefined : v.check(() => finiteNumber("to", raw.to, { integer: true, min: 1, max: 1000 }));
   const selection = raw.selection === undefined ? undefined : v.check(() => objectNumber("selection", raw.selection, { max: 9999 }));
-  const values = raw.values === undefined || raw.values === null ? raw.values : v.check(() => presetId("values", raw.values));
+  const values = raw.values === undefined || raw.values === null ? raw.values : v.check(() => valuesPreset("values", raw.values));
   const matricks = raw.matricks === undefined ? undefined : v.check(() => objectNumber("matricks", raw.matricks, { max: 9999 }));
   const name = v.check(() => objectName("name", raw.name, { optional: true }));
   if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") v.fail("enabled must be true or false");
   if (raw.selection_mode !== undefined && !(raw.selection_mode in SELECTION_MODES)) v.fail("selection_mode must be strict or normal");
   const fields = { selection, values, matricks, enabled: raw.enabled, name, selection_mode: raw.selection_mode };
   const anyField = Object.values(fields).some((x) => x !== undefined);
-  if (action === "add" && (selection === undefined || values === undefined || values === null)) v.fail("add needs selection (a group) and values (a preset): a line without both cooks nothing");
+  // Only for a missing field: an invalid one has its own error.
+  if (action === "add" && (raw.selection === undefined || raw.values === undefined || raw.values === null)) v.fail("add needs selection (a group) and values (a preset): a line without both cooks nothing");
   if ((action === "set" || action === "move" || action === "remove") && line === undefined) v.fail(`${action} needs line`);
   if (action === "set" && !anyField) v.fail("set needs at least one of selection, values, matricks, enabled, name, selection_mode");
   if (action === "move" && to === undefined) v.fail("move needs to");
@@ -782,6 +829,430 @@ export async function cookRecipes(ctx: ToolContext, raw: CookArgs): Promise<Oper
 }
 
 // ---------------------------------------------------------------------------
+// gma3_store_recipe_cues (#101)
+// ---------------------------------------------------------------------------
+
+/** Lines per cue part and per call: every line is a few requests, so a large build is several calls. */
+export const MAX_RECIPE_LINES_PER_CUE = 200;
+export const MAX_RECIPE_LINES_PER_CALL = 500;
+
+type ColumnKind = Parameters<typeof matricksValue>[0];
+/** One per-line MAtricks column: its property, how its display value reads, and the value (null = None). */
+interface ColumnWrite {
+  property: string;
+  kind: ColumnKind;
+  value: number | null;
+  key: string;
+}
+
+interface RecipeLineSpec {
+  selection: number;
+  values: { pool: number; number: number };
+  matricks?: number;
+  name?: string;
+  enabled?: boolean;
+  selectionMode?: string;
+  columns: ColumnWrite[];
+}
+
+interface RecipeCueSpec {
+  target: Extract<Target, { kind: "part" }>;
+  name?: string;
+  note?: string;
+  lines: RecipeLineSpec[];
+}
+
+const LINE_KEYS = ["selection", "values", "matricks", "name", "enabled", "selection_mode", "x", "y", "z"];
+const CUE_KEYS = ["cue", "part", "name", "note", "lines"];
+const AXES = ["x", "y", "z"] as const;
+const presetKey = (p: { pool: number; number: number }) => `${p.pool}.${p.number}`;
+const nearValue = (a: number | null | undefined, b: number | null) => (a === null || b === null ? a === b : a !== undefined && Math.abs(a - b) < 1e-3);
+
+/**
+ * One axis of a line's MAtricks columns: the gma3_configure_matricks settings (XWings, XBlock, XGroup, XWidth, XShift,
+ * XShuffle, FadeFromX / FadeToX, DelayFromX / DelayToX, PhaseFromX / PhaseToX, SpeedFromX / SpeedToX, and the same for
+ * Y and Z), validated as that tool validates them, plus `select`, the X / Y / Z column itself (the build of #101 wrote
+ * X 1..8 with XBlock to address one block per line).
+ */
+function axisColumns(path: string, axis: (typeof AXES)[number], raw: unknown): ColumnWrite[] {
+  const field = `${path}.${axis}`;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ValidationError(`${field} must be an object of MAtricks axis settings`, field);
+  const { select, ...rest } = raw as Record<string, unknown>;
+  let out: ColumnWrite[];
+  try {
+    out = matricksWanted({ [axis]: rest });
+  } catch (err) {
+    if (!(err instanceof ValidationError)) throw err;
+    throw new ValidationError(`${path}.${err.message.replace(/ \((wings, .*)\)$/, " ($1, select)")}`, field);
+  }
+  if (select !== undefined) {
+    const n = select === null ? 0 : finiteNumber(`${field}.select`, select, { integer: true, min: 0, max: 10000 })!;
+    out.push({ property: axis.toUpperCase(), kind: "int", value: n === 0 ? null : n, key: `${axis}.select` });
+  }
+  return out;
+}
+
+function parseRecipeLine(v: Validator, raw: unknown, path: string): RecipeLineSpec | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    v.fail(`${path} must be a line {selection, values, ...}`);
+    return undefined;
+  }
+  const r = raw as Record<string, unknown>;
+  const unknown = Object.keys(r).filter((k) => !LINE_KEYS.includes(k));
+  if (unknown.length) v.fail(`${path}: ${unknown.join(", ")} ${unknown.length === 1 ? "is not a line field" : "are not line fields"} (${LINE_KEYS.join(", ")}; the per-line MAtricks columns go in x, y, z, e.g. x: {blocks: 3, select: 1, fade: {from: 4, to: 4}})`);
+  const selection = v.check(() => objectNumber(`${path}.selection`, r.selection, { max: 9999 }));
+  const values = v.check(() => valuesPreset(`${path}.values`, r.values));
+  const matricks = r.matricks === undefined ? undefined : v.check(() => objectNumber(`${path}.matricks`, r.matricks, { max: 9999 }));
+  const name = v.check(() => objectName(`${path}.name`, r.name, { optional: true }));
+  if (r.enabled !== undefined && typeof r.enabled !== "boolean") v.fail(`${path}.enabled must be true or false`);
+  const mode = r.selection_mode;
+  if (mode !== undefined && !(typeof mode === "string" && Object.hasOwn(SELECTION_MODES, mode))) v.fail(`${path}.selection_mode must be strict or normal`);
+  const columns: ColumnWrite[] = [];
+  for (const a of AXES) {
+    if (r[a] === undefined) continue;
+    const w = v.check(() => axisColumns(path, a, r[a]));
+    if (w) columns.push(...w);
+  }
+  if (selection === undefined || !values) return undefined;
+  return { selection, values, matricks, name, enabled: r.enabled as boolean | undefined, selectionMode: typeof mode === "string" && Object.hasOwn(SELECTION_MODES, mode) ? SELECTION_MODES[mode as keyof typeof SELECTION_MODES] : undefined, columns };
+}
+
+function parseRecipeCues(v: Validator, sequence: number | undefined, raw: unknown): RecipeCueSpec[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    v.fail("cues must be a non-empty list");
+    return [];
+  }
+  if (raw.length > MAX_BATCH_ITEMS) {
+    v.fail(`cues: at most ${MAX_BATCH_ITEMS} cue parts per call (got ${raw.length}); split the job into several calls`);
+    return [];
+  }
+  const out: RecipeCueSpec[] = [];
+  let total = 0;
+  raw.forEach((c, i) => {
+    const path = `cues[${i}]`;
+    if (!c || typeof c !== "object" || Array.isArray(c)) {
+      v.fail(`${path} must be {cue, part?, name?, note?, lines}`);
+      return;
+    }
+    const r = c as Record<string, unknown>;
+    const unknown = Object.keys(r).filter((k) => !CUE_KEYS.includes(k));
+    if (unknown.length) v.fail(`${path}: ${unknown.join(", ")} ${unknown.length === 1 ? "is not a cue field" : "are not cue fields"} (${CUE_KEYS.join(", ")})`);
+    const cue = v.check(() => cueNumber(`${path}.cue`, r.cue));
+    const part = r.part === undefined ? 0 : v.check(() => partNumber(`${path}.part`, r.part));
+    const name = v.check(() => objectName(`${path}.name`, r.name, { optional: true }));
+    const note = v.check(() => noteText(`${path}.note`, r.note, { optional: true }));
+    const lines: RecipeLineSpec[] = [];
+    if (!Array.isArray(r.lines) || r.lines.length === 0) v.fail(`${path}.lines must be a non-empty list of recipe lines`);
+    else if (r.lines.length > MAX_RECIPE_LINES_PER_CUE) v.fail(`${path}.lines: at most ${MAX_RECIPE_LINES_PER_CUE} lines per cue part (got ${r.lines.length})`);
+    else
+      r.lines.forEach((l, k) => {
+        const s = parseRecipeLine(v, l, `${path}.lines[${k}]`);
+        if (s) lines.push(s);
+      });
+    total += Array.isArray(r.lines) ? r.lines.length : 0;
+    if (sequence !== undefined && cue !== undefined && part !== undefined) out.push({ target: { kind: "part", sequence, cue, part }, name, note, lines });
+  });
+  if (total > MAX_RECIPE_LINES_PER_CALL) v.fail(`at most ${MAX_RECIPE_LINES_PER_CALL} recipe lines per call (got ${total}); split the cues over several calls`);
+  const dup = duplicates(out.map((c) => targetRef(c.target)));
+  if (dup.length) v.fail(`cues: ${dup.join(", ")} ${dup.length === 1 ? "is" : "are"} listed more than once`);
+  return out;
+}
+
+interface CuePlan {
+  spec: RecipeCueSpec;
+  before: Line[];
+  /** Lines kept in front of the new ones (append: the existing lines; replace: none). */
+  base: number;
+  steps: Array<{ name: string; run: StepFn }>;
+  /** What each step sends, for the preview. */
+  sends: string[];
+  /** Per new line, the index in `steps` of its last step: the line was written when that step succeeded. */
+  lineEnd: number[];
+  nameStep?: number;
+  noteStep?: number;
+}
+
+export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unknown>): Promise<OperationResult> {
+  const op = "store_recipe_cues";
+  const v = new Validator();
+  const sequence = v.check(() => objectNumber("sequence", raw.sequence));
+  const mode = v.check(() => oneOf("mode", raw.mode, ["replace", "append"] as const));
+  const cues = parseRecipeCues(v, sequence, raw.cues);
+  const cook = raw.cook === undefined ? undefined : v.check(() => oneOf("cook", raw.cook, Object.keys(COOK_OPTION) as CookMode[]));
+  for (const k of ["replace_uncooked", "verify_cook", "preview", "stop_on_failure", "detail"]) if (raw[k] !== undefined && typeof raw[k] !== "boolean") v.fail(`${k} must be true or false`);
+  if (raw.cook === undefined && (raw.replace_uncooked !== undefined || raw.verify_cook !== undefined)) v.fail("replace_uncooked and verify_cook go with cook");
+  const target: Record<string, unknown> = { sequence: raw.sequence, mode: raw.mode, cues: cues.map((c) => (c.target.part ? `${c.target.cue} part ${c.target.part}` : c.target.cue)) };
+  if (!v.ok || sequence === undefined || !mode) return validationFailure(op, target, v.errors);
+  const bridge = ctx.bridge;
+  const t = ctx.requestTimeoutMs;
+  const preview = raw.preview === true;
+  const detail = raw.detail === true;
+  const lineCount = cues.reduce((n, c) => n + c.lines.length, 0);
+
+  const body = async (): Promise<OperationResult> => {
+    const before = new Map<string, Line[]>();
+    const presetAddr = new Map<string, string>();
+    const warnings: string[] = [];
+    // 1. Read-only, once for the whole call: every cue part exists and was read completely, and every group, preset
+    // and MAtricks a line names is in the show. Nothing is sent when one of them fails.
+    const inspect = await runSteps([
+      {
+        name: "read_cues",
+        run: async () => {
+          const missing: string[] = [];
+          const incomplete: string[] = [];
+          const kept: string[] = [];
+          try {
+            for (const c of cues) {
+              let lines: Line[] | null;
+              try {
+                lines = await readLines(bridge, c.target, t);
+              } catch (err) {
+                if (!(err instanceof IncompleteRead)) throw err;
+                incomplete.push(err.message);
+                continue;
+              }
+              if (!lines) {
+                missing.push(label(c.target));
+                continue;
+              }
+              const other = lines.filter((l) => l.class !== "StandardRecipe");
+              if (mode === "replace" && other.length) kept.push(`${label(c.target)} (${other.map((l) => `line ${l.line} ${l.class}`).join(", ")})`);
+              before.set(label(c.target), lines);
+            }
+          } catch (err) {
+            return asRead(stepFromError("read_cues", err, { op: "children" }));
+          }
+          const problems = [
+            ...(missing.length ? [`not in the show: ${missing.join(", ")} (store the cues first with gma3_store_cues, a part with gma3_store_cue_part)`] : []),
+            ...(incomplete.length ? [`read only in part: ${incomplete.join("; ")}`] : []),
+            ...(kept.length ? [`replace would delete lines this tool does not write: ${kept.join("; ")}; use mode append, or remove them first`] : []),
+          ];
+          if (problems.length) return asRead({ name: "read_cues", status: "failed", op: "children", error: problems.join("; ") });
+          return asRead({ name: "read_cues", status: "succeeded", op: "children", detail: { cueParts: cues.length, linesBefore: [...before.values()].reduce((n, l) => n + l.length, 0) } });
+        },
+      },
+      {
+        name: "check_references",
+        run: async () => {
+          const firstUse = new Map<string, string>();
+          cues.forEach((c, ci) =>
+            c.lines.forEach((l, li) => {
+              const at = `cues[${ci}].lines[${li}]`;
+              for (const ref of [`Group ${l.selection}`, `Preset ${presetKey(l.values)}`, ...(l.matricks !== undefined ? [`MAtricks ${l.matricks}`] : [])]) if (!firstUse.has(ref)) firstUse.set(ref, at);
+            }),
+          );
+          const missing: string[] = [];
+          const empty: string[] = [];
+          const groups = new Map<number, GroupInfo>();
+          const refs = [...firstUse.keys()];
+          try {
+            for (const ref of refs) {
+              const [kind, no] = ref.split(" ");
+              if (kind === "Group") {
+                const g = await readGroup(bridge, Number(no), t, groups);
+                if (!g.exists) missing.push(`${ref} (first used by ${firstUse.get(ref)})`);
+                else if (!g.members.length) empty.push(ref);
+              } else if (kind === "Preset") {
+                const p = await readData(bridge, ref, t);
+                if (!p) missing.push(`${ref} (first used by ${firstUse.get(ref)})`);
+                else presetAddr.set(no, p.addr ?? "?");
+              } else {
+                const m = (await bridge.request("objects", { ref, fields: [], limit: 1 }, t).catch((err: unknown) => (notFound(err) ? null : Promise.reject(err)))) as { items?: unknown[] } | null;
+                if (!m?.items?.length) missing.push(`${ref} (first used by ${firstUse.get(ref)})`);
+              }
+            }
+          } catch (err) {
+            return asRead(stepFromError("check_references", err, { op: "objects" }));
+          }
+          if (empty.length) warnings.push(`${empty.join(", ")} ${empty.length === 1 ? "is" : "are"} empty: the lines that select ${empty.length === 1 ? "it" : "them"} cook nothing`);
+          if (missing.length) return asRead({ name: "check_references", status: "failed", error: `not in the show: ${missing.join(", ")}` });
+          return asRead({ name: "check_references", status: "succeeded", detail: { references: refs.length } });
+        },
+      },
+    ]);
+    if (inspect.outcome !== "succeeded") return buildResult({ operation: op, target, steps: inspect.steps, warnings, summary: `${op} was not performed; nothing was sent: ${inspect.steps.find((s) => s.status !== "succeeded")?.error ?? "inspection failed"}` });
+
+    // 2. The plan: per cue part the deletions (replace), then per line the commands and property writes gma3_edit_recipe
+    // sends for an added line, then the cue's name and note.
+    const setStepOf = (name: string, ref: string, property: string, value: string, ok: (got: unknown) => boolean) => ({
+      name,
+      run: () =>
+        requestStep(bridge, name, "set", { ref, property, value }, (res) => {
+          const got = (res as { value?: unknown } | null)?.value;
+          return ok(got) ? { name, status: "succeeded", op: "set" } : { name, status: "failed", op: "set", detail: { readBack: got }, error: `${property} reads ${JSON.stringify(got ?? null)} after the write` };
+        }, t),
+    });
+    const plans: CuePlan[] = cues.map((spec) => {
+      const b = before.get(label(spec.target)) ?? [];
+      const plan: CuePlan = { spec, before: b, base: mode === "replace" ? 0 : b.length, steps: [], sends: [], lineEnd: [] };
+      const cmd = (name: string, command: string) => {
+        plan.steps.push({ name, run: () => commandStep(bridge, name, command, t) });
+        plan.sends.push(command);
+      };
+      const set = (name: string, ref: string, property: string, value: string, ok: (got: unknown) => boolean) => {
+        plan.steps.push(setStepOf(name, ref, property, value, ok));
+        plan.sends.push(`set ${ref} ${property}=${JSON.stringify(value)}`);
+      };
+      // Deleting from the last line keeps the numbers of the ones still to delete.
+      if (mode === "replace") for (const l of [...b].sort((x, y) => y.line - x.line)) cmd(`delete_line_${l.line}`, `Delete ${lineRef(spec.target, l.line)} /NoConfirmation`);
+      spec.lines.forEach((l, i) => {
+        const n = plan.base + i + 1;
+        const ref = lineRef(spec.target, n);
+        const p = `line_${n}_`;
+        cmd(`${p}selection`, `Assign Group ${l.selection} At ${ref}`);
+        // A disabled line is switched off before its values, so it never cooks.
+        if (l.enabled === false) set(`${p}disable`, ref, "Enabled", "No", (got) => setReplyMatches("Enabled", "No", got));
+        cmd(`${p}values`, `Assign Preset ${presetKey(l.values)} At ${ref}`);
+        if (l.matricks !== undefined) cmd(`${p}matricks`, `Assign MAtricks ${l.matricks} At ${ref}`);
+        if (l.selectionMode) set(`${p}selection_mode`, ref, "SelectionMode", l.selectionMode, (got) => setReplyMatches("SelectionMode", l.selectionMode!, got));
+        if (l.name !== undefined) set(`${p}name`, ref, "Name", l.name, (got) => setReplyMatches("Name", l.name!, got));
+        for (const c of l.columns) set(`${p}${c.property}`, ref, c.property, c.value === null ? "None" : String(c.value), (got) => nearValue(matricksValue(c.kind, got), c.value));
+        if (l.enabled === true) set(`${p}enable`, ref, "Enabled", "Yes", (got) => setReplyMatches("Enabled", "Yes", got));
+        plan.lineEnd.push(plan.steps.length - 1);
+      });
+      // The name is the cue's (on Part 0, as gma3_store_cues sets it); the note is the cue object's Note.
+      if (spec.name !== undefined) {
+        set("cue_name", cueRef(sequence, spec.target.cue, 0), "Name", spec.name, (got) => setReplyMatches("Name", spec.name!, got));
+        plan.nameStep = plan.steps.length - 1;
+      }
+      if (spec.note !== undefined) {
+        set("cue_note", cueRef(sequence, spec.target.cue), "Note", spec.note, (got) => String(got ?? "").trim() === spec.note);
+        plan.noteStep = plan.steps.length - 1;
+      }
+      return plan;
+    });
+    const requests = plans.reduce((n, p) => n + p.steps.length, 0);
+    if (preview) {
+      return buildResult({
+        operation: op,
+        target,
+        steps: inspect.steps,
+        warnings,
+        summary: `Preview only; nothing was sent. ${cues.length} cue part(s), ${lineCount} line(s) to ${mode === "replace" ? "write in place of the existing ones" : "append"}, ${requests} request(s)${cook ? `, then a ${cook} cook of each cue part` : ""}.`,
+        extra: {
+          preview: true,
+          plan: plans.map((p) => ({ target: label(p.spec.target), linesBefore: p.before.length, ...(mode === "replace" ? { deletes: p.before.length } : {}), lines: p.spec.lines.length, requests: p.steps.length, ...(detail ? { sends: p.sends } : {}) })),
+          ...(detail ? {} : { detailHint: "detail: true lists every command and property write" }),
+        },
+      });
+    }
+
+    // 3. Each cue part as one batch item: its steps in order (stopping at its first failure), then a compact read-back.
+    const writeCue = async (p: CuePlan): Promise<OperationResult> => {
+      const spec = p.spec;
+      const ref = label(spec.target);
+      const main = await runSteps(p.steps);
+      const steps = [...main.steps];
+      const complete = main.outcome === "succeeded";
+      const written = (i: number) => steps[i]?.status === "succeeded";
+      const checked = `the recipe lines of ${ref} (count, every field written${mode === "append" ? ", the lines before unchanged" : ""})${spec.name !== undefined ? ", the cue's name" : ""}${spec.note !== undefined ? ", its note" : ""}`;
+      const mismatches: string[] = [];
+      let count: number | null = null;
+      let verification: Verification;
+      try {
+        const after = (await readLines(bridge, spec.target, t)) ?? [];
+        count = after.length;
+        const expected = p.base + spec.lines.length;
+        if (complete && after.length !== expected) mismatches.push(`${after.length} line(s), ${expected} expected`);
+        for (let i = 0; i < p.base; i++) if (!after[i] || !sameLine(after[i], p.before[i])) mismatches.push(`line ${i + 1} (there before) changed`);
+        const props = [...new Set(spec.lines.flatMap((l) => l.columns.map((c) => c.property)))];
+        const columns = props.length ? await readColumns(bridge, spec.target, props, t) : new Map<number, Record<string, unknown>>();
+        spec.lines.forEach((l, i) => {
+          if (!written(p.lineEnd[i])) return;
+          const n = p.base + i + 1;
+          const got = after[n - 1];
+          if (!got) return void mismatches.push(`line ${n} is missing`);
+          mismatches.push(...checkLineFields(got, n, { selection: l.selection, valuesAddr: presetAddr.get(presetKey(l.values)) ?? "?", matricks: l.matricks, enabled: l.enabled, name: l.name, selectionMode: l.selectionMode }));
+          if (got.class !== "StandardRecipe") mismatches.push(`line ${n} is a ${got.class}`);
+          for (const c of l.columns) {
+            const value = columns.get(n)?.[c.property];
+            if (!nearValue(matricksValue(c.kind, value), c.value)) mismatches.push(`line ${n} ${c.property} reads ${JSON.stringify(value ?? null)}`);
+          }
+        });
+        const nameSent = p.nameStep !== undefined && written(p.nameStep);
+        const noteSent = p.noteStep !== undefined && written(p.noteStep);
+        if (nameSent || noteSent) {
+          const res = await readObjects(bridge, cueRef(sequence, spec.target.cue), ["Name", "Note"], 1);
+          const f = res?.items?.[0]?.fields ?? {};
+          if (nameSent && String(f.Name ?? "").trim() !== spec.name) mismatches.push(`the cue's name reads ${JSON.stringify(f.Name ?? null)}`);
+          if (noteSent && String(f.Note ?? "").trim() !== spec.note) mismatches.push(`the cue's note reads ${JSON.stringify(f.Note ?? null)}`);
+        }
+        steps.push(asRead({ name: "read_back", status: "succeeded", op: "children", detail: { lines: count } }));
+        verification = mismatches.length ? { status: "mismatched", checked, detail: `${mismatches.slice(0, 10).join("; ")}${mismatches.length > 10 ? `; and ${mismatches.length - 10} more` : ""}` } : { status: "matched", checked };
+      } catch (err) {
+        const s = asRead(stepFromError("read_back", err, { op: "children" }));
+        steps.push(s);
+        verification = unavailable(`read-back failed: ${s.error}`, checked);
+      }
+      const bad = main.steps.find((s) => s.status === "failed" || s.status === "unknown");
+      const done = complete
+        ? `${spec.lines.length} line(s) ${mode === "replace" ? `written in place of ${p.before.length}` : `appended after ${p.base}`}`
+        : `stopped at step '${bad?.name}' (${bad?.status}: ${bad?.error ?? ""}); ${main.steps.filter((s) => s.status === "succeeded").length} step(s) before it were sent and stay (nothing is undone or retried)`;
+      const back = count === null ? "not read back" : `${count} line(s) read back${mismatches.length ? `, mismatched: ${mismatches.slice(0, 3).join("; ")}${mismatches.length > 3 ? `; and ${mismatches.length - 3} more` : ""}` : verification.status === "matched" ? ", matched" : ""}`;
+      return buildResult({ operation: op, target: { ref }, steps, verification, summary: `${ref}: ${done}; ${back}.`, extra: { lines: count, ...(mismatches.length ? { mismatches } : {}) } });
+    };
+    const batch = await runBatch(
+      op,
+      plans.map((p) => ({ label: label(p.spec.target), key: label(p.spec.target), run: () => writeCue(p) })),
+      { stopOnFailure: raw.stop_on_failure === true, detail },
+    );
+
+    // 4. The cook, only when every cue part was written and read back as asked: each cue part with gma3_cook_recipes
+    // (its own inspection, the replace_uncooked check, and its read-back), one after the other.
+    const cookSteps: StepResult[] = [];
+    const cooked: Array<Record<string, unknown>> = [];
+    const cookVerifications: Verification[] = [];
+    /** What each cook warned about (lines it did not predict, problems), so a matched cook says what it did not check. */
+    const cookWarnings: string[] = [];
+    const lines = batch.items as Array<{ outcome: string; verification: string }>;
+    if (cook) {
+      const allWritten = lines.every((l) => l.outcome === "succeeded" && l.verification === "matched");
+      if (!allWritten) cookSteps.push({ name: "cook", status: "skipped", error: "not attempted: not every cue part was written and read back as asked" });
+      else {
+        const held: ToolContext = { ...ctx, mutations: new HeldLock() };
+        let halted: string | null = null;
+        for (const p of plans) {
+          const ref = label(p.spec.target);
+          if (halted) {
+            cookSteps.push({ name: `cook ${ref}`, status: "skipped", error: halted });
+            continue;
+          }
+          const r = await cookRecipes(held, { target: { sequence, cue: p.spec.target.cue, part: p.spec.target.part }, mode: cook, replace_uncooked: raw.replace_uncooked === true, verify: raw.verify_cook !== false });
+          const status: StepStatus = hasUncertainStep(r) ? "unknown" : r.outcome === "succeeded" ? "succeeded" : "failed";
+          cookSteps.push({ name: `cook ${ref}`, status, op: "gma3_cook_recipes", ...(typeof r.command === "string" ? { command: r.command } : {}), ...(status === "succeeded" ? {} : { error: r.summary }) });
+          cooked.push({ target: ref, outcome: r.outcome, verification: r.verification.status, ...(detail ? { result: r } : itemOk(r) ? {} : { summary: r.summary }) });
+          cookVerifications.push(r.verification);
+          cookWarnings.push(...(r.warnings ?? []).map((w) => `cook: ${w}`));
+          if (status === "unknown") halted = `not attempted: the cook of ${ref} got no reply, so the console's state is not known`;
+        }
+      }
+    }
+    const result: OperationResult = { ...batch, operation: op, target, steps: [...inspect.steps, ...batch.steps, ...cookSteps], ...(warnings.length || batch.warnings?.length || cookWarnings.length ? { warnings: [...warnings, ...(batch.warnings ?? []), ...cookWarnings] } : {}) };
+    // The cue parts were written: a cook that did not succeed leaves the call partial.
+    if (cookSteps.some((s) => s.name !== "cook" && s.status !== "succeeded") && result.outcome === "succeeded") result.outcome = "partial";
+    const mismatchedCooks = cooked.filter((c) => c.verification === "mismatched").map((c) => c.target);
+    const unverifiedCooks = cooked.filter((c) => c.verification !== "matched" && c.verification !== "mismatched" && c.verification !== "not_requested").map((c) => c.target);
+    if (mismatchedCooks.length) result.verification = { status: "mismatched", checked: `${batch.verification.checked ?? "each cue part's read-back"}; each cook's read-back`, detail: [batch.verification.status === "mismatched" ? batch.verification.detail : undefined, `the cook of ${mismatchedCooks.join(", ")} did not read back as predicted`].filter(Boolean).join("; ") };
+    else if (unverifiedCooks.length && batch.verification.status === "matched") result.verification = { status: "unavailable", checked: `${batch.verification.checked}; each cook's read-back`, detail: `the cook of ${unverifiedCooks.join(", ")} was not verified` };
+    const cookNote = !cook
+      ? ""
+      : cookSteps[0]?.name === "cook"
+        ? ` Not cooked: ${cookSteps[0].error?.replace(/^not attempted: /, "")}.`
+        : ` Cook (${cook}): ${cookSteps.filter((s) => s.status === "succeeded").length} of ${plans.length} cue part(s) cooked${raw.verify_cook === false ? " (not verified)" : ""}.`;
+    result.summary = `${batch.summary}${cookNote}`;
+    return { ...result, mode, linesSent: lineCount, ...(cook ? { cook: cooked } : {}) };
+  };
+  return preview ? body() : ctx.mutations.run(body);
+}
+
+/** The per-line MAtricks columns of a cue part's lines, read in the display role (as gma3_matricks reads them), by line. */
+async function readColumns(bridge: Gma3Bridge, t: Target, props: string[], timeout: number): Promise<Map<number, Record<string, unknown>>> {
+  const res = (await bridge.request("children", { ref: targetRef(t), fields: props, limit: 1000 }, timeout)) as { items?: Array<{ index?: number; fields?: Record<string, unknown> }> };
+  return new Map((res.items ?? []).map((it, i) => [typeof it.index === "number" ? it.index : i + 1, it.fields ?? {}]));
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -813,14 +1284,14 @@ export const registerRecipeTools: RegisterTools = (server, ctx) => {
       description:
         "Edit one standard recipe line of a preset or cue part (the target must exist). action add {selection: group, values: \"N.M\" preset, matricks?, name?, enabled?, selection_mode?} appends a line; set {line, ...fields} changes it (values: null clears the values); move {line, to} reorders; remove {line} deletes it. " +
         "References are checked first; the result reads every line back (the edited one and that the others are unchanged or moved as asked). The console re-cooks an edited line by itself (MergeLowPriority) and a removed line's output disappears: the result shows the target's coverage before and after (autoCooked). " +
-        "The console also re-cooks a group or preset change by itself a moment later (in the background); gma3_cook_recipes cooks at once, verifies, and offers Merge, Overwrite and Remove. enabled: false switches a new line off before it gets values, so it never cooks. Phaser lines, filters and timing columns are not edited by this release. preview: true returns the planned commands.",
+        "The console also re-cooks a group or preset change by itself a moment later (in the background); gma3_cook_recipes cooks at once, verifies, and offers Merge, Overwrite and Remove. enabled: false switches a new line off before it gets values, so it never cooks. Phaser lines, filters and the per-line MAtricks columns are not edited by this tool (many cues at once, with the columns: gma3_store_recipe_cues). values is the plain string \"4.2\", never a number. preview: true returns the planned commands.",
       inputSchema: {
         target: targetSchema.describe("Preset or cue part."),
         action: z.enum(["add", "set", "move", "remove"]),
         line: z.number().optional().describe("Line number (set, move, remove)."),
         to: z.number().optional().describe("New position (move)."),
         selection: z.number().optional().describe("Group number."),
-        values: z.string().nullable().optional().describe('Preset "N.M"; null clears it.'),
+        values: z.union([z.string(), z.number()]).nullable().optional().describe('Preset as the plain string "N.M" ("4.2"; a number is refused: 4.20 and 4.2 are the same number); null clears it.'),
         matricks: z.number().optional().describe("MAtricks pool number."),
         enabled: z.boolean().optional(),
         name: z.string().optional(),
@@ -829,6 +1300,62 @@ export const registerRecipeTools: RegisterTools = (server, ctx) => {
       },
     },
     async (args) => operation(() => editRecipe(ctx, args as EditArgs)),
+  );
+
+  const lineSchema = z
+    .object({
+      selection: z.number().describe("Group number."),
+      values: z.union([z.string(), z.number()]).describe('Preset as the plain string "N.M" ("4.2"; a number is refused: 4.20 and 4.2 are the same number).'),
+      matricks: z.number().optional().describe("MAtricks pool number (a reference)."),
+      name: z.string().optional(),
+      enabled: z.boolean().optional().describe("false: the line is switched off before it gets values, so it never cooks."),
+      selection_mode: z.enum(["strict", "normal"]).optional(),
+      ...Object.fromEntries(
+        (["x", "y", "z"] as const).map((a) => [
+          a,
+          z
+            .object({ ...axisSettingsShape, select: z.number().nullable().optional().describe(`The ${a.toUpperCase()} column: only the n-th element (with blocks, the n-th block); null/0 = None.`) })
+            .passthrough()
+            .optional()
+            .describe(`The line's own ${a.toUpperCase()} MAtricks columns (${a.toUpperCase()}Wings, ${a.toUpperCase()}Block, ${a.toUpperCase()}Group, ..., FadeFrom${a.toUpperCase()}/FadeTo${a.toUpperCase()}, ...; as gma3_configure_matricks takes them) plus select.`),
+        ]),
+      ),
+    })
+    .passthrough();
+  server.registerTool(
+    "gma3_store_recipe_cues",
+    {
+      title: "Write the recipe lines of many cues",
+      description:
+        `Write the standard recipe lines of up to ${MAX_BATCH_ITEMS} cue parts of one sequence in one call (at most ${MAX_RECIPE_LINES_PER_CUE} lines per part, ${MAX_RECIPE_LINES_PER_CALL} per call; a larger build is several calls). cues: [{cue, part? (default 0), name?, note?, lines: [{selection: group, values: "N.M" preset, matricks?, name?, enabled?, selection_mode?, x?/y?/z?: {wings, blocks, groups, width, shift, shuffle, select, fade/delay/phase/speed: {from, to}}}]}]. ` +
+        "mode is required: replace deletes every line of the part first (refused while the part holds phaser lines), append adds after the existing ones. The cues must exist (gma3_store_cues creates them); name is the cue's name (Part 0), note its Note. " +
+        "Once for the whole call, before anything is sent: every cue part is read and every group, preset and MAtricks a line names must be in the show. Each line is written as gma3_edit_recipe adds one (Assign Group, Preset and MAtricks At the line, set for the other fields and the per-line MAtricks columns), and every reply is checked. " +
+        "Batch form: each cue part is an item: its steps stop at its first failure, the parts already written stay (nothing is undone or retried), an unknown outcome stops the rest, and its read-back is compact: the line count, then only mismatches (every field written, earlier lines unchanged on append, name, note). " +
+        "The console cooks each written line by itself (merge low priority). cook: a gma3_cook_recipes mode cooks every part afterwards, only when every part was written and matched (replace_uncooked and verify_cook as in gma3_cook_recipes). preview: true checks and returns the plan (detail: true every request). Phaser recipe lines are not written. Needs bridge 0.24.0.",
+      inputSchema: {
+        sequence: z.number(),
+        mode: z.enum(["replace", "append"]),
+        cues: z
+          .array(
+            z
+              .object({
+                cue: z.union([z.number(), z.string()]),
+                part: z.number().optional().describe("Cue part (default 0)."),
+                name: z.string().optional().describe("The cue's name (set on Part 0)."),
+                note: z.string().optional().describe("The cue's Note (one line; trimmed; \"\" clears it)."),
+                lines: z.array(lineSchema),
+              })
+              .passthrough(),
+          )
+          .describe("Cue parts and their lines, in order."),
+        cook: z.enum(["merge_low_priority", "merge", "overwrite", "remove"]).optional().describe("Cook every written part with this gma3_cook_recipes mode afterwards."),
+        replace_uncooked: z.boolean().optional().describe("With cook merge/overwrite: allow replacing or deleting uncooked values (default false: that part's cook is refused)."),
+        verify_cook: z.boolean().optional().describe("With cook: read every cooked part back (default true)."),
+        preview: z.boolean().optional(),
+        ...batchOptionShape,
+      },
+    },
+    async (args) => operation(() => storeRecipeCues(ctx, args as Record<string, unknown>)),
   );
 
   server.registerTool(

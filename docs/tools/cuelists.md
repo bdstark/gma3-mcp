@@ -75,8 +75,13 @@ cue. The look check is the evidence that the programmer held the right values at
 | `sequence_name` | optional |
 | `mode` | `create` (refuse existing cues), `merge`, `overwrite` |
 | `fixtures` | default target for looks without their own |
-| `cues` | 1–100 cues: `cue` (number), `name`, content, `fade`, `delay`, `out_fade`, `out_delay`, `trigger` (`go`, `time` with `time`, `follow` with optional `time`, `sound`, `bpm`) |
+| `cues` | 1–100 cues: `cue` (number), `name`, content, `fade`, `delay`, `out_fade`, `out_delay`, `trigger` (`go`, `time` with `time`, `follow` with optional `time`, `sound`, `bpm`), `note` |
 | `exclusive`, `verify` | `exclusive` required; `verify` default true (look checks and read-back) |
+
+`note` (#101) is the cue's `Note`, for example the scene metadata a plugin reads. It is written with `set` on the cue
+object after the store (one line, trimmed; `""` clears it; quotes and the characters names may not hold are kept) and
+read back exactly, case included. Not verified on a console for this change. For the recipe lines of the cues, use
+[`gma3_store_recipe_cues`](recipes.md#gma3_store_recipe_cues), which also takes a note per cue.
 
 Tracking is the sequence's own setting: with Tracking on, a cue's stored values track into later cues that do not
 store those attributes.
