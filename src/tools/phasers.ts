@@ -35,7 +35,7 @@ import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
 import { expandFixtures } from "./groups.js";
-import { prepareStorePreset, presetId, ALL_POOLS, STEP_DEFAULTS, type ProgrammerRow, type PresetContext, type PresetRead } from "./presets.js";
+import { prepareStorePreset, presetId, readPoolNames, nameHolder, sameName, ALL_POOLS, ON_NAME_TAKEN, STEP_DEFAULTS, type OnNameTaken, type PoolNames, type ProgrammerRow, type PresetContext, type PresetRead } from "./presets.js";
 import { formatValue } from "./fixtures.js";
 import {
   asRead,
@@ -807,6 +807,7 @@ interface EffectArgs {
   mode?: "selective" | "global";
   existing?: "refuse" | "merge" | "overwrite";
   name?: string;
+  on_name_taken?: OnNameTaken;
   verify?: boolean;
 }
 
@@ -836,6 +837,7 @@ interface Job {
   mode: "selective" | "global";
   existing: "refuse" | "merge" | "overwrite";
   name?: string;
+  onNameTaken: OnNameTaken;
   verify: boolean;
 }
 
@@ -889,6 +891,8 @@ function effectJobs(v: Validator, raw: EffectArgs, path: string): Job[] {
   const existing = raw.existing ?? "refuse";
   if (!["refuse", "merge", "overwrite"].includes(existing)) v.fail(`${p("existing")} must be refuse, merge or overwrite`);
   const name = v.check(() => objectName(p("name"), raw.name, { optional: true }));
+  const onNameTaken = raw.on_name_taken ?? "refuse";
+  if (!(ON_NAME_TAKEN as readonly string[]).includes(onNameTaken)) v.fail(`${p("on_name_taken")} must be ${ON_NAME_TAKEN.join(" or ")}`);
   let effect: Effect | undefined;
   if ((raw.template === undefined) === (raw.steps === undefined)) v.fail(`${path ? `${path}: ` : ""}give exactly one of steps (with phaser) or template`);
   else if (raw.template !== undefined) {
@@ -913,7 +917,7 @@ function effectJobs(v: Validator, raw: EffectArgs, path: string): Job[] {
     } else variants = raw.variants as Variant[];
   }
   if (!id || !effect) return [];
-  const base = { ids, group, mode, existing, verify: raw.verify !== false } as const;
+  const base = { ids, group, mode, existing, onNameTaken, verify: raw.verify !== false } as const;
   if (!variants) return [{ ...base, id, ref: `Preset ${id.pool}.${id.number}`, effect: mirror ? { ...effect, mirror } : effect, name }];
   const label = name ?? (typeof (raw.template as { type?: unknown } | undefined)?.type === "string" ? String((raw.template as { type: string }).type) : "Effect");
   return variants.map((variant, i) => {
@@ -966,10 +970,13 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
     const own = ["preset", "fixtures", "group", "steps", "template", "phaser", "mirror", "variants", "name"].filter((k) => (raw as Record<string, unknown>)[k] !== undefined);
     if (own.length) v.fail(`with effects, give ${own.join(", ")} in each effect, not for the whole call (unit, mode, existing and verify may be defaults)`);
     if (!Array.isArray(raw.effects) || raw.effects.length === 0) v.fail("effects must be a non-empty list");
-    else raw.effects.forEach((e, i) => jobs.push(...effectJobs(v, { unit: raw.unit, mode: raw.mode, existing: raw.existing, verify: raw.verify, ...(e as EffectArgs) }, `effects[${i}]`)));
+    else raw.effects.forEach((e, i) => jobs.push(...effectJobs(v, { unit: raw.unit, mode: raw.mode, existing: raw.existing, on_name_taken: raw.on_name_taken, verify: raw.verify, ...(e as EffectArgs) }, `effects[${i}]`)));
   } else jobs = effectJobs(v, raw, "");
   const dupes = jobs.map((j) => j.ref).filter((r, i, a) => a.indexOf(r) !== i);
   if (dupes.length) v.fail(`presets built twice in one call: ${[...new Set(dupes)].join(", ")}`);
+  // The console keeps names unique within a pool (#102): two presets of one call under one name would leave "<name>#2".
+  const sameNamed = jobs.filter((j, i) => j.name !== undefined && j.onNameTaken === "refuse" && jobs.some((o, k) => k < i && o.name !== undefined && o.id.pool === j.id.pool && sameName(o.name, j.name!)));
+  for (const j of sameNamed) v.fail(`${JSON.stringify(j.name)} is asked for twice in preset pool ${j.id.pool} (again for ${j.id.pool}.${j.id.number}); the console keeps names unique within a pool and would store the second as ${JSON.stringify(`${j.name}#2`)}. Choose distinct names, or pass on_name_taken: "allow_suffix"`);
   if (jobs.length > MAX_JOBS) v.fail(`at most ${MAX_JOBS} presets per call (effects x variants); got ${jobs.length}`);
   const audition = raw.audition_ms === undefined ? 0 : v.check(() => finiteNumber("audition_ms", raw.audition_ms, { integer: true, min: 0, max: 30000 })) ?? 0;
   const preview = raw.preview === true;
@@ -988,12 +995,14 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
     let normalBefore: Scan | null = null;
     const warnings: string[] = [];
     const reports: JobReport[] = jobs.map((job) => ({ job, steps: [], members: [], stored: null, problems: [], implied: [], phases: null, plan: {}, status: "not_attempted" }));
+    // Each target pool's names, read once for the call and shared with the stores (#102).
+    const names: PoolNames = new Map();
     const plans = new Map<Job, { effect: Effect; overrides: Override[]; commands: string[]; select: string[]; stepPresets: Array<string | undefined>; implied: Set<string>; members: Member[] }>();
 
     // 1. Inspection per job (nothing is sent when any fails), then the Normal programmer once.
     const inspectPlan: Array<{ name: string; run: () => Promise<StepResult> }> = [];
     for (const job of jobs) {
-      const { effect, id, ref, group, ids, existing } = job;
+      const { effect, id, ref, group, ids, existing, name: presetName, onNameTaken } = job;
       const members: Member[] = [];
       const stepPresets: Array<string | undefined> = [];
       const implied = new Set<string>();
@@ -1014,6 +1023,17 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
               if (pr) {
                 if (String(pr.lock ?? "").trim() !== "") return failed(name, `${ref} is locked`);
                 if (existing === "refuse") return failed(name, `${ref} already exists; pass existing: "merge" or "overwrite"`);
+              }
+              if (presetName !== undefined && onNameTaken === "refuse") {
+                let pool: Awaited<ReturnType<typeof readPoolNames>>;
+                try {
+                  pool = await readPoolNames(bridge, id.pool, t, names);
+                } catch (err) {
+                  const s = readStepFromError(name, "children", err);
+                  return { ...s, error: `${s.error}; the names of preset pool ${id.pool} could not be read, so a name another preset has cannot be ruled out` };
+                }
+                const holder = nameHolder(pool, id.number, presetName);
+                if (holder) return failed(name, `the name ${JSON.stringify(presetName)} is taken: ${JSON.stringify(holder.name)} is Preset ${id.pool}.${holder.no}${holder.name !== presetName ? " (names are compared case-insensitively)" : ""}. The console keeps names unique within a pool and would store ${ref} as ${JSON.stringify(`${presetName}#2`)}; choose another name, or pass on_name_taken: "allow_suffix"`, { holder: `${id.pool}.${holder.no}`, holderName: holder.name });
               }
               return asRead({ name, status: "succeeded", op: "preset.context", detail: { exists: !!pr } });
             } catch (err) {
@@ -1221,10 +1241,11 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
                 layers: ["absolute", "relative", "phaser"],
                 embed: pl.stepPresets.some((x) => x),
                 name: job.name,
+                on_name_taken: job.onNameTaken,
                 exclusive: true,
                 verify: job.verify,
                 environment: "Preview",
-              });
+              }, { names });
               const r = "operation" in p ? p : await p.body();
               rep.stored = r;
               const ok = r.outcome === "succeeded" && r.verification.status !== "mismatched";
@@ -1445,7 +1466,7 @@ export const registerPhaserTools: RegisterTools = (server, ctx) => {
         "Dimmer patterns for rows of fixtures or cells (grid order): runner (one on at a time), comet {tail: cells}, alternate, thirds, fill (fill up, then empty), sparkle {every, seed}; default 120 BPM. preview: true returns the expanded steps and the console commands. " +
         "fixtures are selected in list order on grid X (or group: a stored group with its grid); up to 1024. Every attribute is checked against every fixture before anything is sent (the console ignores unsupported attributes silently). " +
         "effects: several effects (each with its own preset, fixtures or group, steps or template, phaser, mirror, variants, name) built in one Preview session, one result line per preset with a compact phase summary (detail: true for every step); a failed effect does not stop the others. " +
-        "The effect is built in the console's Preview environment (its own empty programmer; nothing is output) and the operator's Normal programmer is fingerprinted before and after: it is never touched. The built programmer is checked per fixture, step and layer, including the phase per fixture, then stored with the gma3_store_preset rules (mode selective or global, existing refuse|merge|overwrite, step presets embedded) and verified step by step; the Preview programmer is cleared and Preview left in every case. " +
+        "The effect is built in the console's Preview environment (its own empty programmer; nothing is output) and the operator's Normal programmer is fingerprinted before and after: it is never touched. The built programmer is checked per fixture, step and layer, including the phase per fixture, then stored with the gma3_store_preset rules (mode selective or global, existing refuse|merge|overwrite, step presets embedded, on_name_taken refuse|allow_suffix: a name, variant names included, that another preset of the pool has, or that two presets of the call share, is refused before anything is sent, naming the holder; the console would store it as \"<name>#2\") and verified step by step; the Preview programmer is cleared and Preview left in every case. " +
         "audition_ms (default 0: no playback) calls the stored preset on the fixtures in the Normal programmer, which must be empty, for that long and releases it with ClearAll. Requires exclusive: true (not for preview). If a build is interrupted, gma3_phaser_release leaves Preview. Needs bridge 0.23.0.",
       inputSchema: {
         preset: z.string().optional().describe('Target preset "<pool>.<number>" (the first of the variants); an All pool (21-25) takes any attributes. Required unless effects is given.'),
@@ -1457,14 +1478,15 @@ export const registerPhaserTools: RegisterTools = (server, ctx) => {
         mirror: mirrorSchema,
         variants: variantsSchema,
         effects: z
-          .array(z.object({ preset: z.string(), fixtures: z.array(z.union([z.string(), z.number()])).optional(), group: z.number().optional(), steps: z.array(stepSchema).optional(), phaser: phaserSchema, template: templateSchema, unit: z.enum(["percent", "physical"]).optional(), mirror: mirrorSchema, variants: variantsSchema, mode: z.enum(["selective", "global"]).optional(), existing: z.enum(["refuse", "merge", "overwrite"]).optional(), name: z.string().optional() }))
+          .array(z.object({ preset: z.string(), fixtures: z.array(z.union([z.string(), z.number()])).optional(), group: z.number().optional(), steps: z.array(stepSchema).optional(), phaser: phaserSchema, template: templateSchema, unit: z.enum(["percent", "physical"]).optional(), mirror: mirrorSchema, variants: variantsSchema, mode: z.enum(["selective", "global"]).optional(), existing: z.enum(["refuse", "merge", "overwrite"]).optional(), name: z.string().optional(), on_name_taken: z.enum(ON_NAME_TAKEN).optional() }))
           .optional()
-          .describe("Several effects in one call (instead of preset/fixtures/steps/template): built in one Preview session; unit, mode, existing and verify given for the call are defaults."),
+          .describe("Several effects in one call (instead of preset/fixtures/steps/template): built in one Preview session; unit, mode, existing, on_name_taken and verify given for the call are defaults."),
         detail: z.boolean().optional().describe("Return every step, the console commands and the stored rows (default false: a compact result; with several presets one line each)."),
         unit: z.enum(["percent", "physical"]).optional().describe("Unit of the step values (default percent)."),
         mode: z.enum(["selective", "global"]).optional().describe("Preset mode (default selective)."),
         existing: z.enum(["refuse", "merge", "overwrite"]).optional().describe("When the preset exists (default refuse)."),
         name: z.string().optional().describe("Preset name."),
+        on_name_taken: z.enum(ON_NAME_TAKEN).optional().describe('When another preset of the pool has the name: refuse (default, nothing is sent) or allow_suffix (the console stores "<name>#2").'),
         audition_ms: z.number().optional().describe("Play the stored effect for this long in the empty Normal programmer, then release it (default 0: no playback; max 30000)."),
         exclusive: z.boolean().optional().describe("Required (true) unless preview."),
         preview: z.boolean().optional().describe("Only check and return the plan and commands (default false)."),
