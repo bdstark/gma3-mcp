@@ -33,5 +33,5 @@ export function operation(fn: () => Promise<OperationResult>): Promise<ToolResul
 
 /** Plain JSON tool result for read-only tools (no outcome model). */
 export function json(value: unknown): ToolResult {
-  return { content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] };
+  return { content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }] };
 }

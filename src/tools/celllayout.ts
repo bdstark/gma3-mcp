@@ -19,10 +19,10 @@
 import { z } from "zod";
 import { BridgeError } from "../bridge.js";
 import { dmxOrder, runs, type OrderCell } from "./cellorder.js";
-import { asRead, buildResult, notRequested, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
+import { asRead, buildResult, compactItems, notRequested, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { Validator, finiteNumber, objectName } from "../validate.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
-import { listFids, runSession, runSessionLocked } from "./patch.js";
+import { DETAIL_DESC, listFids, runSession, runSessionLocked, type FixtureRow } from "./patch.js";
 import { UNITS } from "./positions.js";
 
 type Unit = keyof typeof UNITS;
@@ -478,9 +478,10 @@ export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unk
   const t = ctx.requestTimeoutMs;
   let toName = "";
   let toNo = 0;
-  let before: Map<number, { patch?: string; breaks?: Array<{ break: number; address: string }> }> | undefined;
+  let before: Map<number, FixtureRow> | undefined;
+  let after: Map<number, FixtureRow> | undefined;
   const addressing = (r?: { patch?: string; breaks?: Array<{ break: number; address: string }> }) => `${r?.patch ?? ""}|${(r?.breaks ?? []).map((b) => `${b.break}=${b.address}`).join(",")}`;
-  return runSession(ctx, {
+  const result = await runSession(ctx, {
     operation: op,
     target,
     touchedFids: fids,
@@ -506,6 +507,7 @@ export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unk
     readBack: async () => {
       try {
         const rows = await listFids(ctx.bridge, fids, t);
+        after = rows;
         // By number and name: after a re-import two types share the name (PR #89 review). patch.list's type reads
         // "<no> <name>"; the number cannot change within the session (a retype removes no type).
         const wrong = fids.filter((f) => String(rows.get(f)?.type ?? "") !== `${toNo} ${toName}`);
@@ -519,6 +521,11 @@ export async function assignCellLayout(ctx: ToolContext, raw: Record<string, unk
         return { steps: [asRead(stepFromError("read_back", err, { op: "patch.list" }))], verification: unavailable("the fixtures could not be read back") };
       }
     },
+  });
+  // #100: on a clean success, per fixture its FID and [before, after] type instead of the read-back rows.
+  return compactItems(result, raw.detail === true, {
+    items: fids.map((fid) => ({ fid, type: [before?.get(fid)?.type ?? null, after?.get(fid)?.type ?? `${toNo} ${toName}`] })),
+    hint: "detail: true returns every step's detail and the read-back rows",
   });
 }
 
@@ -567,12 +574,13 @@ export const registerCellLayoutTools: RegisterTools = (server, ctx) => {
       title: "Move fixtures to another layout of their fixture type",
       description:
         "Moves fixtures to another fixture type that is a layout copy of theirs (as gma3_layout_cells scope own creates) or back to the original, so several fixtures share one layout. The target type must have a DMX mode of the same name with the same channels and footprint (refused otherwise). " +
-        "Runs one patch session (isolation-checked, committed with no undo); FIDs, addresses, cells, groups and preset values are kept. Requires exclusive: true. Needs bridge 0.29.0.",
+        "Runs one patch session (isolation-checked, committed with no undo); FIDs, addresses, cells, groups and preset values are kept. Requires exclusive: true. A clean success lists each fixture as {fid, type: [before, after]} in items. Needs bridge 0.29.0.",
       inputSchema: {
         fixtures: z.array(z.number()),
         type: z.union([z.number(), z.string()]).describe("The layout type (number or name)."),
         exclusive: z.boolean().optional(),
         verify: z.boolean().optional(),
+        detail: z.boolean().optional().describe(DETAIL_DESC),
       },
     },
     (args) => operation(() => assignCellLayout(ctx, args as Record<string, unknown>)),

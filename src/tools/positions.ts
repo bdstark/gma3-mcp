@@ -18,7 +18,7 @@
  */
 import { z } from "zod";
 import type { Gma3Bridge } from "../bridge.js";
-import { asRead, buildResult, notRequested, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
+import { asRead, buildResult, compactItems, notRequested, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { Validator, ValidationError, describe, finiteNumber } from "../validate.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
 import { COPY_OPEN_HELP, listFids } from "./patch.js";
@@ -121,6 +121,7 @@ interface PlaceArgs {
   layouts?: LayoutInput[];
   preview?: boolean;
   verify?: boolean;
+  detail?: boolean;
 }
 
 /** A planned change for one fixture, in metres and degrees. `from` names the request entry it came from. */
@@ -580,10 +581,23 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
       (untouched ? `; ${untouched} not changed` : "") +
       (stopped ? `; stopped at ${stopped}` : "") +
       `.${what} There is no undo (Oops does not revert positions): \`restore\` holds the previous values.`;
-    return done(summary, verification, {
+    const full = done(summary, verification, {
       fixtures: planOut.map((p) => ({ ...p, ...(after?.get(p.fid) ? { after: poseOut(after.get(p.fid) as FixturePose, unit) } : {}) })),
       restore,
       ...(uncertain.size ? { uncertainWrites: uncertainWrites.length ? uncertainWrites : [...uncertain].map(([fid, property]) => ({ fid, property, applied: null, observed: null })) } : {}),
+    });
+    // #100: 93 fixtures returned 214 KB. On a clean success: per fixture the pose it now has, the property writes as one
+    // step with their count (one step per property was 372 steps), and restore, the only undo (about 95 characters a
+    // fixture).
+    const writeSteps = full.steps.filter((st) => st.op === "set").length;
+    return compactItems(full, raw.detail === true, {
+      drop: ["fixtures"],
+      steps: [
+        ...full.steps.filter((st) => st.op !== "set").map(({ detail: _d, ...rest }) => rest),
+        ...(writeSteps ? [{ name: "set", status: "succeeded" as const, op: "set", detail: { writes: writeSteps } }] : []),
+      ],
+      items: planOut.map((p) => ({ fid: p.fid, position: p.position, rotation: p.rotation, ...(p.mirror_mesh !== undefined ? { mirror_mesh: p.mirror_mesh } : {}) })),
+      hint: "detail: true returns one step per property write, each fixture's pose before and read back, and the read-back values",
     });
   });
 }
@@ -643,7 +657,8 @@ export const registerPositionTools: RegisterTools = (server, ctx) => {
         "mirror {kind: 'mirror', pairs: [[source_fid, target_fid]]} puts each target at its source's final pose mirrored across the stage centre line (x negated, rotation y and z negated). " +
         "preview: true returns the expanded plan with every fixture's current values and sends nothing. Refused while the patch copy is open (committing it would overwrite the positions). " +
         "Scale is not offered: the console ignores scale writes. mirror_mesh is the fixture's MeshMirrorX flag (its 3D model mirrored). Read back a frame later: positions within 0.1 mm, rotations by quaternion. " +
-        "NO UNDO (Oops does not revert positions): the result's restore list holds every fixture's previous values in the same format.",
+        "NO UNDO (Oops does not revert positions): the result's restore list holds every fixture's previous values in the same format. " +
+        "A clean success (all written, read-back matched or not requested) lists each fixture as {fid, position, rotation, mirror_mesh?} in items, the pose it now has, with the writes as one step; detail: true returns every write step and each fixture's pose before and read back.",
       inputSchema: {
         unit: z.enum(UNIT_NAMES as [Unit, ...Unit[]]).optional().describe(UNIT_DESC),
         placements: z
@@ -676,6 +691,7 @@ export const registerPositionTools: RegisterTools = (server, ctx) => {
           .optional(),
         preview: z.boolean().optional().describe("Return the plan without sending anything."),
         verify: z.boolean().optional().describe("Read back and compare (default true)."),
+        detail: z.boolean().optional().describe("Return the full result on a success too: one step per property write and each fixture's pose before and read back (default false: a clean success lists one entry per fixture in items, plus restore; anything else is always returned in full)."),
       },
     },
     async (args) => operation(() => placeFixtures(ctx, args as PlaceArgs)),
