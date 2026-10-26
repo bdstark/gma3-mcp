@@ -52,7 +52,7 @@ test("the server sends the task map on every start, with gma3_lua as the fallbac
   assert.match(text, /gma3_observe_tempo \(how fast running sequences \(chases\) advance\)/);
   assert.match(text, /never write a Lua waiting or polling loop/);
   assert.match(text, /Fallbacks, only for what no structured tool covers: gma3_command .* and gma3_lua/);
-  assert.ok(text.length < 4200, `instructions stay short (${text.length} characters)`);
+  assert.ok(text.length < 4000, `instructions stay short (${text.length} characters)`);
 });
 
 test("gma3_lua and gma3_command start by pointing at the structured tools; the observing tools say they watch over time", () => {
