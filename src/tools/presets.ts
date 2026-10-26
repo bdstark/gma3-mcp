@@ -30,6 +30,10 @@
  *     deleted source leaves an invalid handle. /ForceGlobal and /ForceUniversal (with /Merge) remove the existing
  *     selective (and global) data.
  *   - A locked preset answers "Object locked".
+ *   - Names are unique within a pool: a name another preset of the pool has is stored as "<name>#2" (live 2026-10-25,
+ *     issue #102: Preset 4.101 "Orange" became "Orange#2" next to 4.5 "Orange"). So the pool's names are read before
+ *     the store and a taken name is refused, unless on_name_taken: "allow_suffix". Whether the console's comparison
+ *     is case-sensitive is not established, so names compare case-insensitively (a refusal rather than a rename).
  */
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
@@ -488,6 +492,66 @@ export async function inspectDependencies(bridge: Gma3Bridge, root: PresetRead, 
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Pool names (#102)
+// ---------------------------------------------------------------------------
+
+/** What a store does when another preset of the pool already has the requested name. */
+export const ON_NAME_TAKEN = ["refuse", "allow_suffix"] as const;
+export type OnNameTaken = (typeof ON_NAME_TAKEN)[number];
+
+export interface PoolName {
+  name: string;
+  /** Stored by an earlier item of the same call. */
+  thisCall?: boolean;
+}
+
+/**
+ * The names of the presets of each target pool (pool -> preset number -> name), read once per pool and call and
+ * shared by the items of one call; every store of the call records the name it left, so a later item asking for the
+ * same name sees it taken.
+ */
+export type PoolNames = Map<number, Map<number, PoolName>>;
+
+/** Trimmed and case-insensitive: whether the console's uniqueness is case-sensitive is not established. */
+export const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** The name exactly, or the console's rename of a taken one ("Orange#2"). */
+export const nameOrSuffixed = (got: string, name: string) => {
+  const g = got.trim();
+  return g === name || (g.startsWith(`${name}#`) && /^\d+$/.test(g.slice(name.length + 1)));
+};
+
+/** The names of Preset pool `pool`, from the cache or read with the bridge's children op (No and Name per preset). */
+export async function readPoolNames(bridge: Gma3Bridge, pool: number, t: number, cache: PoolNames): Promise<Map<number, PoolName>> {
+  const hit = cache.get(pool);
+  if (hit) return hit;
+  const out = new Map<number, PoolName>();
+  const PAGE = 10000;
+  for (let offset = 0; ; ) {
+    const r = (await bridge.request("children", { ref: `Preset ${pool}`, fields: ["No", "Name"], limit: PAGE, offset }, t)) as { total?: unknown; items?: Array<{ name?: string; addr?: string; invalid?: boolean; fields?: Record<string, unknown> }> };
+    const items = r?.items ?? [];
+    for (const it of items) {
+      if (it.invalid) continue;
+      const no = Number.parseInt(String(it.fields?.No ?? ""), 10);
+      if (!Number.isInteger(no)) throw new Error(`a preset of pool ${pool} (${it.addr ?? it.name ?? "?"}) has no readable number`);
+      const name = String(it.fields?.Name ?? it.name ?? "").trim();
+      if (name) out.set(no, { name });
+    }
+    offset += items.length;
+    if (typeof r?.total !== "number" || offset >= r.total) break;
+    if (!items.length) throw new Error(`preset pool ${pool} lists ${r.total} presets but only ${offset} could be read`);
+  }
+  cache.set(pool, out);
+  return out;
+}
+
+/** Another preset of the pool (not `number`) with the name, or undefined. */
+export function nameHolder(names: Map<number, PoolName>, number: number, name: string): ({ no: number } & PoolName) | undefined {
+  for (const [no, e] of names) if (no !== number && sameName(e.name, name)) return { no, ...e };
+  return undefined;
+}
+
 const presetLabel = (p: PresetRead) => (p.pool?.no !== undefined && p.no !== undefined ? `Preset ${p.pool.no}.${p.no}` : p.addr ?? p.ref);
 const depLabel = (d: ObjectRefInfo) => (d.pool !== undefined && d.no !== undefined ? `Preset ${d.pool}.${d.no}${d.name ? ` "${d.name}"` : ""}` : d.addr ?? "?");
 
@@ -570,6 +634,8 @@ export interface StorePresetArgs {
   matricks?: boolean;
   keep_activation?: boolean;
   name?: string;
+  /** When another preset of the pool has the name (#102): refuse (default) or allow_suffix (the console's "<name>#2"). */
+  on_name_taken?: OnNameTaken;
   exclusive?: boolean;
   preview?: boolean;
   verify?: boolean;
@@ -602,9 +668,10 @@ export async function storePreset(ctx: ToolContext, raw: StorePresetArgs): Promi
 
 /**
  * Validate a store request; returns the validation failure, or the body to run (inside this server's mutation lock
- * unless it is a preview). Exported for tools that already hold the lock (gma3_build_phaser).
+ * unless it is a preview). Exported for tools that already hold the lock (gma3_build_phaser). `shared.names` is the
+ * call's pool-name cache when several presets are stored in one call.
  */
-export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs): OperationResult | { preview: boolean; body: () => Promise<OperationResult> } {
+export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs, shared: { names?: PoolNames } = {}): OperationResult | { preview: boolean; body: () => Promise<OperationResult> } {
   const op = "store_preset";
   const v = new Validator();
   const id = v.check(() => presetId("preset", raw.preset));
@@ -638,6 +705,9 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs): Oper
   const preview = boolOpt(v, "preview", raw.preview) ?? false;
   const verify = boolOpt(v, "verify", raw.verify) ?? true;
   const name = v.check(() => objectName("name", raw.name, { optional: true }));
+  const onNameTaken = raw.on_name_taken ?? "refuse";
+  if (!(ON_NAME_TAKEN as readonly string[]).includes(onNameTaken)) v.fail(`on_name_taken must be ${ON_NAME_TAKEN.join(" or ")}`);
+  const allowSuffix = onNameTaken === "allow_suffix";
   if (!preview && raw.exclusive !== true) v.fail("exclusive must be true: storing a preset reads the whole programmer, stores it and (unless keep_activation) deactivates the stored values; nobody else may change the programmer while the tool runs. preview: true needs no acknowledgement");
   const target: Record<string, unknown> = { preset: raw.preset };
   if (!v.ok || !id) return validationFailure(op, target, v.errors);
@@ -647,6 +717,7 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs): Oper
   const t = ctx.requestTimeoutMs;
   const targetMode: Mode = (force ?? mode)!;
   const allowedEnvironment = raw.environment ?? "Normal";
+  const names: PoolNames = shared.names ?? new Map();
 
   const body = async (): Promise<OperationResult> => {
     let context: PresetContext | null = null;
@@ -656,6 +727,7 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs): Oper
     const scopeFixtures = new Map<string, number[]>();
     const groups = new Map<string, string>();
     const subAddrs = new Map<number, string>();
+    const nameWarnings: string[] = [];
     const inspect = await runSteps([
       {
         name: "read_context",
@@ -694,6 +766,35 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs): Oper
           return asRead({ name: "check_preset", status: "succeeded", op: "preset.read", detail: { exists: true, name: c.name, storedData: c.storedData, count: c.count } });
         },
       },
+      ...(name !== undefined
+        ? [{
+            name: "check_name",
+            run: async (): Promise<StepResult> => {
+              // The console keeps names unique within a pool and stores a taken one as "<name>#2" (#102): refused here,
+              // before the store, unless the suffix is allowed.
+              let pool: Map<number, PoolName>;
+              try {
+                pool = await readPoolNames(bridge, id.pool, t, names);
+              } catch (err) {
+                if (allowSuffix) {
+                  nameWarnings.push(`the names of preset pool ${id.pool} could not be read (${err instanceof Error ? err.message : String(err)}); with on_name_taken "allow_suffix" the store goes ahead`);
+                  return asRead({ name: "check_name", status: "succeeded", op: "children", detail: { namesRead: false } });
+                }
+                const s = asRead(stepFromError("check_name", err, { op: "children" }));
+                return { ...s, error: `${s.error}; the names of preset pool ${id.pool} could not be read, so a name another preset has cannot be ruled out; nothing was sent` };
+              }
+              const holder = nameHolder(pool, id.number, name);
+              if (!holder) return asRead({ name: "check_name", status: "succeeded", op: "children", detail: { taken: false } });
+              const held = `${JSON.stringify(holder.name)} is Preset ${id.pool}.${holder.no}${holder.thisCall ? " (stored earlier in this call)" : ""}${holder.name !== name ? " (names are compared case-insensitively)" : ""}`;
+              const detail = { taken: true, holder: `${id.pool}.${holder.no}`, holderName: holder.name };
+              if (allowSuffix) {
+                nameWarnings.push(`${held}: the console keeps names unique within a pool, so ${ref} gets a suffixed name such as ${JSON.stringify(`${name}#2`)} (on_name_taken "allow_suffix")`);
+                return asRead({ name: "check_name", status: "succeeded", op: "children", detail: { ...detail, suffixExpected: true } });
+              }
+              return asRead({ name: "check_name", status: "failed", op: "children", detail, error: `the name ${JSON.stringify(name)} is taken: ${held}. The console keeps names unique within a pool and would store ${ref} as ${JSON.stringify(`${name}#2`)}; choose another name, or pass on_name_taken: "allow_suffix"; nothing was sent` });
+            },
+          }]
+        : []),
       {
         name: "resolve_fixtures",
         run: async () => {
@@ -788,7 +889,7 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs): Oper
       embed,
       filterGroup: filterApplies ? { pool: poolName, groups } : undefined,
     });
-    const warnings = [...plan.warnings];
+    const warnings = [...nameWarnings, ...plan.warnings];
     const poolFilter = (context as PresetContext | null)?.pool?.inputFilter;
     if (effectiveFilter && poolFilter) warnings.push(`the pool has its own input filter (${poolFilter}); its effect is not predicted and is checked after the store`);
     if (force) warnings.push(`force ${force}: the existing ${force === "global" ? "selective data of the fixture types stored" : "selective and global data"} of ${ref} is removed`);
@@ -824,12 +925,22 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs): Oper
         ? [{ name: "set_name", run: () => requestStep(bridge, "set_name", "set", { ref, property: "Name", value: name }, (res) => {
             const got = (res as { value?: unknown } | null)?.value;
             if (got === undefined || got === null) return { name: "set_name", status: "unknown", op: "set", error: `the name of ${ref} could not be read back` };
-            return String(got).trim() === name ? { name: "set_name", status: "succeeded", op: "set" } : { name: "set_name", status: "failed", op: "set", detail: { readBack: got }, error: `the console did not apply the name: it reads ${JSON.stringify(got)}` };
+            if (String(got).trim() === name) return { name: "set_name", status: "succeeded", op: "set" };
+            if (allowSuffix && nameOrSuffixed(String(got), name)) return { name: "set_name", status: "succeeded", op: "set", detail: { readBack: got, suffixed: true } };
+            return { name: "set_name", status: "failed", op: "set", detail: { readBack: got }, error: `the console did not apply the name: it reads ${JSON.stringify(got)}${nameOrSuffixed(String(got), name) ? " (another preset of the pool has the name)" : ""}` };
           }, t) }]
         : []),
     ]);
     const steps = [...inspect.steps, ...main.steps];
     const stored = main.steps[0]?.status === "succeeded";
+    // The pool now holds this preset under the name it was left with: later items of the call check against it.
+    const setRead = (main.steps[1]?.detail as { readBack?: unknown } | undefined)?.readBack;
+    const recordName = (left: unknown) => {
+      const cached = names.get(id.pool);
+      const n = typeof left === "string" && left.trim() ? left.trim() : undefined;
+      if (cached && n) cached.set(id.number, { name: n, thisCall: true });
+    };
+    let readName: unknown;
     let verification: Verification = notRequested();
     let resulting: unknown = null;
     if (verify && stored) {
@@ -845,7 +956,11 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs): Oper
         checks.push(...verifyStored({ rows: plan.rows, stored: after.rows, mode: targetMode, forced: !!force, merge: !!cur && (existing === "merge" || !!force), embed, types: after.types ?? {}, storedData: after.storedData }));
         if (!force && !cur && String(after.presetMode ?? "").toLowerCase() !== targetMode) checks.push(`the preset's mode reads ${JSON.stringify(after.presetMode)}, not ${targetMode}`);
         if (after.truncated) checks.push("the read-back was truncated");
-        if (name !== undefined && String(after.name ?? "").trim() !== name) checks.push(`name reads ${JSON.stringify(after.name)}`);
+        readName = after.name;
+        if (name !== undefined && String(after.name ?? "").trim() !== name) {
+          if (allowSuffix && nameOrSuffixed(String(after.name ?? ""), name)) warnings.push(`the console stored the name as ${JSON.stringify(String(after.name).trim())}: another preset of the pool has ${JSON.stringify(name)} (on_name_taken "allow_suffix")`);
+          else checks.push(`name reads ${JSON.stringify(after.name)}`);
+        }
         if (embed && deps.invalid.length) checks.push(`invalid dependencies: ${deps.invalid.map((d) => d.from).join(", ")}`);
         if (deps.invalid.length && !embed) warnings.push("the preset has invalid dependencies from earlier content");
         if (!deps.complete) warnings.push(`dependency inspection incomplete: ${deps.unreadable.join("; ")}`);
@@ -867,6 +982,17 @@ export function prepareStorePreset(ctx: ToolContext, raw: StorePresetArgs): Oper
       else if (ok) verification = { status: "matched", checked };
       else verification = unavailable(`the preset or the preferences could not be read back: ${[...steps].reverse().find((s) => s.status !== "succeeded")?.error ?? "unknown"}`, ref);
     }
+    // Later items of the call check against the name the preset was left with (review of #108): the read-back name;
+    // else the requested name after a confirmed name write, or the console's read-back of a write that did not take
+    // it; else an existing preset stored without a name keeps its own. Any other store (an unnamed create gets a
+    // default name such as "Preset 102", a failed or unknown store or name write) may have changed a name nobody
+    // read, so the pool is read again by the next item.
+    const storeStatus = main.steps[0]?.status;
+    const nameStep = main.steps[1];
+    if (typeof readName === "string" && readName.trim()) recordName(readName);
+    else if (storeStatus === "succeeded" && name !== undefined && nameStep?.status === "succeeded") recordName(setRead ?? name);
+    else if (storeStatus === "succeeded" && name !== undefined && typeof setRead === "string") recordName(setRead);
+    else if (!(storeStatus === "succeeded" && name === undefined && cur)) names.delete(id.pool);
     return buildResult({ operation: op, target, steps, verification, warnings, extra: { ...extra, resulting } });
   };
   return { preview, body };
@@ -907,10 +1033,10 @@ export const registerPresetTools: RegisterTools = (server, ctx) => {
         "Store the current programmer content into Preset <pool>.<number>. Prepare the programmer first (gma3_select, gma3_set_attribute/color/position, At Preset ... for embedding); this tool only stores. " +
         "Explicit rules: mode selective | global | universal (never the pool default: a default store resolves a mode conflict silently and can keep one fixture's values), or force global | universal for a forced conversion of an existing preset (removes its selective, or selective and global, data; needs existing: \"merge\"). " +
         "existing: refuse (default) | merge | overwrite. fixtures: the scope; every active programmer value must belong to these fixtures (a fixture includes its cells) and each must have one; attributes (optional): exact attribute filter (an activation group, e.g. all ColorRGB_*, is activated as a whole); layers (default [absolute]; also relative, fade, delay, phaser) must cover every value's layers. " +
-        "Anything else in the programmer is refused, because the console stores every active value regardless of the selection. Also refused: universal mode with values that differ between fixtures, embed without a preset reference in the programmer, attributes a feature-group pool's input filter would drop (store into an All pool 21-25 or pass input_filter: false), a locked preset. " +
+        "Anything else in the programmer is refused, because the console stores every active value regardless of the selection. Also refused: universal mode with values that differ between fixtures, embed without a preset reference in the programmer, attributes a feature-group pool's input filter would drop (store into an All pool 21-25 or pass input_filter: false), a locked preset, and a name another preset of the same pool already has (the console keeps names unique within a pool and would store it as \"<name>#2\"; the pool's names are read once per pool and call, compared case-insensitively, the holder is named, and storing a preset again under its own name is no collision): on_name_taken: refuse (default) | allow_suffix (store anyway; a \"<name>#<n>\" read-back is expected, with a warning, not a mismatch). " +
         "embed (default false) stores references to the presets active in the programmer; matricks (default false) the selection MAtricks; keep_activation (default false); input_filter overrides the operator default for this store only. The command always carries /Programmer /Active, the mode, /Merge or /Overwrite, /Embed, /MAtricks, /KeepActivation and /NoConfirmation, so the operator's store preferences decide nothing and are not changed (read before and after); Look cannot be overridden per store, so the tool refuses while the operator's StoreLook preference is on. " +
         "Requires exclusive: true (not for preview). verify (default true) reads the stored rows back and checks each programmer value by mode, value, layers and reference, unexpected content, the preset's mode, dependencies (recursively; incomplete inspection is reported) and that the store preferences are unchanged. Needs bridge 0.22.0. " +
-        "Batch form (presets): each preset from explicit content instead of the programmer: fixtures (ids or ranges: the target and the scope) with presets, intensity and/or values, or looks. They are built one by one in the console's Preview environment (its own programmer; the operator's Normal programmer and the output are not touched, checked before and after): from an empty Preview programmer, each look is checked right after its commands, then this tool's store, checks and read-back run there. A preset that fails does not stop the others. " +
+        "Batch form (presets): each preset from explicit content instead of the programmer: fixtures (ids or ranges: the target and the scope) with presets, intensity and/or values, or looks. They are built one by one in the console's Preview environment (its own programmer; the operator's Normal programmer and the output are not touched, checked before and after): from an empty Preview programmer, each look is checked right after its commands, then this tool's store, checks and read-back run there. A preset that fails does not stop the others; a name refused as taken fails only its preset, and a name an earlier preset of the call was stored under counts as taken. " +
         BATCH_NOTE,
       inputSchema: {
         ...dataPoolShape,
@@ -926,6 +1052,7 @@ export const registerPresetTools: RegisterTools = (server, ctx) => {
         matricks: z.boolean().optional().describe("Store the selection MAtricks into the preset (default false)."),
         keep_activation: z.boolean().optional().describe("Keep the stored values active in the programmer (default false)."),
         name: z.string().optional().describe("Preset name."),
+        on_name_taken: z.enum(ON_NAME_TAKEN).optional().describe('When another preset of the pool has the name: refuse (default, nothing is sent) or allow_suffix (the console stores "<name>#2").'),
         exclusive: z.boolean().optional().describe("Required (true) unless preview: nobody else changes the programmer while the tool runs."),
         preview: z.boolean().optional().describe("Only read, check and return the planned command (default false)."),
         verify: z.boolean().optional().describe("Read back and check the stored content (default true)."),
@@ -934,6 +1061,7 @@ export const registerPresetTools: RegisterTools = (server, ctx) => {
             z.object({
               preset: z.string().describe('"<pool>.<number>".'),
               name: z.string().optional(),
+              on_name_taken: z.enum(ON_NAME_TAKEN).optional(),
               mode: z.enum(MODES).optional(),
               existing: z.enum(["refuse", "merge", "overwrite"]).optional(),
               fixtures: z.array(z.union([z.string(), z.number()])).optional().describe("The content's target and the preset's scope: fixture ids or ranges (default: the call's fixtures)."),

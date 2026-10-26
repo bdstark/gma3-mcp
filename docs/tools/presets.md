@@ -49,6 +49,11 @@ The tool only stores. Prepare the programmer first with the fixture tools (`gma3
   preset that was active in the programmer (`abs_preset`), and the preset lists it as a dependency. When the source is
   updated, the embedded preset follows **one frame later**; a copied (not embedded) preset keeps its values. Deleting
   a source leaves an invalid dependency; the embedded preset keeps its last values.
+- **Names are unique within a pool.** A name another preset of the same pool has is stored as `"<name>#2"`
+  (live 2026-10-25, [#102](https://github.com/bdstark/gma3-mcp/issues/102): Preset 4.101 "Orange" became "Orange#2"
+  because 4.5 is "Orange"). The tool reads the pool's names before the store and refuses a taken name, naming the
+  holder, unless `on_name_taken: "allow_suffix"`. Whether the console's comparison is case-sensitive is not
+  established, so names are compared case-insensitively (a refusal rather than a rename).
 - **An activation group is stored as a whole.** Setting ColorRGB_R activates ColorRGB_G, _B, _W, ... too; they are
   active programmer values. With `attributes`, list all of them.
 
@@ -69,6 +74,7 @@ Parameters:
 | `input_filter` | override the input-filter preference for this store | the operator's default |
 | `matricks` | store the selection MAtricks | false |
 | `keep_activation` | keep the stored values active | false |
+| `on_name_taken` | `refuse`: a `name` another preset of the pool has is refused before anything is sent; `allow_suffix`: store anyway, and the console's `"<name>#<n>"` is expected (a warning, not a mismatch) | `refuse` |
 | `name`, `preview`, `verify`, `exclusive` | as usual | `verify` true; `exclusive` required unless preview |
 
 Requests, in order:
@@ -76,11 +82,16 @@ Requests, in order:
 1. read `read_context` (`preset.context`): the pool exists; the store preferences are readable and StoreLook is off.
 2. read `check_preset` (`preset.read`): a missing preset is new (a forced conversion needs an existing one); an
    existing one needs `existing: merge|overwrite`; a locked one is refused.
-3. read `resolve_fixtures` (`fixtureAttributes` per scope fixture, and per cell with cells of its own): subfixture
+3. read `check_name` (`children` of `Preset <pool>`, fields `No` and `Name`; only with `name`): the pool's names are
+   read once per pool and call. Another preset with the name (trimmed, case-insensitive) is refused with the holder
+   (`"Orange" is Preset 4.5`); the preset's own number under its own name is no collision. With
+   `on_name_taken: "allow_suffix"` a taken name, or an unreadable listing, is a warning instead. An unreadable listing
+   is refused otherwise.
+4. read `resolve_fixtures` (`fixtureAttributes` per scope fixture, and per cell with cells of its own): subfixture
    indices of the scope and each attribute's feature group. Unknown fixtures are refused.
-4. read `read_programmer` (`programmer`, all fixtures): must be complete (inactive leftovers of an earlier store are
+5. read `read_programmer` (`programmer`, all fixtures): must be complete (inactive leftovers of an earlier store are
    fine: `/Active` does not store them).
-5. `check_content`, refused with every reason when anything holds:
+6. `check_content`, refused with every reason when anything holds:
    - a value outside the scope;
    - a scope fixture without a value, or no values at all;
    - an attribute outside `attributes`, or a requested attribute without a value;
@@ -91,9 +102,10 @@ Requests, in order:
    - an attribute the pool's input filter would drop.
 
    `preview: true` stops here and returns the planned command (`intended.command`).
-6. `store`: `Store Preset P.N /Programmer /Active /<Mode> [/Merge|/Overwrite] /Embed "…" /MAtricks "…"
-   /KeepActivation "…" [/InputFilter "…"] /NoConfirmation`, then `set_name` when `name` is given.
-7. verify (default):
+7. `store`: `Store Preset P.N /Programmer /Active /<Mode> [/Merge|/Overwrite] /Embed "…" /MAtricks "…"
+   /KeepActivation "…" [/InputFilter "…"] /NoConfirmation`, then `set_name` when `name` is given (with
+   `allow_suffix`, a `"<name>#<n>"` read-back succeeds with `suffixed: true`).
+8. verify (default):
    - `preset.read` (with the fixture types the read uses) checks every programmer value:
      - selective: a selective row of the same fixture;
      - global: the fixture's own row, or the global row of its fixture type;
@@ -115,12 +127,12 @@ Requests, in order:
 Warnings name what is not an error: preset references stored as plain values (each source listed as absolute or
 relative), a forced conversion's removal, an
 attribute whose feature group is unknown (decided by the read-back), a pool with its own input filter, an incomplete
-dependency inspection.
+dependency inspection, and with `allow_suffix` a taken name (the holder) and the suffixed name the console stored.
 
 ### Batch form: presets from explicit content (SU-12)
 
-`presets: [{preset, name, mode, existing, fixtures, presets, intensity, values | looks, attributes, layers, embed,
-input_filter}]` stores several presets, each from its own content instead of the programmer. `fixtures` (ids or
+`presets: [{preset, name, on_name_taken, mode, existing, fixtures, presets, intensity, values | looks, attributes,
+layers, embed, input_filter}]` stores several presets, each from its own content instead of the programmer. `fixtures` (ids or
 `"a Thru b"` ranges) is the content's target and the preset's scope; `looks: [{fixtures, presets, intensity,
 values}]` gives several targets, and the scope is every fixture they name. Call-level `mode`, `existing`, `fixtures`
 and the other options are defaults for every preset. `exclusive: true` is required; `force`, `keep_activation` and
@@ -130,8 +142,10 @@ The presets are built one by one in the console's Preview environment, as `gma3_
 ([cuelists.md](cuelists.md#how-a-batch-is-built)): the read-only checks first (presets, attributes, fixtures, the
 Normal programmer), Preview On and an empty Preview programmer, then per preset ClearAll (only in Preview), its looks
 with a programmer check after each, and this tool's own store, checks and read-back with `environment: Preview`.
-Preview is left at the end and the Normal programmer must be unchanged. A preset that is refused or does not match
-does not stop the others unless `stop_on_failure: true`; a step without a reply (an unanswered name write after the
+Preview is left at the end and the Normal programmer must be unchanged. Each target pool's names are read once for
+the call; a preset refused because its name is taken (`check_name`) fails alone, before its store, and a name an
+earlier preset of the call was stored under counts as taken (`"Amber" is Preset 4.102 (stored earlier in this call)`).
+A preset that is refused or does not match does not stop the others unless `stop_on_failure: true`; a step without a reply (an unanswered name write after the
 store, say) stops the build, with the remaining presets `not_attempted` and Preview still left. The result has one line per preset (`items`), the build's
 own steps (`build`) and `normalProgrammer`. See [Batch forms](README.md#batch-forms-su-12).
 

@@ -155,6 +155,8 @@ class Console {
   }
 
   names = new Map<string, string>();
+  /** #102: the pool listings read. */
+  listed: string[] = [];
   /** Never answer a Name write (a lost reply after the store went through). */
   silentNameSet = false;
   /** Refuse every Name write (the store went through, the name did not). */
@@ -166,8 +168,18 @@ class Console {
       if (this.silentNameSet) return SILENT;
       if (this.rejectNameSet) throw new Error("Illegal value");
       const key = String(args.ref).replace("Preset ", "");
-      this.names.set(key, String(args.value));
-      return { ref: args.ref, property: args.property, value: args.value };
+      // #102: names are unique within a pool; a taken one gets "#2".
+      const value = String(args.value);
+      const taken = [...this.names].some(([k, n]) => k !== key && k.split(".")[0] === key.split(".")[0] && n.toLowerCase() === value.toLowerCase());
+      this.names.set(key, taken ? `${value}#2` : value);
+      return { ref: args.ref, property: args.property, value: this.names.get(key) };
+    });
+    h.fake.on("children", (args) => {
+      const pool = String(args.ref).match(/^Preset (\d+)$/)?.[1];
+      if (!pool) throw new Error(`unexpected children ${args.ref}`);
+      this.listed.push(String(args.ref));
+      const items = [...this.names].filter(([k]) => k.split(".")[0] === pool).map(([k, n]) => ({ name: n, fields: { No: k.split(".")[1], Name: n } }));
+      return { total: items.length, offset: 0, count: items.length, items };
     });
     h.fake.on("preset.context", () => ({ preferences: { StoreLook: "No", PresetInputFilter: "Yes", StoreMode: "Ask" }, preferencesReadable: true, pool: { no: 23, exists: true, name: "All 3", presetMode: "Selective" } }));
     h.fake.on("preset.read", (args) => {
@@ -619,6 +631,8 @@ test("SU-13 review round 1: presets stored with a rejected name write are partia
   assert.equal(con.presets.has("23.30") && con.presets.has("23.31"), true, "both presets exist");
   assert.match(result.summary, /2 stored with a later step that did not succeed/);
   assert.ok(result.items[0].steps.some((st: any) => st.status === "failed"), "the failed name step is listed in the compact line");
+  // #108 review: the read-back name of each preset is what later stores check against; nothing is read again.
+  assert.deepEqual(con.listed, ["Preset 23"]);
 });
 
 test("SU-13 review round 3: with shuffle a participating channel without a phase read is a problem, never left out", () => {
@@ -759,4 +773,38 @@ test("a phase step that resolves to exactly 0 Thru 360 is refused before anythin
   assert.equal(isError, false, JSON.stringify(result));
   assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
   assert.ok(con.commands.includes("At Phase 0 Thru 360"));
+});
+
+test("#102: a preset name another preset of the pool has, or two presets of the call share, is refused before anything is sent", async () => {
+  con.names.set("23.2", "Chase follow");
+  const steps = [{ values: { Dimmer: 100 }, transition: 0 }, { values: { Dimmer: 0 }, transition: 0 }];
+  const { result, isError } = await build({ preset: "23.5", name: "Chase", fixtures: [401, 402], steps, variants: ["sync", "follow"] });
+  assert.equal(isError, true);
+  assert.match(errorOf(result, "preset 23.6: read_context"), /the name "Chase follow" is taken: "Chase follow" is Preset 23\.2\..*"Chase follow#2".*allow_suffix/);
+  assert.equal(con.commands.length, 0, "nothing is sent, not even Preview On");
+  assert.deepEqual(con.listed, ["Preset 23"], "the pool's names are read once for the call");
+  const twice = await build({ effects: [{ preset: "23.30", name: "Wave", fixtures: [401, 402], template: { type: "alternate" } }, { preset: "23.31", name: "wave", fixtures: [401, 402], template: { type: "runner" } }] });
+  assert.match(twice.result.validationErrors.join(" "), /"wave" is asked for twice in preset pool 23 \(again for 23\.31\)/);
+  assert.equal(con.commands.length, 0);
+  // Its own name on the same preset is no collision.
+  con.names.set("23.7", "Solo");
+  con.presets.set("23.7", []);
+  const own = await build({ preset: "23.7", name: "Solo", existing: "overwrite", fixtures: [401, 402], steps });
+  assert.equal(own.isError, false, JSON.stringify(own.result).slice(0, 2000));
+  assert.equal(con.names.get("23.7"), "Solo");
+});
+
+test("#102: with on_name_taken allow_suffix the phaser is stored and the console's \"#2\" name is expected", async () => {
+  con.names.set("23.2", "Chase");
+  const { result, isError } = await build({ preset: "23.5", name: "Chase", on_name_taken: "allow_suffix", fixtures: [401, 402], steps: [{ values: { Dimmer: 100 }, transition: 0 }, { values: { Dimmer: 0 }, transition: 0 }] });
+  assert.equal(isError, false, JSON.stringify(result).slice(0, 2000));
+  assert.equal(result.verification.status, "matched");
+  assert.equal(con.names.get("23.5"), "Chase#2");
+});
+
+test("#102 review of #108: with verify off, a store whose name nobody read makes the next store read the pool again", async () => {
+  con.rejectNameSet = true;
+  const { result } = await build({ verify: false, effects: [{ preset: "23.40", name: "A", fixtures: [401, 402], template: { type: "alternate" } }, { preset: "23.41", name: "B", fixtures: [401, 402], template: { type: "runner" } }] });
+  assert.deepEqual(result.items.map((i: any) => i.outcome), ["partial", "partial"], JSON.stringify(result.items).slice(0, 1500));
+  assert.deepEqual(con.listed, ["Preset 23", "Preset 23"], "once for the inspection and the first store, again for the second store");
 });
