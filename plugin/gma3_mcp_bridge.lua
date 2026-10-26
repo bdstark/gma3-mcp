@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.46.0"
+local VERSION      = "0.48.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -776,15 +776,30 @@ local function childSummary(c, fields, asText, playback)
   if fields and #fields > 0 then
     s.fields = {}
     for _, f in ipairs(fields) do
-      local v = getProp(c, f, asText)
+      local v, err = getProp(c, f, asText)
       s.fields[f] = v
+      -- 0.47.0 (#96): a read that raised is named in fieldErrors instead of reading like an empty field (an
+      -- executor whose Object read failed is not an empty executor). Absent when every field was read.
+      if err ~= nil then
+        s.fieldErrors = s.fieldErrors or {}
+        s.fieldErrors[f] = err
+      end
     end
   end
   return s
 end
 
 local function listChildren(h, fields, limit, offset, asText, playback)
-  local children = safeCall(h, "Children") or {}
+  -- 0.47.0 (#96): a Children() that raises is reported as enumerationError next to the empty listing it gave before,
+  -- so a parent whose children could not be listed no longer reads like an empty one. A missing method is still empty.
+  local children, enumerationError = {}, nil
+  local okF, f = pcall(function() return h.Children end)
+  if okF and type(f) == "function" then
+    local ok, res = pcall(f, h)
+    if not ok then enumerationError = tostring(res) elseif type(res) == "table" then children = res end
+  elseif not okF then
+    enumerationError = tostring(f)
+  end
   local total = #children
   offset = tonumber(offset) or 0
   limit = tonumber(limit) or 200
@@ -793,7 +808,7 @@ local function listChildren(h, fields, limit, offset, asText, playback)
     table.insert(out, childSummary(children[i], fields, asText, playback))
   end
   if #out == 0 then setmetatable(out, { __jsontype = "array" }) end
-  return { total = total, offset = offset, count = #out, items = out }
+  return { total = total, offset = offset, count = #out, items = out, enumerationError = enumerationError }
 end
 
 -------------------------------------------------------------------------------
@@ -2124,7 +2139,7 @@ end
 -- never guarded; a bridge without the module (or with it disabled) is never busy.
 local GUARDED_OPS = { cmd = "a command", set = "a property change", setfader = "a fader change", lua = "arbitrary Lua",
   ["patch.enter"] = "a patch session", ["patch.add"] = "a patch change", ["patch.set"] = "a patch change", ["patch.remove"] = "a patch change", ["patch.commit"] = "a patch commit",
-  ["patch.import"] = "a fixture-type import", ["patch.removeType"] = "a fixture-type removal" }
+  ["patch.import"] = "a fixture-type import", ["patch.removeType"] = "a fixture-type removal", ["patch.stageEdit"] = "a stage change" }
 local function inputBusy()
   local rec = hardkeysRec()
   if rec and type(rec.instance.admission) == "function" then
@@ -4246,6 +4261,10 @@ end
 --   excludeGuids  types (by GUID) left out with their subtree: the type a removal deletes, on the live side
 --   excludeTypes  { [position] = GUID }: the same, but only the type at that position of the list and with that GUID,
 --                 so another import of the same GDTF (same GUID) is still compared; replaces excludeGuids (0.43.0)
+--   excludeStages { [position] = true }: stages left out with their subtree, by their position in Stages (0.48.0): a
+--                 stage a stage session appended (copy side) or removed (live side)
+--   bareStages    { [position] = true }: stages hashed without their number, INDEX and Name; their content is still
+--                 hashed in full (0.48.0): a renamed stage, and the stages after a removed one, which move up a place
 --   guide         the live patch, for the copy of an import session. An import appends its type to the
 --                 fixture-type list and its attributes and features to the attribute-definition lists (live
 --                 2026-10-15), so at exactly those levels (PATCH_FP_APPEND below) a container hashes only as many
@@ -4290,7 +4309,7 @@ local function patchFingerprint(p, only, exclude, opts)
     if not (okP and isHandle(t)) then return nil end
     return guidOf(t) .. "/" .. tostring(safeProp(m, "name"))
   end
-  local function add(h, depth, renumbered, isType)
+  local function add(h, depth, renumbered, isType, bare)
     if r.objects >= PATCH_FP_LIMIT then r.complete = false; r.reason = "more than " .. PATCH_FP_LIMIT .. " objects"; return false end
     local okc, n = pcall(function() return h:PropertyCount() end)
     if not okc or type(n) ~= "number" then r.complete = false; r.reason = "PropertyCount failed on " .. tostring(safeProp(h, "name")); return false end
@@ -4302,10 +4321,10 @@ local function patchFingerprint(p, only, exclude, opts)
       pn = list; names[key] = list
     end
     local class = tostring(safeCall(h, "GetClass"))
-    local unnumbered = renumbered or isType or (opts.fixturePositions == false and class == "Fixture")
+    local unnumbered = renumbered or isType or bare or (opts.fixturePositions == false and class == "Fixture")
     local parts = { tostring(depth), class, unnumbered and "" or tostring(safeProp(h, "no")) }
     for _, k in ipairs(pn) do
-      if not PATCH_FP_PROP_SKIP[k] and not (unnumbered and k == "INDEX") then
+      if not PATCH_FP_PROP_SKIP[k] and not (unnumbered and k == "INDEX") and not (bare and k == "NAME") then
         local v = (k == "FIXTURETYPE" and typeIdentity(h)) or (k == "MODEDIRECT" and modeIdentity(h)) or ((isType and k == "NAME") and tostring(safeProp(h, "name"))) or nil
         if v == nil then
           local okv, dv = pcall(function() return h:Get(k, Enums.Roles.Display) end)
@@ -4324,7 +4343,8 @@ local function patchFingerprint(p, only, exclude, opts)
     local name, inV, outV = tostring(safeProp(c, "name")), displayProp(c, "In"), displayProp(c, "Out")
     return (name == "Min" and inV == "000000" and outV == "000000") or (name == "Max" and inV == "FFFFFF" and outV == "FFFFFF")
   end
-  local function walk(h, depth, renumbered, guide, typeList, append, defaultCurve)
+  -- stageList: h is the Stages collection (its children are the stages, for excludeStages / bareStages).
+  local function walk(h, depth, renumbered, guide, typeList, append, defaultCurve, stageList)
     local kids = h:Children()
     local gkids = guide and guide:Children() or nil
     -- Truncate to the guide only where an import appends; elsewhere every child is hashed (so an extra one differs).
@@ -4336,8 +4356,9 @@ local function patchFingerprint(p, only, exclude, opts)
       local fid = class == "Fixture" and numericFid(c) or nil
       local skipType = typeList and (excludeTypes and excludeTypes[i] == guidOf(c) or (not excludeTypes and excludeGuids[guidOf(c)]))
       local skipPoint = defaultCurve and class == "DmxCurvePoint" and defaultEndPoint(c)
-      if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType and not skipPoint then
-        if not add(c, depth, renumbered, typeList) then return end
+      local skipStage = stageList and opts.excludeStages and opts.excludeStages[i]
+      if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType and not skipPoint and not skipStage then
+        if not add(c, depth, renumbered, typeList, stageList and opts.bareStages and opts.bareStages[i]) then return end
         walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false, append, renumbered and depth == 1 and i == 1)
       end
     end
@@ -4352,7 +4373,7 @@ local function patchFingerprint(p, only, exclude, opts)
         local append = opts.guide and PATCH_FP_APPEND[cname] or nil
         local guide = append and opts.guide[cname] or nil
         if append and not guide then r.complete = false; r.reason = "the guide has no collection " .. cname; break end
-        walk(c, 1, PATCH_FP_RENUMBERED[cname], guide, cname == "FixtureTypes", append)
+        walk(c, 1, PATCH_FP_RENUMBERED[cname], guide, cname == "FixtureTypes", append, nil, cname == "Stages")
       end
     end
   end
@@ -4368,7 +4389,8 @@ end
 
 -- args: { side = "live" | "copy", collection = <name>, excludeFids = [ ... ],
 --         excludeGuids = [ type GUID, ... ], excludeTypes = [ { index, guid }, ... ], prefixOfLive = true (copy side only: hash only what the live patch
---         has in every container, leaving out what an import appended), fixturePositions = false (a move, 0.42.0) }
+--         has in every container, leaving out what an import appended), fixturePositions = false (a move, 0.42.0),
+--         excludeStages = [ position, ... ], bareStages = [ position, ... ] (a stage session, 0.48.0) }
 ops["patch.fingerprint"] = function(args)
   if type(args.collection) ~= "string" then raise("[bad-args] collection (string) is required; patch.collections lists them") end
   local exclude = {}
@@ -4383,6 +4405,16 @@ ops["patch.fingerprint"] = function(args)
       opts.excludeTypes[i] = x.guid
     end
   end
+  for _, k in ipairs({ "excludeStages", "bareStages" }) do
+    if type(args[k]) == "table" then
+      opts[k] = {}
+      for _, x in ipairs(args[k]) do
+        local i = math.tointeger(x)
+        if not i or i < 1 then raise("[bad-args] " .. k .. " must be a list of stage positions (1-based)") end
+        opts[k][i] = true
+      end
+    end
+  end
   local p = patchSide(args.side or "live")
   if args.prefixOfLive == true then
     if args.side ~= "copy" then raise("[bad-args] prefixOfLive applies to the copy side only") end
@@ -4394,6 +4426,180 @@ ops["patch.fingerprint"] = function(args)
   fp.side = args.side or "live"
   fp.ms = math.floor((now() - started) * 1000 + 0.5)
   return fp
+end
+
+-------------------------------------------------------------------------------
+-- #97: the patch's stages (bridge 0.48.0). In the Halloween 2026 build (live, onPC 2.5.1, 2026-10-25) stages were
+-- made with gma3_lua inside the copy: ShowData().Patch.Stages:Ptr(1):Set('Name', ...) renamed one,
+-- Stages:Acquire('Stage') appended "Stage 2" with its Spaces and Fixtures children (Stages:Create(2) silently did
+-- nothing), and ChangeDestination Root committed; LivePatch.Stages then read the three stages.
+--   patch.stages     read-only: each stage's position, number, name, fixtures and spaces (live or copy)
+--   patch.stageEdit  in the copy: create (Acquire + Name), rename (Name) or remove (Delete) stages, re-checked here and
+--                    undone on any problem. Delete on Stages is not verified on a console (it is how fixtures and
+--                    fixture types are deleted), so removal is kept to empty stages after the first.
+-- Helpers live in patchStages: the main chunk is at Lua's limit of 200 locals.
+-------------------------------------------------------------------------------
+
+-- A stage's row. name is as Lua reads it: an empty Name reads as "Stage <no>", so a name of that form is "default"
+-- (empty, or set to that text: Lua cannot tell them apart, #98). fixtures counts every fixture under the stage's
+-- Fixtures, sub-fixtures included; absent when the list cannot be read. spaces: the Spaces child's children.
+function patchStages.info(s, i)
+  local no = tonumber(safeProp(s, "no")) or i
+  local name = tostring(safeProp(s, "name"))
+  local row = { index = i, no = no, name = name, nameKind = (name == "" or name == "Stage " .. no) and "default" or "explicit", children = {} }
+  local okK, kids = pcall(function() return s:Children() end)
+  if okK and type(kids) == "table" then for _, c in ipairs(kids) do row.children[#row.children + 1] = tostring(safeProp(c, "name")) end end
+  row.children = emptyArray(row.children)
+  local okF, fx = pcall(function() return s.Fixtures end)
+  row.fixturesList = okF and fx ~= nil
+  if row.fixturesList then
+    local n, top, other = 0, 0, 0
+    local function walk(h, d)
+      for _, c in ipairs(h:Children()) do
+        if safeCall(c, "GetClass") == "Fixture" then
+          n = n + 1
+          if d == 0 then top = top + 1 end
+          walk(c, d + 1)
+        elseif d == 0 then
+          other = other + 1
+        end
+      end
+    end
+    if pcall(walk, fx, 0) then row.fixtures, row.topLevel, row.otherObjects = n, top, other end
+  end
+  local okS, sp = pcall(function() return s.Spaces end)
+  row.spacesList = okS and sp ~= nil
+  if row.spacesList then
+    local okC, c = pcall(function() return sp:Count() end)
+    if okC and type(c) == "number" then row.spaces = c end
+  end
+  return row
+end
+
+function patchStages.rows(p)
+  local rows = {}
+  for i, s in ipairs(p.Stages:Children()) do rows[#rows + 1] = patchStages.info(s, i) end
+  return rows
+end
+
+-- A new name for a stage: a string without quotes or control characters (nameArg), trimmed, not used by another
+-- stage (case-insensitive; the stage at `except` may already have it, in another case).
+function patchStages.checkName(p, v, field, except, taken)
+  local name = nameArg(v, field)
+  if not name then raise("[bad-args] " .. field .. " is required") end
+  if name:match("^%s") or name:match("%s$") then raise("[bad-args] " .. field .. " must not start or end with a space") end
+  local low = name:lower()
+  for i, s in ipairs(p.Stages:Children()) do
+    if i ~= except and tostring(safeProp(s, "name")):lower() == low then raise({ code = "name-taken", message = "stage " .. i .. " is already named " .. tostring(s.name) .. "; stage names must be unique (case-insensitive)" }) end
+  end
+  if taken then
+    if taken[low] then raise({ code = "name-taken", message = field .. ": " .. name .. " is given twice" }) end
+    taken[low] = true
+  end
+  return name
+end
+
+-- The stage at position index of the copy, which must still have the name the client saw in the live patch.
+function patchStages.at(p, index, expect)
+  local i = type(index) == "number" and math.tointeger(index) or nil
+  local kids = p.Stages:Children()
+  if not i or i < 1 or i > #kids then raise("[no-stage] no stage at position " .. tostring(index) .. " (the copy has " .. #kids .. ")") end
+  local s = kids[i]
+  if type(expect) == "string" and tostring(safeProp(s, "name")) ~= expect then raise({ code = "stage-changed", message = "the stage at position " .. i .. " is named " .. tostring(s.name) .. " in the copy, not " .. expect .. "; nothing was changed" }) end
+  return s, i
+end
+
+-- Puts a stage's Name back: "" for a default name, which is what an unnamed stage reads as.
+function patchStages.restoreName(s, row)
+  return pcall(function() s:Set("Name", row.nameKind == "default" and "" or row.name) end)
+end
+
+-- args: { side = "live" | "copy" }
+ops["patch.stages"] = function(args)
+  local p = patchSide(args.side)
+  if not p.Stages then raise("[no-stage] the patch has no Stages") end
+  local rows = patchStages.rows(p)
+  return { side = args.side or "live", count = #rows, stages = emptyArray(rows) }
+end
+
+-- args: { action = "create", names = [ ... ] } | { action = "rename", index, expect, name } | { action = "remove", index, expect }
+-- (expect: the stage's name as patch.stages read it in the live patch), exclusive. In the copy only.
+ops["patch.stageEdit"] = function(args)
+  requireExclusive(args, "patch.stageEdit")
+  local p = requireCopy(nil)
+  if not p.Stages then raise("[no-stage] the copy has no Stages") end
+  local stages = p.Stages
+  if args.action == "create" then
+    if type(args.names) ~= "table" or #args.names == 0 or #args.names > 32 then raise("[bad-args] names must be a list of 1-32 stage names") end
+    local taken, names = {}, {}
+    for k, v in ipairs(args.names) do names[k] = patchStages.checkName(p, v, "names[" .. k .. "]", nil, taken) end
+    local before = stages:Count()
+    local created = {}
+    -- Deletes what this call appended, newest first (Delete on Stages: see above).
+    local function undo()
+      local ok = true
+      for j = stages:Count(), before + 1, -1 do ok = pcall(function() stages:Delete(j) end) and ok end
+      return ok and stages:Count() == before
+    end
+    for k, name in ipairs(names) do
+      local n0 = stages:Count()
+      local okA, errA = pcall(function() return stages:Acquire("Stage") end)
+      local n1 = stages:Count()
+      local s = n1 == n0 + 1 and stages:Children()[n1] or nil
+      local why
+      if not okA then why = "Acquire('Stage') raised: " .. tostring(errA)
+      elseif not s then why = "Acquire('Stage') left " .. n1 .. " stages, expected " .. (n0 + 1)
+      elseif safeCall(s, "GetClass") ~= "Stage" then why = "the new object is a " .. tostring(safeCall(s, "GetClass")) .. ", not a Stage"
+      else
+        local okN, errN = pcall(function() s:Set("Name", name) end)
+        if not okN then why = "naming it raised: " .. tostring(errN)
+        elseif tostring(safeProp(s, "name")) ~= name then why = "it reads " .. tostring(s.name) .. " after naming it " .. name .. " (the console may strip characters from names)" end
+      end
+      if why then
+        local undone = undo()
+        raise({ code = "create-failed", message = "creating stage " .. name .. ": " .. why .. "; " .. (undone and ("the " .. (#created + (n1 > n0 and 1 or 0)) .. " stage(s) this call appended were deleted again") or "the stages this call appended could not all be deleted again") .. " (in the copy only)", created = emptyArray(created), undone = undone })
+      end
+      created[#created + 1] = patchStages.info(s, n1)
+    end
+    return { action = "create", created = emptyArray(created), stages = emptyArray(patchStages.rows(p)) }
+  elseif args.action == "rename" then
+    local s, i = patchStages.at(p, args.index, args.expect)
+    local name = patchStages.checkName(p, args.name, "name", i)
+    local old = patchStages.info(s, i)
+    if old.name == name then raise("[bad-args] stage " .. i .. " is already named " .. name .. "; nothing to change") end
+    local okN, errN = pcall(function() s:Set("Name", name) end)
+    local got = tostring(safeProp(s, "name"))
+    if not okN or got ~= name then
+      local restored = patchStages.restoreName(s, old)
+      raise({ code = "rename-failed", message = "renaming stage " .. i .. ": " .. (okN and ("it reads " .. got .. " after naming it " .. name) or ("Set Name raised: " .. tostring(errN))) .. "; " .. (restored and "its name was put back" or "its name could not be put back") .. " (in the copy only)", restored = restored })
+    end
+    return { action = "rename", before = old, stage = patchStages.info(s, i), stages = emptyArray(patchStages.rows(p)) }
+  elseif args.action == "remove" then
+    local s, i = patchStages.at(p, args.index, args.expect)
+    local count = stages:Count()
+    if count <= 1 then raise("[last-stage] the patch has one stage; it cannot be removed") end
+    if i == 1 then raise("[first-stage] the first stage is not removed (sessions and gma3_patch_add default to it)") end
+    local row = patchStages.info(s, i)
+    if row.fixtures ~= 0 or row.otherObjects ~= 0 then raise({ code = "stage-not-empty", message = "stage " .. i .. " (" .. row.name .. ") " .. (row.fixtures == nil and "has a Fixtures list that cannot be read" or ("holds " .. row.fixtures .. " fixture(s)" .. ((row.otherObjects or 0) > 0 and (" and " .. row.otherObjects .. " other object(s)") or ""))) .. "; nothing was removed", stage = row }) end
+    if row.spacesList and row.spaces ~= 0 then raise({ code = "stage-not-empty", message = "stage " .. i .. " (" .. row.name .. ") " .. (row.spaces == nil and "has a Spaces list that cannot be read" or ("has " .. row.spaces .. " space(s)")) .. "; nothing was removed", stage = row }) end
+    for _, c in ipairs(row.children) do
+      if c ~= "Fixtures" and c ~= "Spaces" then raise({ code = "stage-not-empty", message = "stage " .. i .. " (" .. row.name .. ") has a child " .. c .. " besides Fixtures and Spaces; nothing was removed", stage = row }) end
+    end
+    local after = {}
+    for k = i + 1, count do after[#after + 1] = { name = tostring(safeProp(stages:Children()[k], "name")), from = safeProp(stages:Children()[k], "no") } end
+    local okD, errD = pcall(function() stages:Delete(i) end)
+    if not okD then raise("[remove-failed] deleting stage " .. i .. " raised: " .. tostring(errD)) end
+    local left = stages:Children()
+    if #left ~= count - 1 then raise("[remove-failed] the copy has " .. #left .. " stages after Delete, expected " .. (count - 1)) end
+    for _, c in ipairs(left) do if c == s then raise("[remove-failed] the stage is still in the copy after Delete") end end
+    local renumbered = {}
+    for k, a in ipairs(after) do
+      local c = left[i + k - 1]
+      if c then renumbered[#renumbered + 1] = { from = a.from, to = safeProp(c, "no"), name = tostring(safeProp(c, "name")), was = a.name } end
+    end
+    return { action = "remove", removed = row, renumbered = emptyArray(renumbered), stages = emptyArray(patchStages.rows(p)) }
+  end
+  raise("[bad-args] action must be create, rename or remove")
 end
 
 -------------------------------------------------------------------------------

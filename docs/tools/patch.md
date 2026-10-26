@@ -8,6 +8,7 @@ the [SU-03 record](../probes/su-03-import-macos-2.5.1.md). `gma3_patch_library_a
 SU-22): bridge 0.38.0, [SU-22 record](../probes/su-22-library-add-macos-2.5.1.md). Imports name the library folder
 from bridge 0.41.0 ([record](../probes/import-library-listing-macos-2.5.1.md)). `gma3_patch_move` (fixtures under a
 grouping fixture) and `gma3_patch_retype` (fixtures to another type of the same mode): bridge 0.42.0 and 0.29.0.
+`gma3_patch_stages` (list, create, rename and remove stages, #97): bridge 0.48.0.
 
 ## Common behaviour
 
@@ -95,6 +96,7 @@ in one result; the compact form is about 6 KB.
   copy. Such a fixture has an unreadable break, a break that is not an address, a DMX mode that cannot be read, or a
   break the mode does not have. A rename or an unpatch adds no range and is not affected.
 - `patch.remove`: refuses fixtures with sub-fixtures.
+- `patch.stageEdit` (bridge 0.48.0): see [gma3_patch_stages](#gma3_patch_stages); it is on the same guard and needs `exclusive = true` too.
 - All five mutating ops are on the bridge's input-ownership guard (refused with `[busy]` while someone owns console
   input) and need `exclusive = true`.
 
@@ -242,6 +244,60 @@ step succeeded and both read-backs matched. What the run established:
   local pose. Addresses (3.001, 3.007) and Group 996 were kept.
 - The isolation check (with `fixturePositions: false`) passed on both moves. Whether a move would have failed it
   without that option was not tried.
+
+## gma3_patch_stages
+
+Stages are the areas of a venue ("Main Floor", "Basement", "Outdoors"); `gma3_patch_add` adds fixtures to one by name.
+In the Halloween 2026 build no tool made them, and a subagent used `gma3_lua` inside the patch copy (#97; 10 calls,
+about 35 s). What worked there (live, onPC 2.5.1, 2026-10-25) is what the bridge does now:
+`Stages:Ptr(1):Set('Name', ...)` renames, `Stages:Acquire('Stage')` appends "Stage <n>" with its `Spaces` and
+`Fixtures` children (`Stages:Create(2)` silently did nothing), and `ChangeDestination Root` commits.
+
+| Parameter | |
+| --- | --- |
+| `action` | `list` (read-only), `create`, `rename` or `remove` |
+| `name` | `create`: the new stage's name; `rename`: the new name |
+| `names` | `create`: several new stages at once (1-32), appended in order |
+| `stage` | `rename` / `remove`: the stage's `index` (position, from `list`) or its name (exact, else the one name that matches ignoring case) |
+| `exclusive` | Must be `true` for a change |
+| `verify` | Default `true` |
+
+**list** (`patch.stages`, the live patch): per stage its `index`, `no`, `name`, `nameKind`, `fixtures` (every
+fixture under its Fixtures, sub-fixtures included; absent when the list cannot be read), `topLevel`, `spacesList`
+(whether it has a Spaces child) and `spaces` (how many), and `children`. Lua reads an empty Name as "Stage <no>" (#98),
+so a name of that form is `nameKind: "default"` (empty, or set to that text: the two cannot be told apart) and any other
+is `"explicit"`.
+
+**Names** are validated like other object names: no characters the console strips (`"`, `.`, `,` and the others in
+the validation message), trimmed, at most 128 characters, and unique among the stages ignoring case. A stage may
+change the case of its own name; renaming to the same name is refused as changing nothing.
+
+**Pre-flight** (`patch.stages`), nothing sent on failure: a new name is not taken; the stage exists; a removal is not
+of the first or only stage, and the stage holds no fixtures and no other objects, has no spaces and no children
+besides Fixtures and Spaces (any of these unreadable is a refusal too).
+
+**The session.** Every change runs the common session, entered at the first stage's Fixtures like every other patch
+session; the step is `create_stage(s)`, `rename_stage` or `remove_stage` (`patch.stageEdit`). The bridge re-checks in
+the copy: the stage at the position still has the name the pre-check saw (`[stage-changed]` otherwise), the names,
+emptiness, and first and last stage. A create calls `Acquire('Stage')` and sets the Name per stage, checks the new
+object and the name it reads, and deletes every stage it appended on any problem; a rename puts the old name back
+(an empty Name for a default one) when the console does not keep the new one.
+
+The isolation check leaves out only what the change touches, by stage position (`patch.fingerprint`'s
+`excludeStages` and `bareStages`): after a create the appended stages on the copy side; after a rename the stage's
+Name and number on both sides; after a removal the removed stage on the live side, and the Name and number of the
+stages after it, which move up a place, on both sides. Everything inside every stage, the renamed one included, is
+still compared. If the console derives other texts from a stage's name or number (not seen; not checked live), the
+check fails and the copy is left open, as for any mismatch.
+
+**Read-back** (`patch.stages`, live): the names in order (a default name may read a new number after a removal) and
+every stage's fixture count against the state before. The result has `before`, the bridge's `edit` reply (created,
+renamed or removed stages, `renumbered` after a removal) and `stages`.
+
+**Unverified.** Removal uses `Delete` on Stages, the call that deletes fixtures and fixture types; it has not been
+run on a console for a stage, which is why it is limited to empty stages after the first. Nothing of this tool has
+run live yet: the evidence is the Lua session quoted above and the harness in `test/lua/patch_ops_test.lua`. A
+stage with a Name needs bridge 0.45.0 for every later session on it (#98).
 
 ## gma3_patch_retype
 
