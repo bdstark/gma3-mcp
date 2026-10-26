@@ -715,3 +715,18 @@ test("#102 store_macro batch (verify off): a rejected rename keeps the holder's 
   assert.deepEqual([5, 901, 902, 903, 904].map((n) => con.macros.get(n)?.name ?? null), ["Intro", null, "Blue", "Macro 903", null]);
   assert.deepEqual(con.listed, ["DataPool.Macros", "DataPool.Macros", "DataPool.Macros"]);
 });
+
+test("#102 review of #115: a macro name cleared with name \"\" frees it for the rest of the batch (verify off)", async () => {
+  con.macro(5, [{ command: "Echo old" }], "Intro");
+  const { result } = await h.callJson("gma3_store_macro", {
+    verify: false,
+    macros: [
+      { macro: 901, mode: "create", name: "Other", lines: echo },
+      { macro: 5, mode: "replace", name: "", lines: echo },
+      { macro: 902, mode: "create", name: "Intro", lines: echo },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), ["Macro 901:succeeded", "Macro 5:succeeded", "Macro 902:succeeded"], JSON.stringify(result.items));
+  assert.equal(con.macros.get(902)!.name, "Intro");
+  assert.deepEqual(con.listed, ["DataPool.Macros", "DataPool.Macros"], "the cleared name made the next item read the pool again");
+});

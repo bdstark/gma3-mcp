@@ -54,10 +54,15 @@ export async function readPoolNames<K>(bridge: Gma3Bridge, key: K, ref: string, 
   const out = new Map<number, PoolName>();
   const PAGE = 10000;
   for (let offset = 0; ; ) {
-    const r = (await bridge.request("children", { ref, fields: ["No", "Name"], limit: PAGE, offset }, t)) as { total?: unknown; items?: Array<{ name?: string; addr?: string; invalid?: boolean; fields?: Record<string, unknown> }> };
+    const r = (await bridge.request("children", { ref, fields: ["No", "Name"], limit: PAGE, offset }, t)) as { total?: unknown; enumerationError?: unknown; items?: Array<{ name?: string; addr?: string; invalid?: boolean; fields?: Record<string, unknown>; fieldErrors?: Record<string, unknown> }> };
+    // Bridge 0.47.0 (#96): a Children() that raised gives an empty listing with enumerationError, and a field read that
+    // raised is named in fieldErrors; either leaves the names unknown, never an empty pool (review of #115).
+    if (r?.enumerationError !== undefined && r.enumerationError !== null) throw new Error(`${words.all} could not be listed: ${String(r.enumerationError)}`);
     const items = r?.items ?? [];
     for (const it of items) {
       if (it.invalid) continue;
+      const bad = ["No", "Name"].find((f) => it.fieldErrors?.[f] !== undefined && it.fieldErrors?.[f] !== null);
+      if (bad) throw new Error(`${words.one} (${it.addr ?? it.name ?? "?"}) has no readable ${bad === "No" ? "number" : "name"}: ${String(it.fieldErrors![bad])}`);
       const no = Number.parseInt(String(it.fields?.No ?? ""), 10);
       if (!Number.isInteger(no)) throw new Error(`${words.one} (${it.addr ?? it.name ?? "?"}) has no readable number`);
       const name = String(it.fields?.Name ?? it.name ?? "").trim();
@@ -96,13 +101,15 @@ export interface LeftName {
  * confirmed name write, or the console's read-back of a write that did not take it; else an existing object stored
  * without a name keeps its own. Any other store (an unnamed create gets a default name such as "Preset 102", a failed
  * or unknown store or name write) may have changed a name nobody read, so the pool is dropped from the cache and read
- * again by the next item.
+ * again by the next item. So is a name left empty (a macro's name cleared with ""): the console gives it a default
+ * nobody read, and the old name must not stay cached as taken (review of #115).
  */
 export function recordLeftName<K>(cache: PoolNameCache<K>, key: K, number: number, s: LeftName): void {
   const record = (left: unknown) => {
     const cached = cache.get(key);
     const n = typeof left === "string" && left.trim() ? left.trim() : undefined;
-    if (cached && n) cached.set(number, { name: n, thisCall: true });
+    if (!n) cache.delete(key);
+    else if (cached) cached.set(number, { name: n, thisCall: true });
   };
   const stored = s.store === "succeeded";
   if (typeof s.readBack === "string" && s.readBack.trim()) record(s.readBack);

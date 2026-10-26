@@ -69,6 +69,8 @@ class Console {
   /** #102: the pool listings (children of DataPool.Groups / DataPool.MAtricks) read, in order, and whether they fail. */
   listed: string[] = [];
   failChildren = false;
+  /** Review of #115: bridge 0.47.0 answers a failed Children() with enumerationError, a failed field read with fieldErrors. */
+  listingFault: "" | "enumeration" | "field" = "";
   /**
    * #102: what a Name write does when another object of the pool has the name. Not probed for groups or MAtricks:
    * "suffix" models the preset pool's rule ("Front" -> "Front#2", live for presets 2026-10-25), "keep" a console
@@ -116,7 +118,9 @@ class Console {
       if (this.failChildren) throw new Error("timeout");
       const pool: Array<[number, string]> =
         ref === "DataPool.Groups" ? [...this.groups].map(([n, g]) => [n, g.name]) : ref === "DataPool.MAtricks" ? [...this.matricks].map(([n, m]) => [n, m.Name]) : (() => { throw new Error(`unexpected children ${ref}`); })();
+      if (this.listingFault === "enumeration") return { total: 0, offset: 0, count: 0, items: [], enumerationError: "Children failed" };
       const items = pool.sort(([a], [b]) => a - b).map(([n, name]) => ({ name, index: n, addr: `addr.${n}`, fields: { No: String(n), Name: name } }));
+      if (this.listingFault === "field") Object.assign(items[0], { fields: { No: items[0].fields.No }, fieldErrors: { Name: "Get failed" } });
       return { total: items.length, offset: 0, count: items.length, items };
     });
     h.fake.on("selection.grid", () => {
@@ -881,4 +885,21 @@ test("#102 configure_matricks: a name another MAtricks has is refused before any
   const unread = await h.callJson("gma3_configure_matricks", { matricks: 6, name: "Fan" });
   assert.match(stepOf(unread.result, "check_name").error, /the names of the MAtricks pool could not be read.*nothing was sent/);
   assert.equal(mutations().length, 0);
+});
+
+test("#102 review of #115: a listing with enumerationError or a name in fieldErrors is unreadable: refused, or a warning with allow_suffix", async () => {
+  holdGroup(5, "Front");
+  for (const fault of ["enumeration", "field"] as const) {
+    con.listingFault = fault;
+    h.fake.requests.length = 0;
+    const refused = await h.callJson("gma3_store_group", { group: 905, name: "Front", items: one, exclusive: true });
+    assert.equal(refused.isError, true, fault);
+    assert.match(stepOf(refused.result, "check_name").error, fault === "enumeration" ? /the names of the group pool could not be read \(DataPool\.Groups could not be listed: Children failed\).*nothing was sent/ : /could not be read \(a group of DataPool\.Groups \(addr\.5\) has no readable name: Get failed\).*nothing was sent/, fault);
+    assert.equal(mutations().length, 0, fault);
+    assert.equal(con.groups.has(905), false, fault);
+    const allowed = await h.callJson("gma3_store_group", { group: 906, name: "Back", items: one, exclusive: true, on_name_taken: "allow_suffix" });
+    assert.equal(allowed.result.verification.status, "matched", JSON.stringify(allowed.result));
+    assert.ok(allowed.result.warnings.some((w: string) => /could not be read.*allow_suffix/.test(w)), fault);
+    con.groups.delete(906);
+  }
 });

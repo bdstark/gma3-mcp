@@ -71,6 +71,8 @@ class Console {
   silentNameSet = false;
   /** #102: the pool listing (children of "Preset <pool>") fails. */
   failChildren = false;
+  /** Review of #115: bridge 0.47.0's enumerationError (Children() raised) or a Name in fieldErrors. */
+  listingFault: "" | "enumeration" | "field" = "";
   /** #102: the pool listings read, in order. */
   listed: string[] = [];
   /** #102 review: presets whose Name write the console rejects (the store went through, the rename did not). */
@@ -193,7 +195,9 @@ class Console {
       if (this.failChildren) throw new Error("timeout");
       const pool = ref.match(/^Preset (\d+)$/)?.[1];
       if (!pool) throw new Error(`unexpected children ${ref}`);
-      const items = [...this.presets].filter(([k]) => k.startsWith(`${pool}.`)).map(([k, p]) => ({ name: p.name, class: "Preset", addr: `addr.${k}`, fields: { No: k.split(".")[1], Name: p.name } }));
+      if (this.listingFault === "enumeration") return { total: 0, offset: 0, count: 0, items: [], enumerationError: "Children failed" };
+      const items: Array<Record<string, unknown>> = [...this.presets].filter(([k]) => k.startsWith(`${pool}.`)).map(([k, p]) => ({ name: p.name, class: "Preset", addr: `addr.${k}`, fields: { No: k.split(".")[1], Name: p.name } }));
+      if (this.listingFault === "field" && items[0]) Object.assign(items[0], { fields: { Name: (items[0].fields as Record<string, unknown>).Name }, fieldErrors: { No: "Get failed" } });
       return { total: items.length, offset: 0, count: items.length, items };
     });
     h.fake.on("set", (args) => {
@@ -782,4 +786,17 @@ test("#102 review of #108: an unnamed create's default name is taken for the res
   assert.match(result.items[2].summary, /"Preset 102" is Preset 4\.102/);
   assert.equal(con.commands.some((c) => /^Store Preset 4\.103 /.test(c)), false, "refused before its store");
   assert.deepEqual(con.listed, ["Preset 4", "Preset 4"], "the unnamed create made the next item read the pool again");
+});
+
+test("#102 review of #115: a pool listing with enumerationError or an unreadable No refuses a named store before anything is sent", async () => {
+  holdName("4.5", "Orange");
+  con.set("401", "ColorRGB_R", 100);
+  for (const [fault, re] of [["enumeration", /preset pool 4 could not be listed: Children failed/], ["field", /a preset of pool 4 \(addr\.4\.5\) has no readable number: Get failed/]] as const) {
+    con.listingFault = fault;
+    const { result } = await store({ preset: "4.101", fixtures: [401], mode: "selective", name: "Orange" });
+    assert.match(stepError(result, "check_name"), re, fault);
+    assert.match(stepError(result, "check_name"), /could not be read.*nothing was sent/, fault);
+    assert.equal(sent(), 0, fault);
+    assert.equal(con.presets.has("4.101"), false, fault);
+  }
 });
