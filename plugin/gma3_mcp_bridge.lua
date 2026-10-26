@@ -3455,7 +3455,8 @@ end
 -- never through a dialog (DIALOG.md "KB-25", docs/probes/kb-25-dialogs-macos-2.5.1.md):
 --   patch.enter   queues ChangeDestination into the copy and its stage's Fixtures with CmdIndirect. Never
 --                 Cmd(): a dialog opened from the plugin thread stalls the bridge. CmdIndirect lands on a
---                 later frame, so the client polls patch.state until the destination has changed.
+--                 later frame, so the client polls patch.state until the destination has changed (from
+--                 0.45.0 until patch.state's destinationStage, found by address, is the entered stage: #98).
 --   patch.add / patch.set / patch.remove   edit the copy, and only while it is open; each checks the
 --                 copy itself, and add also the destination, and refuses otherwise.
 --   patch.commit  queues ChangeDestination Root, which commits the copy silently. A committed patch edit
@@ -3500,12 +3501,12 @@ local function requireExclusive(args, what)
   end
 end
 
--- The copy must be open (and, for adding, the command line on its stage's Fixtures).
+-- The copy must be open (and, for an import, the command line at its FixtureTypes).
 local function requireCopy(expectDestination)
   if not patchCopyOpen() then raise("[copy-closed] the patch copy is not open; start a session with patch.enter and wait until patch.state reports it") end
   if expectDestination then
     local d = patchDestination()
-    if d ~= expectDestination then raise("[wrong-destination] the command line destination is " .. tostring(d) .. ", not " .. expectDestination .. " (CmdIndirect lands on a later frame; poll patch.state)") end
+    if d ~= expectDestination then raise("[wrong-destination] the command line destination is " .. tostring(d) .. ", expected " .. expectDestination) end
   end
   return ShowData().Patch
 end
@@ -3520,14 +3521,73 @@ local function patchSide(side)
   return sd.LivePatch
 end
 
-local function stageOf(p, stageName)
+-- A patch's stages and which one's Fixtures the command line is at (#98). One table: the main chunk is at Lua's limit
+-- of 200 locals.
+local patchStages = {}
+
+-- The stage named stageName (the first stage without one) and its position in Stages.
+function patchStages.of(p, stageName)
   local stages = p.Stages
   if not stages or stages:Count() == 0 then raise("[no-stage] the patch has no stages") end
-  if stageName == nil then return stages:Children()[1] end
-  for _, s in ipairs(stages:Children()) do
-    if tostring(s.name) == stageName then return s end
+  if stageName == nil then return stages:Children()[1], 1 end
+  for i, s in ipairs(stages:Children()) do
+    if tostring(s.name) == stageName then return s, i end
   end
   raise("[no-stage] no stage named " .. tostring(stageName))
+end
+
+-- How the console shows a stage's Fixtures as the command line destination (live 2026-10-25, #98): "Stage 1.Fixtures"
+-- for a stage with an empty Name, "Stage 1 'Main Floor'.Fixtures" for a named one, as pools show "21 'Phaser'". Set
+-- explicitly to the default text it reads "Stage 1 'Stage 1'.Fixtures", but Lua reads an empty Name as that default
+-- too, so for that name both texts are possible. Returns the likelier text and every possible one. The texts only
+-- name the destination in messages and stand in when its address cannot be read: a name with ' in it is shown as is
+-- between the quotes, which cannot be split back unambiguously.
+function patchStages.texts(stage, index)
+  local no = tostring(tonumber(safeProp(stage, "no")) or index)
+  local name = tostring(stage.name)
+  local plain, named = "Stage " .. no .. ".Fixtures", "Stage " .. no .. " '" .. name .. "'.Fixtures"
+  if name == "" then return plain, { plain } end
+  if name == "Stage " .. no then return plain, { plain, named } end
+  return named, { named }
+end
+
+-- The stage of p whose Fixtures the command line is at, its position and how it was found: by the destination
+-- object's address (the raw Destination is the object, as patch.moveStep compares it, 0.42.0), or by the console's
+-- text only when that address cannot be read. nil when the destination is no stage's Fixtures.
+function patchStages.find(p)
+  local ok, stages = pcall(function() return p.Stages:Children() end)
+  if not ok or type(stages) ~= "table" then return nil end
+  local okD, addr = pcall(function() return CmdObj():Get("Destination"):Addr() end)
+  if not okD then addr = nil end
+  local text = patchDestination()
+  for i, s in ipairs(stages) do
+    if addr ~= nil then
+      local okA, a = pcall(function() return s.Fixtures:Addr() end)
+      if okA and a ~= nil and a == addr then return s, i, "address" end
+    elseif text ~= nil then
+      local _, texts = patchStages.texts(s, i)
+      for _, t in ipairs(texts) do if t == text then return s, i, "text" end end
+    end
+  end
+  return nil
+end
+
+-- patch.state's row for the stage the command line is at.
+function patchStages.row(p)
+  local s, i, by = patchStages.find(p)
+  if not s then return nil end
+  return { index = i, no = safeProp(s, "no"), name = tostring(s.name), text = (patchStages.texts(s, i)), by = by }
+end
+
+-- For adding: the command line must be at the Fixtures of the copy's stage named stageName.
+function patchStages.require(p, stageName)
+  local want, wi = patchStages.of(p, stageName)
+  -- By position: two reads of one console object need not be the same Lua value.
+  local _, at = patchStages.find(p)
+  if at ~= wi then
+    raise("[wrong-destination] the command line destination is " .. tostring(patchDestination()) .. ", expected " .. (patchStages.texts(want, wi)) .. " (stage " .. wi .. ")")
+  end
+  return want
 end
 
 local function findType(p, t)
@@ -3792,6 +3852,8 @@ ops["patch.state"] = function()
   pcall(function() for _, s in ipairs(sd.LivePatch.Stages:Children()) do res.stages[#res.stages + 1] = tostring(s.name) end end)
   res.stages = emptyArray(res.stages)
   res.atRoot = res.destination == "Root" and not res.copyOpen
+  -- 0.45.0: the copy's stage whose Fixtures the command line is at ({index, no, name, text, by}); absent elsewhere.
+  if res.copyOpen then res.destinationStage = patchStages.row(sd.Patch) end
   return res
 end
 
@@ -3934,12 +3996,15 @@ ops["patch.enter"] = function(args)
   elseif args.target ~= nil and args.target ~= "stage" then
     raise("[bad-args] target must be stage (default) or fixturetypes")
   end
-  local stage = stageOf(ShowData().LivePatch, args.stage)
+  local stage, index = patchStages.of(ShowData().LivePatch, args.stage)
   local stageName = tostring(stage.name)
   if stageName:find('"') then raise("[bad-stage] the stage name contains a quote and cannot be addressed") end
   CmdIndirect('ChangeDestination "ShowData"."Patch"')
   CmdIndirect('ChangeDestination "Stages"."' .. stageName .. '"."Fixtures"')
-  return { queued = true, stage = stageName, expectDestination = stageName .. ".Fixtures" }
+  -- The copy is a copy of the live patch, so the stage has the same position there. A client from 0.45.0 waits for
+  -- patch.state's destinationStage.index to be stageIndex (compared by address); expectDestination is the console's
+  -- text for it (before 0.45.0 it was "<name>.Fixtures", which a named stage never shows: #98).
+  return { queued = true, stage = stageName, stageIndex = index, expectDestination = (patchStages.texts(stage, index)) }
 end
 
 -- Add `count` fixtures of one mode at `fid` (consecutive FIDs), patched consecutively from `address`
@@ -3950,7 +4015,8 @@ ops["patch.add"] = function(args)
   requireExclusive(args, "patch.add")
   local stageName = nameArg(args.stage, "stage")
   if not stageName then raise("[bad-args] stage is required (patch.enter reports it)") end
-  local p = requireCopy(stageName .. ".Fixtures")
+  local p = requireCopy(nil)
+  patchStages.require(p, stageName)
   local ft, mode, info = modeArgs(p, args)
   if #info.breaks > 1 then raise("[multi-break] DMX mode " .. info.name .. " has " .. #info.breaks .. " DMX breaks; multi-break modes are not supported by patch.add") end
   local count = integerArg(args.count or 1, "count", 1, PATCH_MAX_COUNT)
@@ -6389,7 +6455,7 @@ end)()
     elseif not source then
       raise("[already-there] the fixtures are already at the top level of " .. tostring(stageName))
     end
-    local stage = stageOf(p, stageName)
+    local stage = patchStages.of(p, stageName)
     return { stage = stage, stageName = stageName, entries = entries, source = source, target = target, parentFid = parentFid, sourceFid = srcFid or nil }
   end
 
@@ -6410,7 +6476,7 @@ end)()
   ops["patch.moveState"] = function(args)
     local p = requireCopy(nil)
     local stageName = nameArg(args.stage, "stage")
-    local stage = stageOf(p, stageName)
+    local stage = patchStages.of(p, stageName)
     local by = fixturesByFid(p)
     local d = destAddr()
     local function holderOf(v)
