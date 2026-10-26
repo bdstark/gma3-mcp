@@ -2507,6 +2507,15 @@ do
       and r.result.items[2].fields.Object == nil and type(r.result.items[2].fieldErrors) == "table" and tostring(r.result.items[2].fieldErrors.Object):find("cannot read Object", 1, true) ~= nil
       and r.result.items[2].fields.No == 202 and r.result.items[2].fieldErrors.No == nil
       and r.result.items[3].fields.Object == nil and r.result.items[3].fieldErrors == nil, J(r))
+  -- 0.47.0 (#96): a Children() that raises is enumerationError, not an empty parent; a plain empty parent has none.
+  local unlistable = H({ name = "Macros", class = "Macros" })
+  registry[unlistable].methods.Children = function() error("Children failed") end
+  local emptyPool = H({ name = "Groups", class = "Groups" })
+  ObjectList = function(ref) if ref == "BadPool" then return { unlistable } elseif ref == "EmptyPool" then return { emptyPool } end return listed(ref) end
+  r = request("children", { ref = "BadPool" })
+  check("#96: children reports a raising Children() as enumerationError with the empty listing", r.ok and r.result.total == 0 and r.result.count == 0 and tostring(r.result.enumerationError):find("Children failed", 1, true) ~= nil, J(r))
+  r = request("children", { ref = "EmptyPool" })
+  check("#96: an empty parent has no enumerationError", r.ok and r.result.total == 0 and r.result.enumerationError == nil, J(r))
   ObjectList = function(ref) if ref == "Page 1.202" then return { broken } end return listed(ref) end
   r = request("objects", { ref = "Page 1.202", fields = { "Object" }, asText = false })
   check("#96: objects reports the same fieldErrors", r.ok and r.result.count == 1 and tostring(r.result.items[1].fieldErrors and r.result.items[1].fieldErrors.Object):find("cannot read Object", 1, true) ~= nil, J(r))

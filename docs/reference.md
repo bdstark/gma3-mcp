@@ -139,20 +139,28 @@ as the display text the editor shows, and object references are resolved to the 
 `free: {size, from?}` adds each pool's first free block of `size` numbers from `from` (default 1) up to 9999,
 such as `"21-40"`. For a page it stays inside one executor row (101-198, 201-298, 301-390, 401-490) and starts at 101;
 an executor without an object counts as free unless a wider executor covers it. An executor's Width that cannot be read makes the page incomplete.
-Executor free blocks need bridge 0.47.0 (the tool asks the bridge's `ping`): an older bridge drops a failed `Object` read,
-so an occupied executor would read as empty. With an older bridge, or when the version cannot be read, a page's `free`
-is `null` and `freeNote` says why; pool free blocks are unaffected. `free` is `null` with `freeNote` when there is no such block or the
-read is incomplete. `data_pool` reads another data pool.
+Free blocks need bridge 0.47.0 (the tool asks the bridge's `ping` once per call). An older bridge answers a failed
+child enumeration with an empty listing and drops a failed `Object` read, so an existing pool or an occupied executor
+could read as free. With an older bridge, or when the version cannot be read, the result carries `unconfirmed` with the
+reason, and every pool's `free` is `null` with `freeNote`. `free` is also `null` with `freeNote` when there is no such
+block or the read is incomplete. `data_pool` reads another data pool.
 
-Every listing is read page by page (500 children per request) to its end. A failed request, a total that changes
-between requests or an object without a number makes that pool `complete: false` with `reason`, keeping what was
+Every listing is read page by page (500 children per request) to its end. A failed request, a child enumeration the
+console could not make (`enumerationError`), a total that changes between requests or an object without a number
+makes that pool `complete: false` with `reason`, keeping what was
 read; the call is an error only when no pool could be read at all (a pool whose first page was read is not). Page and executor ranges are refused before any read:
 the tool reads a page's executors with `children` on the page, never with `ObjectList` over a range
 ([above](#page-and-executor-ranges-plugin-v0200)).
 
+A pool object's number is its `index` (its slot in the pool); a page's is its `No`, else its `index`. An executor's
+number is its `No` only: its `index` is its position on the page (executor 191 reads index 91), so an executor whose
+`No` is missing or failed makes the page incomplete.
+
 From bridge 0.47.0 an item of the `children` and `objects` ops carries `fieldErrors: {<field>: <error>}` for each
 requested field whose read raised (the field itself stays absent, as before); an item whose fields were all read has
-no `fieldErrors`. Before 0.47.0 such a field was simply absent, like an empty one.
+no `fieldErrors`. Before 0.47.0 such a field was simply absent, like an empty one. A `children` listing (also inside
+`object` with `children`) carries `enumerationError` when the console's `Children()` raised; the listing is empty, as
+before.
 
 `gma3_objects` and `gma3_list_children` add `truncated: true` and a `note` with the next offset whenever the
 returned items stop before `total` (a read of `Macro Thru` stops at the default limit of 500). With `fields`,

@@ -358,27 +358,65 @@ test("an executor whose Object read raised (bridge 0.47.0 fieldErrors) is unread
   assert.equal(w.pool("Page 1").free, null);
 });
 
-test("with a bridge before 0.47.0 no executor free block is offered, and the reason says why; pool blocks stay", async () => {
+test("with a bridge before 0.47.0 the reads are unconfirmed and no free block is offered, for pools and executors", async () => {
   show.set("Page 1", [exec(101, { class: "Sequence", name: "A" })]);
   show.set("DataPool.Groups", objs([1, 2], "Group"));
   show.bridgeVersion = "0.46.0";
-  const { result, pool } = await usage({ pools: ["Page 1", "Groups"], free: { size: 2 } });
-  assert.equal(result.complete, true, "the reads themselves are complete");
-  assert.equal(pool("Page 1").free, null);
-  assert.match(pool("Page 1").freeNote, /bridge 0\.46\.0 .*need bridge 0\.47\.0/);
-  assert.equal(pool("Page 1").used, "101");
-  assert.equal(pool("Groups").free, "3-4");
-  assert.equal(h.fake.requests.filter((r) => r.op === "ping").length, 1);
+  const { result, isError, pool } = await usage({ pools: ["Page 1", "Groups"], free: { size: 2 } });
+  assert.equal(isError, false);
+  assert.match(String(result.unconfirmed), /bridge 0\.46\.0 .*completeness cannot be confirmed.*need bridge 0\.47\.0/);
+  for (const p of ["Page 1", "Groups"]) {
+    assert.equal(pool(p).free, null, p);
+    assert.match(pool(p).freeNote, /^not offered: bridge 0\.46\.0/, p);
+  }
+  assert.equal(pool("Groups").used, "1-2", "the reads themselves are still reported");
+  assert.equal(h.fake.requests.filter((r) => r.op === "ping").length, 1, "one ping per call");
 
   show.bridgeVersion = new Error("request timed out");
-  assert.match((await usage({ pools: ["Page 1"], free: { size: 2 } })).pool("Page 1").freeNote, /version could not be read \(request timed out\)/);
+  const noVersion = await usage({ pools: ["Groups"], free: { size: 2 } });
+  assert.match(String(noVersion.result.unconfirmed), /version could not be read \(request timed out\)/);
+  assert.equal(noVersion.pool("Groups").free, null);
   show.bridgeVersion = "0.47.1";
-  assert.equal((await usage({ pools: ["Page 1"], free: { size: 2 } })).pool("Page 1").free, "102-103");
-  // Without free, and without a page, no ping is sent.
-  h.fake.requests.length = 0;
-  await usage({ pools: ["Page 1"] });
-  await usage({ pools: ["Groups"], free: { size: 1 } });
-  assert.equal(h.fake.requests.filter((r) => r.op === "ping").length, 0);
+  const current = await usage({ pools: ["Page 1", "Groups"], free: { size: 2 } });
+  assert.equal(current.result.unconfirmed, undefined);
+  assert.equal(current.pool("Page 1").free, "102-103");
+  assert.equal(current.pool("Groups").free, "3-4");
+});
+
+test("a child enumeration the console could not make (bridge 0.47.0 enumerationError) is incomplete, not an empty pool", async () => {
+  show.set("DataPool.Groups", objs([1, 2], "Group"));
+  h.fake.on("children", (args) => (args.ref === "DataPool.Macros" ? { total: 0, offset: 0, count: 0, items: [], enumerationError: "Children failed" } : show.listings.has(String(args.ref)) ? { total: 2, offset: 0, count: 2, items: objs([1, 2], "Group") } : (() => { throw new Error("no"); })()));
+  const { result, isError, pool } = await usage({ pools: ["Macros", "Groups"], free: { size: 10 } });
+  assert.equal(isError, false);
+  assert.equal(result.complete, false);
+  assert.equal(pool("Macros").complete, false);
+  assert.match(pool("Macros").reason, /could not list the children: Children failed/);
+  assert.equal(pool("Macros").free, null, "not 1-10");
+  assert.equal(pool("Groups").free, "3-12");
+  // On its own nothing was read: an error.
+  assert.equal((await usage({ pools: ["Macros"] })).isError, true);
+});
+
+test("an executor without a readable No is unnumbered (its index is the column, not the number); a page falls back to its index", async () => {
+  // objectlist-hang probe: executor 191 reads index 91.
+  const noNo: Kid = { index: 91, name: "LOS2", class: "Exec", fields: { No: null, Object: { name: "LOS2", class: "Sequence", addr: "1.7.191", index: 1 } }, fieldErrors: { No: "cannot read No" } };
+  show.set("Page 1", [exec(101, { class: "Sequence", name: "A" }), noNo]);
+  const { pool } = await usage({ pools: ["Page 1"], free: { size: 1, from: 191 } });
+  const p = pool("Page 1");
+  assert.equal(p.used, "101", "not 91");
+  assert.equal(p.complete, false);
+  assert.match(p.reason, /1 executor\(s\) without a number/);
+  assert.equal(p.free, null, "191 may be the occupied one");
+  // Absent No (no fieldErrors) is the same.
+  show.set("Page 1", [{ ...noNo, fieldErrors: undefined }]);
+  assert.equal((await usage({ pools: ["Page 1"], free: { size: 1, from: 191 } })).pool("Page 1").free, null);
+
+  // A page is a pool object: a failed No falls back to its slot index.
+  show.set("DataPool.Pages", [{ index: 2, name: "Busk", class: "Page", addr: "1.6.2", fields: { No: null }, fieldErrors: { No: "cannot read No" } }]);
+  show.set("1.6.2", [exec(101, { class: "Macro", name: "Blackout" })]);
+  const pages = await usage({ pools: ["Pages"] });
+  assert.equal(pages.pool("Pages").complete, true);
+  assert.deepEqual(pages.pool("Pages").pages, [[2, "Busk", 1, "101"]]);
 });
 
 test("versionAtLeast", () => {

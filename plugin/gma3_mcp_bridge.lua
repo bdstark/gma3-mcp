@@ -790,7 +790,16 @@ local function childSummary(c, fields, asText, playback)
 end
 
 local function listChildren(h, fields, limit, offset, asText, playback)
-  local children = safeCall(h, "Children") or {}
+  -- 0.47.0 (#96): a Children() that raises is reported as enumerationError next to the empty listing it gave before,
+  -- so a parent whose children could not be listed no longer reads like an empty one. A missing method is still empty.
+  local children, enumerationError = {}, nil
+  local okF, f = pcall(function() return h.Children end)
+  if okF and type(f) == "function" then
+    local ok, res = pcall(f, h)
+    if not ok then enumerationError = tostring(res) elseif type(res) == "table" then children = res end
+  elseif not okF then
+    enumerationError = tostring(f)
+  end
   local total = #children
   offset = tonumber(offset) or 0
   limit = tonumber(limit) or 200
@@ -799,7 +808,7 @@ local function listChildren(h, fields, limit, offset, asText, playback)
     table.insert(out, childSummary(children[i], fields, asText, playback))
   end
   if #out == 0 then setmetatable(out, { __jsontype = "array" }) end
-  return { total = total, offset = offset, count = #out, items = out }
+  return { total = total, offset = offset, count = #out, items = out, enumerationError = enumerationError }
 end
 
 -------------------------------------------------------------------------------

@@ -142,6 +142,8 @@ interface Listing {
   total?: number;
   count?: number;
   items?: Item[];
+  /** Bridge 0.47.0: the console's Children() raised; the (empty) listing does not show what the parent holds. */
+  enumerationError?: unknown;
 }
 
 /** Children per request; a pool of more than this many objects takes several. */
@@ -173,6 +175,9 @@ export async function readAllChildren(bridge: Gma3Bridge, ref: string, args: Rec
       const msg = err instanceof Error ? err.message : String(err);
       return { items, complete: false, reason: offset === 0 ? msg : `the read at offset ${offset} failed after ${items.length} objects: ${msg}`, requests, answered: requests > 1 };
     }
+    if (res.enumerationError !== undefined && res.enumerationError !== null) {
+      return { items, complete: false, reason: `the console could not list the children: ${String(res.enumerationError)}`, requests, answered: items.length > 0 };
+    }
     const got = Array.isArray(res.items) ? res.items : [];
     items.push(...got);
     if (typeof res.total === "number") {
@@ -197,10 +202,19 @@ function leadingInt(v: unknown): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-/** A pool object's number: its index. */
+/**
+ * A pool object's number: its index. A pool keeps its objects in numbered slots and Index() is the slot, which is the
+ * object's number (issue #96: the 770 macros read indexes up to 5893; gma3_macros and the plugin-pool check read it
+ * the same way). It comes from the summary, not from a field read, so no fieldErrors can apply to it.
+ */
 const poolNo = (it: Item) => (typeof it.index === "number" && Number.isInteger(it.index) ? it.index : undefined);
-/** A page's or executor's number: No, else the index (as the executor scan in playback.ts reads them). */
-const fieldNo = (it: Item) => leadingInt(it.fields?.No) ?? poolNo(it);
+/** A page's number: No, else its index (a page is a pool object of DataPool.Pages, numbered by slot like the others). */
+const pageNo = (it: Item) => (it.fieldErrors?.No === undefined ? leadingInt(it.fields?.No) : undefined) ?? poolNo(it);
+/**
+ * An executor's number: its No only. Its index is the position on the page, not the number (objectlist-hang probe:
+ * executor 191 reads index 91), so an executor whose No is missing or failed has no number: the page is incomplete.
+ */
+const executorNo = (it: Item) => (it.fieldErrors?.No === undefined ? leadingInt(it.fields?.No) : undefined);
 
 // ---------------------------------------------------------------------------
 // Pool specs
@@ -255,8 +269,8 @@ export function parsePool(raw: string): Spec {
 interface Options {
   names: boolean;
   free?: { size: number; from?: number };
-  /** Why executor free blocks are not offered (a bridge before 0.47.0); undefined when they are. */
-  executorFreeBlocked?: string;
+  /** Why no free block is offered (a bridge before 0.47.0 or an unreadable version); undefined when they are. */
+  freeBlocked?: string;
 }
 
 type Row = Record<string, unknown>;
@@ -280,14 +294,14 @@ function numbered(items: Item[], no: (it: Item) => number | undefined) {
 /** Rows whose listing answered at least once: usable data, even when incomplete. The call fails only without any. */
 const ANSWERED = new WeakSet<Row>();
 
-function finish(row: Row, used: number[], read: { complete: boolean; reason?: string; answered: boolean }, opts: Options, freeOf: (used: number[], size: number, from?: number) => string | null, blocked?: string): Row {
+function finish(row: Row, used: number[], read: { complete: boolean; reason?: string; answered: boolean }, opts: Options, freeOf: (used: number[], size: number, from?: number) => string | null): Row {
   if (read.answered) ANSWERED.add(row);
   row.complete = read.complete;
   if (!read.complete) row.reason = read.reason;
   if (opts.free) {
-    if (blocked !== undefined) {
+    if (opts.freeBlocked !== undefined) {
       row.free = null;
-      row.freeNote = blocked;
+      row.freeNote = opts.freeBlocked;
     } else if (read.complete) {
       const hit = freeOf(used, opts.free.size, opts.free.from);
       row.free = hit;
@@ -347,7 +361,7 @@ const numbersFrom = (from: number, to: number) => (to < from ? [] : Array.from({
 
 async function readExecutors(bridge: Gma3Bridge, ref: string, t: number) {
   const read = await readAllChildren(bridge, ref, { fields: ["No", "Object", "Width"], asText: false }, t);
-  const { byNo, unnumbered } = numbered(read.items, fieldNo);
+  const { byNo, unnumbered } = numbered(read.items, executorNo);
   const used: Array<[number, string | null, string | null]> = [];
   const unassigned: number[] = [];
   const unknown: number[] = [];
@@ -385,7 +399,7 @@ async function readPage(bridge: Gma3Bridge, spec: Extract<Spec, { kind: "page" }
   if (covered.length) row.covered = compressRanges(covered);
   if (empty.length) row.unassigned = compressRanges(empty);
   if (unknown.length) row.unreadable = compressRanges(unknown);
-  return finish(row, [...nos, ...covered], read, opts, executorFree, opts.executorFreeBlocked);
+  return finish(row, [...nos, ...covered], read, opts, executorFree);
 }
 
 /**
@@ -395,7 +409,7 @@ async function readPage(bridge: Gma3Bridge, spec: Extract<Spec, { kind: "page" }
 async function readContainer(bridge: Gma3Bridge, spec: Extract<Spec, { kind: "pages" | "presetPools" }>, opts: Options, t: number): Promise<Row> {
   const pages = spec.kind === "pages";
   const read = await readAllChildren(bridge, spec.ref, pages ? { fields: ["No"], asText: false } : {}, t);
-  const { byNo, unnumbered } = numbered(read.items, pages ? fieldNo : poolNo);
+  const { byNo, unnumbered } = numbered(read.items, pages ? pageNo : poolNo);
   const used = [...byNo.keys()];
   const rows: unknown[] = [];
   const failed: string[] = [];
@@ -443,18 +457,19 @@ export function versionAtLeast(a: unknown, b: string): boolean {
 }
 
 /**
- * Executor free blocks need bridge 0.47.0: an older one drops a failed Object read, so an occupied executor would read
- * as empty. Returns the reason when they are not offered, undefined when they are.
+ * Completeness needs bridge 0.47.0: an older one answers a failed child enumeration with an empty listing and drops a
+ * failed field read (an occupied executor reads as empty), so a read cannot be confirmed complete and no free block is
+ * offered. One ping per call; returns why the reads are unconfirmed, undefined with bridge 0.47.0 or newer.
  */
-async function executorFreeGate(bridge: Gma3Bridge, t: number): Promise<string | undefined> {
+async function unconfirmedReads(bridge: Gma3Bridge, t: number): Promise<string | undefined> {
   let version: unknown;
   try {
     version = ((await bridge.request("ping", {}, t)) as { bridgeVersion?: unknown } | null)?.bridgeVersion;
   } catch (err) {
-    return `not offered: the bridge version could not be read (${err instanceof Error ? err.message : String(err)}); executor free blocks need bridge ${FIELD_ERRORS_BRIDGE}`;
+    return `the bridge version could not be read (${err instanceof Error ? err.message : String(err)}); confirmed reads and free blocks need bridge ${FIELD_ERRORS_BRIDGE}`;
   }
   if (versionAtLeast(version, FIELD_ERRORS_BRIDGE)) return undefined;
-  return `not offered: bridge ${typeof version === "string" ? version : "(unknown version)"} reads a failed Object read like an empty executor; executor free blocks need bridge ${FIELD_ERRORS_BRIDGE}`;
+  return `bridge ${typeof version === "string" ? version : "(unknown version)"} reports neither a failed child enumeration nor a failed field read (an empty listing and an empty executor look the same), so completeness cannot be confirmed; free blocks need bridge ${FIELD_ERRORS_BRIDGE}`;
 }
 
 export interface PoolUsageArgs {
@@ -476,7 +491,8 @@ export async function poolUsage(ctx: ToolContext, args: PoolUsageArgs): Promise<
   const bridge = scopedBridge(ctx.bridge, args.data_pool);
   const t = ctx.requestTimeoutMs;
   const opts: Options = { names: args.names === true, free: args.free };
-  if (args.free && unique.some((s) => s.kind === "page")) opts.executorFreeBlocked = await executorFreeGate(ctx.bridge, t);
+  const unconfirmed = await unconfirmedReads(ctx.bridge, t);
+  if (unconfirmed !== undefined) opts.freeBlocked = `not offered: ${unconfirmed}`;
   const rows: Row[] = [];
   for (const s of unique) {
     if (s.kind === "pool" || s.kind === "preset") rows.push(await readPool(bridge, s, opts, t));
@@ -484,7 +500,7 @@ export async function poolUsage(ctx: ToolContext, args: PoolUsageArgs): Promise<
     else rows.push(await readContainer(bridge, s, opts, t));
   }
   const complete = rows.every((r) => r.complete === true);
-  const result: Record<string, unknown> = { ...(args.data_pool !== undefined ? { dataPool: args.data_pool } : {}), complete, pools: rows };
+  const result: Record<string, unknown> = { ...(args.data_pool !== undefined ? { dataPool: args.data_pool } : {}), complete, ...(unconfirmed !== undefined ? { unconfirmed } : {}), pools: rows };
   return { result, anyRead: rows.some((r) => ANSWERED.has(r)) };
 }
 
@@ -499,8 +515,8 @@ const DESCRIPTION =
   "Read-only: which numbers a show already uses, per pool, before you store into it. For each pool: stored (the number of stored objects), used (their numbers as ranges, \"1-11, 5001-5534\"), " +
   "with names: true [no, name] pairs, and with free: {size, from?} the first free block of that size (\"21-40\"; null when there is none up to 9999 or the read is incomplete). " +
   'Pools: DataPool pools by name ("Groups", "Sequences", "Macros", "MAtricks", "Timecodes", "Layouts", ...); a preset pool as "Preset 4" or in preset_pools (stored presets, not the pool\'s 1000 slots); "PresetPools" (every preset pool as [no, name, stored, used]); ' +
-  '"Page 2" (its executors with an assigned object as [no, class, name]; covered: the numbers a wider executor (Width > 1) spans, never free; an assignment that cannot be read (an invalid handle, or a read that raised: bridge 0.47.0) is listed as unreadable and makes the page incomplete; executor free blocks need bridge 0.47.0; free searches one row: 101-198, 201-298, 301-390, 401-490, from 101 by default); "Pages" (every page as [no, name, executors used, used]). ' +
-  "Every pool is read to its end page by page; complete: false with reason (keeping what was read) when a read fails, the pool changes during the read or an object has no number; the call is an error only when no pool could be read at all. Ranges such as \"Page 1.101 Thru 1.115\" are not accepted (executor ranges can hang onPC). " +
+  '"Page 2" (its executors with an assigned object as [no, class, name]; covered: the numbers a wider executor (Width > 1) spans, never free; an assignment that cannot be read (an invalid handle, or a read that raised: bridge 0.47.0) is listed as unreadable and makes the page incomplete; free searches one row: 101-198, 201-298, 301-390, 401-490, from 101 by default); "Pages" (every page as [no, name, executors used, used]). ' +
+  "Every pool is read to its end page by page; complete: false with reason (keeping what was read) when a read fails, the console cannot list the children, the pool changes during the read or an object has no number (an executor without a readable No); free blocks are offered only from complete reads and need bridge 0.47.0 (with an older bridge unconfirmed says why and free is null); the call is an error only when no pool could be read at all. Ranges such as \"Page 1.101 Thru 1.115\" are not accepted (executor ranges can hang onPC). " +
   "Use this instead of gma3_objects \"Macro Thru\" or a Lua walk of the pools.";
 
 export const registerPoolUsageTools: RegisterTools = (server, ctx) => {
