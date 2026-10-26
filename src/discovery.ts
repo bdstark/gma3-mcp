@@ -22,7 +22,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "chases", tools: ["gma3_build_chase"] },
   { task: "executors and sequence playback", tools: ["gma3_assign_to_executor", "gma3_configure_executor", "gma3_configure_sequence", "gma3_playback", "gma3_goto_cue", "gma3_set_fader"] },
   { task: "speed masters and tempo", tools: ["gma3_configure_speed_master", "gma3_speed_master_action", "gma3_speed_masters"] },
-  { task: "recipes", tools: ["gma3_recipes", "gma3_edit_recipe", "gma3_cook_recipes"] },
+  { task: "recipes", tools: ["gma3_recipes", "gma3_edit_recipe", "gma3_store_recipe_cues", "gma3_cook_recipes"] },
   { task: "macros and their dialogs", tools: ["gma3_store_macro", "gma3_edit_macro_line", "gma3_run_macro", "gma3_macros", "gma3_dialog"] },
   { task: "console variables ($name in macros and cue commands)", tools: ["gma3_variables", "gma3_set_variable"] },
   { task: "tags: tag sequences, groups, macros and cues, kill types, and which objects carry a tag", tools: ["gma3_tags", "gma3_assign_tag", "gma3_store_tag", "gma3_delete_tag", "gma3_configure_tag", "gma3_playback"] },
@@ -53,6 +53,7 @@ export const BATCH_TOOLS: ReadonlyArray<{ tool: string; list: string }> = [
   { tool: "gma3_configure_sequence", list: "sequences, with ranges" },
   { tool: "gma3_set_variable", list: "variables" },
   { tool: "gma3_store_cues", list: "sequences" },
+  { tool: "gma3_store_recipe_cues", list: "cues with recipe lines" },
   { tool: "gma3_store_tag", list: "tags" },
   { tool: "gma3_delete_tag", list: "tags" },
   { tool: "gma3_assign_tag", list: "assignments" },
@@ -79,7 +80,7 @@ export function serverInstructions(staleWarning?: string): string {
 /** The pointer at the start of gma3_lua's description. */
 export const LUA_FALLBACK_NOTE =
   "FALLBACK: use a structured tool when one fits; they check, read back and need no Lua. Patch: gma3_patch_library, gma3_patch_import, gma3_patch_add, gma3_patch_set, gma3_patch_move, gma3_patch_retype, gma3_patch_type_structure, gma3_place_fixtures, gma3_layout_cells. Dialogs: gma3_dialog (never Mouse()). " +
-  "Groups: gma3_store_group, gma3_configure_matricks. Presets: gma3_apply_preset, gma3_store_preset. Phasers: gma3_build_phaser. Looks: gma3_set_attributes. Cues: gma3_store_cues, gma3_edit_cues, gma3_build_chase, gma3_cue_contents. " +
+  "Groups: gma3_store_group, gma3_configure_matricks. Presets: gma3_apply_preset, gma3_store_preset. Phasers: gma3_build_phaser. Looks: gma3_set_attributes. Cues: gma3_store_cues, gma3_edit_cues, gma3_build_chase, gma3_cue_contents. Recipe cues: gma3_store_recipe_cues, then gma3_cook_recipes. " +
   "Playback: gma3_configure_sequence, gma3_configure_executor, gma3_playback, gma3_goto_cue. Reads: gma3_objects, gma3_get_object, gma3_list_children, gma3_programmer. " +
   `${BATCH_NOTE} ` +
   `${OBSERVE_NOTE} `;

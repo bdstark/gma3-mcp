@@ -1,8 +1,9 @@
 # Recipes and cooking (SB-05)
 
-Three tools combine groups, presets and MAtricks into programming that adapts to a changed rig:
+Four tools combine groups, presets and MAtricks into programming that adapts to a changed rig:
 - `gma3_recipes` reads the recipe lines of a preset or cue part and what the target holds;
 - `gma3_edit_recipe` adds, changes, moves or removes one line;
+- `gma3_store_recipe_cues` writes the lines of many cue parts in one call (a recipe-driven show build, #101);
 - `gma3_cook_recipes` cooks a preset, a cue part, a cue or a whole sequence with an explicit option, after listing
   every affected target.
 
@@ -15,6 +16,7 @@ extends to cue parts (see [the bridge protocol](../reference.md#cue-part-data-pl
 | --- | --- | --- |
 | `gma3_recipes` | nothing (read-only) | untouched |
 | `gma3_edit_recipe` | one recipe line of a preset or cue part; **the console cooks the edited line at once** | untouched |
+| `gma3_store_recipe_cues` | the recipe lines of up to 100 cue parts of one sequence, their cue names and notes; each written line is cooked at once, as above | untouched |
 | `gma3_cook_recipes` | the cooked (and, with merge or overwrite, the uncooked) data of the affected targets | untouched |
 
 ## The things to know first
@@ -51,7 +53,8 @@ extends to cue parts (see [the bridge protocol](../reference.md#cue-part-data-pl
 | Capability | Supported |
 | --- | --- |
 | Standard lines: group selection, preset values, MAtricks reference, Enabled, Name, SelectionMode | read, add, set, move, remove; coverage predicted and verified |
-| Standard lines with a filter or world, SelectionFromValue, the per-line timing columns | read and kept; not edited; coverage not predicted (named in the result; a merge treats what they reach as possibly replaced) |
+| Per-line MAtricks columns (XWings, XBlock, XGroup, XWidth, XShift, XShuffle, X, FadeFromX / FadeToX, DelayFromX / DelayToX, PhaseFromX / PhaseToX, SpeedFromX / SpeedToX, and the Y and Z ones) | written by `gma3_store_recipe_cues` and read back there; **not verified on a console** (see below); not edited by `gma3_edit_recipe` |
+| Standard lines with a filter or world, SelectionFromValue | read and kept; not edited; coverage not predicted (named in the result; a merge treats what they reach as possibly replaced) |
 | Phaser recipe lines (PhaserRecipe), shapes | read and kept; not created or edited; coverage not predicted (likewise) |
 | Targets | presets and cue parts (edit, read); a preset, cue part, cue or whole sequence (cook) |
 | Nested recipe presets (a line's preset embeds others) | noted; their own recipes are not re-cooked by this cook |
@@ -97,6 +100,56 @@ Afterwards the lines are read back and checked:
 
 A failed `Assign` can leave an empty line behind on 2.5.1; the line count catches it. The result carries `linesBefore`,
 `linesAfter`, `coverage.before`, `coverage.after` and `autoCooked`.
+
+`values` is the plain string `"4.2"`. A number is refused with that form in the error: as JSON numbers `4.20` and `4.2` are
+the same, as presets they are preset 20 and preset 2. A string with quotes inside it (`"\"4.2\""`) is refused the same way.
+
+## `gma3_store_recipe_cues`
+
+`{sequence, mode: "replace" | "append", cues: [{cue, part?, name?, note?, lines: [line, ...]}], cook?, replace_uncooked?,
+verify_cook?, preview?, stop_on_failure?, detail?}`. A line is `{selection, values, matricks?, name?, enabled?,
+selection_mode?, x?, y?, z?}` with the fields of `gma3_edit_recipe` add. `x`, `y`, `z` are the line's own MAtricks columns:
+the axis settings of [`gma3_configure_matricks`](groups.md#gma3_matricks-and-gma3_configure_matricks) (`wings`, `blocks`,
+`groups`, `width`, `shift`, `shuffle`, `fade`, `delay`, `phase`, `speed`, with the same values and units) and `select`, the
+X / Y / Z column itself (only the n-th element; with blocks, the n-th block). The #101 build's line options map as
+`xblock: 3, x: 2, xwings: 2, xgroup: 4, fade: 16` → `x: {blocks: 3, select: 2, wings: 2, groups: 4, fade: {from: 16, to: 16}}`.
+
+Why a new tool and not a batch form of `gma3_edit_recipe` (`edits: [...]`): a batch item of the edit tool is one line
+of one target with its own reference checks, a read-back of every line and the coverage before and after, so 4,300 lines
+are 4,300 items and as many full reads. A recipe cue is written as a whole (its lines replaced or appended), the same
+groups and presets recur across hundreds of lines, and the build needs the per-line columns, the cue's name and note,
+and a cook at the end. This tool checks the references once, writes per cue part and reads back per cue part.
+
+1. Validated as a whole before anything is read: at most 100 cue parts (one sequence), 200 lines per part and 500 lines
+   per call (each line is a few requests, so a larger build is several calls); a cue part listed twice, an unknown line
+   or axis field, a `values` number and a note with a line break are refused.
+2. `read_cues`, once: every cue part exists (the cues are created by `gma3_store_cues`, a part by
+   `gma3_store_cue_part`) and its lines are read completely. `replace` is refused on a part that holds phaser lines
+   (this tool does not write them back).
+3. `check_references`, once for the whole call: every group, preset and MAtricks a line names is in the show (each read
+   once, the missing ones listed with the first line that uses them). An empty group is a warning.
+4. Each cue part is a batch item, in order, inside one span of the mutation lock (see
+   [Batch forms](README.md#batch-forms-su-12)):
+   - `replace`: `Delete <part>.<L> /NoConfirmation` for every line, from the last;
+   - per line, as `gma3_edit_recipe` adds one: `Assign Group G At <line>`, `set Enabled No` (when `enabled: false`, before
+     the values), `Assign Preset N.M At <line>`, `Assign MAtricks M At <line>`, `set` SelectionMode, Name, every column
+     (`None` for null) and `Enabled Yes`; every `set` reply is checked (a column by the value it reads, as
+     `gma3_configure_matricks` checks it);
+   - the cue's name on its Part 0, and its `Note` on the cue object;
+   - a read-back: the line count, every field written (the preset by its address), the columns in the display role, the
+     lines that were there before unchanged (append), the name and the note (exactly). The item's line has the count and
+     only the mismatches.
+
+   A part's steps stop at its first failure; what was sent stays (nothing is undone or retried) and its summary says
+   which step stopped it. Other parts go on unless `stop_on_failure: true`; a request without a reply stops the rest
+   of the call.
+5. `cook` (a `gma3_cook_recipes` mode), only when every part was written and matched: each part is cooked with
+   `gma3_cook_recipes` (its inspection, its `replace_uncooked` refusal and, unless `verify_cook: false`, its read-back),
+   one after the other. A cook that does not succeed leaves the call `partial`; the parts stay written.
+
+`preview: true` runs steps 1–3 and returns the plan per part (lines before, deletions, lines, requests; `detail: true`
+every command and write). No `exclusive`: like `gma3_edit_recipe`, nothing goes through the programmer, the selection
+or Preview. Phaser recipe lines (`PhaserRecipe`, e.g. in the Show Start's phaser presets) are out of scope.
 
 ## `gma3_cook_recipes`
 
@@ -144,6 +197,12 @@ A failed `Assign` can leave an empty line behind on 2.5.1; the line count catche
   - lines moved and removed;
   - an empty group and a deleted preset reported;
   - a preset recipe added and cooked.
+- Not verified on a console (`gma3_store_recipe_cues`, #101; no live run for this change): writing the per-line
+  MAtricks columns with `set` and reading them back in the display role. The #101 build set `FadeFromX`, `FadeToX`,
+  `XBlock`, `X`, `XWings` and `XGroup` on new lines from Lua and checked only the line count; the probe record lists
+  "the full MAtricks property set" on a line, and MAtricks objects accept these properties and values (SB-02). How a
+  column reads while a MAtricks reference supplies it (`<2>`, inherited) and whether `None` clears an override are
+  not known. Cue names on Part 0 and `set` on lines are verified (SU-06, SB-05); the cue's `Note` is not.
 - Not covered:
   - the background cook's exact timing (observed: not yet on an immediate read, done after 3 s);
   - phaser recipe lines;
