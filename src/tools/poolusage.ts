@@ -152,6 +152,8 @@ interface ReadAll {
   complete: boolean;
   reason?: string;
   requests: number;
+  /** At least one request was answered: there is data (or a successful empty listing), complete or not. */
+  answered: boolean;
 }
 
 /** Every child of `ref`, page by page. Never throws: a failed page ends the read with what was read and the reason. */
@@ -167,23 +169,23 @@ export async function readAllChildren(bridge: Gma3Bridge, ref: string, args: Rec
       res = ((await bridge.request("children", { ref, ...args, limit: PAGE_SIZE, offset }, timeoutMs)) ?? {}) as Listing;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { items, complete: false, reason: offset === 0 ? msg : `the read at offset ${offset} failed after ${items.length} objects: ${msg}`, requests };
+      return { items, complete: false, reason: offset === 0 ? msg : `the read at offset ${offset} failed after ${items.length} objects: ${msg}`, requests, answered: requests > 1 };
     }
     const got = Array.isArray(res.items) ? res.items : [];
     items.push(...got);
     if (typeof res.total === "number") {
-      if (total !== undefined && res.total !== total) return { items, complete: false, reason: `the listing changed while it was read (${total} objects, then ${res.total})`, requests };
+      if (total !== undefined && res.total !== total) return { items, complete: false, reason: `the listing changed while it was read (${total} objects, then ${res.total})`, requests, answered: true };
       total = res.total;
       offset += PAGE_SIZE;
-      if (offset >= total) return { items, complete: true, requests };
-      if (got.length === 0) return { items, complete: false, reason: `the listing reports ${total} objects but only ${items.length} could be read`, requests };
+      if (offset >= total) return { items, complete: true, requests, answered: true };
+      if (got.length === 0) return { items, complete: false, reason: `the listing reports ${total} objects but only ${items.length} could be read`, requests, answered: true };
     } else {
       // An answer without total: the listing ends with a short page.
       offset += got.length;
-      if (got.length < PAGE_SIZE) return { items, complete: true, requests };
+      if (got.length < PAGE_SIZE) return { items, complete: true, requests, answered: true };
     }
   }
-  return { items, complete: false, reason: `stopped after ${MAX_PAGES} requests`, requests };
+  return { items, complete: false, reason: `stopped after ${MAX_PAGES} requests`, requests, answered: true };
 }
 
 /** The leading integer of a number or text ("4 (1000)" -> 4). */
@@ -271,7 +273,11 @@ function numbered(items: Item[], no: (it: Item) => number | undefined) {
   return { byNo: new Map([...out].sort(([a], [b]) => a - b)), unnumbered };
 }
 
-function finish(row: Row, used: number[], read: { complete: boolean; reason?: string }, opts: Options, freeOf: (used: number[], size: number, from?: number) => string | null): Row {
+/** Rows whose listing answered at least once: usable data, even when incomplete. The call fails only without any. */
+const ANSWERED = new WeakSet<Row>();
+
+function finish(row: Row, used: number[], read: { complete: boolean; reason?: string; answered: boolean }, opts: Options, freeOf: (used: number[], size: number, from?: number) => string | null): Row {
+  if (read.answered) ANSWERED.add(row);
   row.complete = read.complete;
   if (!read.complete) row.reason = read.reason;
   if (opts.free) {
@@ -299,15 +305,20 @@ async function readPool(bridge: Gma3Bridge, spec: Extract<Spec, { kind: "pool" |
   return finish(row, used, read, opts, generalFree);
 }
 
-/** An assigned object from an executor's Object field read with asText false. */
-function assigned(v: unknown): { class?: string; name?: string } | null {
-  if (!v || typeof v !== "object") return null;
+/**
+ * An executor's Object field read with asText false: the assigned object, "empty" (no object), or "unknown" when the
+ * field holds something else, such as {invalid: true} for a handle that failed validation. An unknown assignment does
+ * not show that the executor is free.
+ */
+function assigned(v: unknown): { class?: string; name?: string } | "empty" | "unknown" {
+  if (v === null || v === undefined || v === "") return "empty";
+  if (typeof v !== "object") return "unknown";
   const o = v as Record<string, unknown>;
-  if (o.invalid === true) return null;
+  if (o.invalid === true) return "unknown";
   const out: { class?: string; name?: string } = {};
   if (typeof o.class === "string") out.class = o.class;
   if (typeof o.name === "string") out.name = o.name;
-  return Object.keys(out).length ? out : null;
+  return Object.keys(out).length ? out : "unknown";
 }
 
 /** The executors of one page (by reference or address): assigned ones, and those without an object. */
@@ -316,22 +327,29 @@ async function readExecutors(bridge: Gma3Bridge, ref: string, t: number) {
   const { byNo, unnumbered } = numbered(read.items, fieldNo);
   const used: Array<[number, string | null, string | null]> = [];
   const empty: number[] = [];
+  const unknown: number[] = [];
   for (const [n, it] of byNo) {
     const obj = assigned(it.fields?.Object);
-    if (obj) used.push([n, obj.class ?? null, obj.name ?? null]);
-    else empty.push(n);
+    if (obj === "empty") empty.push(n);
+    else if (obj === "unknown") unknown.push(n);
+    else used.push([n, obj.class ?? null, obj.name ?? null]);
   }
-  if (unnumbered && read.complete) Object.assign(read, { complete: false, reason: `${unnumbered} executor(s) without a number` });
-  return { read, used, empty };
+  const problems = [
+    ...(unnumbered ? [`${unnumbered} executor(s) without a number`] : []),
+    ...(unknown.length ? [`the assignment of executor(s) ${compressRanges(unknown)} could not be read`] : []),
+  ];
+  if (problems.length) Object.assign(read, { complete: false, reason: read.complete ? problems.join("; ") : `${read.reason}; ${problems.join("; ")}` });
+  return { read, used, empty, unknown };
 }
 
 const executorFree = (used: number[], size: number, from?: number) => firstFreeExecutors(used, size, from ?? 101);
 
 async function readPage(bridge: Gma3Bridge, spec: Extract<Spec, { kind: "page" }>, opts: Options, t: number): Promise<Row> {
-  const { read, used, empty } = await readExecutors(bridge, spec.ref, t);
+  const { read, used, empty, unknown } = await readExecutors(bridge, spec.ref, t);
   const nos = used.map(([n]) => n);
   const row: Row = { pool: spec.label, stored: used.length, used: compressRanges(nos), executors: used };
   if (empty.length) row.unassigned = compressRanges(empty);
+  if (unknown.length) row.unreadable = compressRanges(unknown);
   return finish(row, nos, read, opts, executorFree);
 }
 
@@ -381,7 +399,7 @@ export interface PoolUsageArgs {
   data_pool?: number;
 }
 
-export async function poolUsage(ctx: ToolContext, args: PoolUsageArgs): Promise<{ result: Record<string, unknown>; anyComplete: boolean }> {
+export async function poolUsage(ctx: ToolContext, args: PoolUsageArgs): Promise<{ result: Record<string, unknown>; anyRead: boolean }> {
   const specs: Spec[] = [];
   for (const p of args.pools ?? []) specs.push(parsePool(p));
   for (const n of args.preset_pools ?? []) specs.push(parsePool(`Preset ${n}`));
@@ -400,7 +418,7 @@ export async function poolUsage(ctx: ToolContext, args: PoolUsageArgs): Promise<
   }
   const complete = rows.every((r) => r.complete === true);
   const result: Record<string, unknown> = { ...(args.data_pool !== undefined ? { dataPool: args.data_pool } : {}), complete, pools: rows };
-  return { result, anyComplete: rows.some((r) => r.complete === true) };
+  return { result, anyRead: rows.some((r) => ANSWERED.has(r)) };
 }
 
 /** Compact JSON with one line per pool, so a large pool's names stay short and each pool is easy to find. */
@@ -414,8 +432,8 @@ const DESCRIPTION =
   "Read-only: which numbers a show already uses, per pool, before you store into it. For each pool: stored (the number of stored objects), used (their numbers as ranges, \"1-11, 5001-5534\"), " +
   "with names: true [no, name] pairs, and with free: {size, from?} the first free block of that size (\"21-40\"; null when there is none up to 9999 or the read is incomplete). " +
   'Pools: DataPool pools by name ("Groups", "Sequences", "Macros", "MAtricks", "Timecodes", "Layouts", ...); a preset pool as "Preset 4" or in preset_pools (stored presets, not the pool\'s 1000 slots); "PresetPools" (every preset pool as [no, name, stored, used]); ' +
-  '"Page 2" (its executors with an assigned object as [no, class, name]; free searches one row: 101-198, 201-298, 301-390, 401-490, from 101 by default); "Pages" (every page as [no, name, executors used, used]). ' +
-  "Every pool is read to its end page by page; complete: false with reason when a read fails, the pool changes during the read or an object has no number. Ranges such as \"Page 1.101 Thru 1.115\" are not accepted (executor ranges can hang onPC). " +
+  '"Page 2" (its executors with an assigned object as [no, class, name]; an assignment that cannot be read is listed as unreadable and makes the page incomplete; free searches one row: 101-198, 201-298, 301-390, 401-490, from 101 by default); "Pages" (every page as [no, name, executors used, used]). ' +
+  "Every pool is read to its end page by page; complete: false with reason (keeping what was read) when a read fails, the pool changes during the read or an object has no number; the call is an error only when no pool could be read at all. Ranges such as \"Page 1.101 Thru 1.115\" are not accepted (executor ranges can hang onPC). " +
   "Use this instead of gma3_objects \"Macro Thru\" or a Lua walk of the pools.";
 
 export const registerPoolUsageTools: RegisterTools = (server, ctx) => {
@@ -443,8 +461,8 @@ export const registerPoolUsageTools: RegisterTools = (server, ctx) => {
     },
     async (args): Promise<ToolResult> => {
       try {
-        const { result, anyComplete } = await poolUsage(ctx, args as PoolUsageArgs);
-        return { content: [{ type: "text", text: renderUsage(result) }], ...(anyComplete ? {} : { isError: true }) };
+        const { result, anyRead } = await poolUsage(ctx, args as PoolUsageArgs);
+        return { content: [{ type: "text", text: renderUsage(result) }], ...(anyRead ? {} : { isError: true }) };
       } catch (err) {
         return { content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }], isError: true };
       }

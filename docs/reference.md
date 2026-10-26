@@ -131,7 +131,7 @@ as the display text the editor shows, and object references are resolved to the 
 | A DataPool pool: `Groups`, `Sequences`, `Macros`, `MAtricks`, `Timecodes`, `Layouts`, ... (any `gma3_pool` name) | `children` on `DataPool.<Pool>` | `stored`, `used` (`"1-11, 5001-5534"`), with `names: true` `names: [[no, name], ...]` |
 | `Preset 4`, or `preset_pools: [1, 4, 21]` | `children` on `Preset 4` | the same; `stored` counts the stored presets, not the pool's 1000 slots (its `No` reads `4 (1000)`) |
 | `PresetPools` | `DataPool.PresetPools`, then each pool | `presetPools: [[no, name, stored, used], ...]` |
-| `Page 2` | `children` on `Page 2` (`No`, `Object`, handles) | the executors with an object: `executors: [[no, class, name], ...]`; `unassigned` for executors without one |
+| `Page 2` | `children` on `Page 2` (`No`, `Object`, handles) | the executors with an object: `executors: [[no, class, name], ...]`; `unassigned` for executors without one; `unreadable` for an assignment that could not be read (such as an invalid handle), which makes the page incomplete |
 | `Pages` | `DataPool.Pages`, then each page by address | `pages: [[no, name, executors used, used], ...]` |
 
 `free: {size, from?}` adds each pool's first free block of `size` numbers from `from` (default 1) up to 9999,
@@ -141,7 +141,7 @@ read is incomplete. `data_pool` reads another data pool.
 
 Every listing is read page by page (500 children per request) to its end. A failed request, a total that changes
 between requests or an object without a number makes that pool `complete: false` with `reason`, keeping what was
-read; the call is an error only when no pool could be read. Page and executor ranges are refused before any read:
+read; the call is an error only when no pool could be read at all (a pool whose first page was read is not). Page and executor ranges are refused before any read:
 the tool reads a page's executors with `children` on the page, never with `ObjectList` over a range
 ([above](#page-and-executor-ranges-plugin-v0200)).
 

@@ -180,6 +180,20 @@ test("a failed page leaves the pool incomplete with the reason and no free block
   assert.equal(pool("Groups").free, "6-15");
 });
 
+test("a single pool that is only partly readable is incomplete, not an error", async () => {
+  show.set("DataPool.Macros", objs(range(1, 770), "Macro"));
+  show.failAt = { ref: "DataPool.Macros", offset: 500 };
+  const { result, isError, pool } = await usage({ pools: ["Macros"], free: { size: 10 } });
+  assert.equal(isError, false, "500 macros were read");
+  assert.equal(result.complete, false);
+  assert.equal(pool("Macros").stored, 500);
+  assert.equal(pool("Macros").used, "1-500");
+  assert.equal(pool("Macros").free, null);
+  // Nothing read at all is still an error.
+  show.failAt = { ref: "DataPool.Macros", offset: 0 };
+  assert.equal((await usage({ pools: ["Macros"] })).isError, true);
+});
+
 test("a pool that changes between pages is incomplete", async () => {
   show.set("DataPool.Sequences", objs(range(1, 600), "Seq"));
   show.growAfterFirstPage = "DataPool.Sequences";
@@ -268,6 +282,31 @@ test("a page lists its used executors with the assigned object; free stays insid
   assert.equal(from.pool("Page 1").free, "216-227", "190 is a single gap and row 1 ends at 198; 216 has no object");
 });
 
+test("an executor whose assignment reads as an invalid handle is not free and makes the page incomplete", async () => {
+  const invalid = (no: number): Kid => ({ index: no, name: `Exec ${no}`, class: "Exec", fields: { No: no, Object: { invalid: true } } });
+  show.set("Page 1", [exec(101, { class: "Sequence", name: "A" }), invalid(102), exec(103)]);
+  const { result, isError, pool } = await usage({ pools: ["Page 1"], free: { size: 1 } });
+  assert.equal(isError, false);
+  assert.equal(result.complete, false);
+  const p = pool("Page 1");
+  assert.equal(p.complete, false);
+  assert.match(p.reason, /assignment of executor\(s\) 102 could not be read/);
+  assert.equal(p.used, "101");
+  assert.equal(p.unreadable, "102");
+  assert.equal(p.unassigned, "103");
+  assert.equal(p.free, null, "no free block from an incomplete read");
+  assert.match(p.freeNote, /incomplete/);
+
+  // Under Pages the same page makes the listing incomplete, still without an error.
+  show.set("DataPool.Pages", [{ index: 1, name: "Main", class: "Page", addr: "1.6.1", fields: { No: 1 } }]);
+  show.set("1.6.1", show.listings.get("Page 1")!);
+  const all = await usage({ pools: ["Pages"], free: { size: 1 } });
+  assert.equal(all.isError, false);
+  assert.equal(all.pool("Pages").complete, false);
+  assert.match(all.pool("Pages").reason, /page 1: the assignment of executor\(s\) 102 could not be read/);
+  assert.equal(all.pool("Pages").free, null);
+});
+
 test("Pages lists every page with its used executor count, read per page by address", async () => {
   show.set("DataPool.Pages", [
     { index: 1, name: "Main", class: "Page", addr: "1.6.1", fields: { No: 1 } },
@@ -296,6 +335,7 @@ test("Pages lists every page with its used executor count, read per page by addr
   assert.equal(bad.pool("Pages").complete, false);
   assert.match(bad.pool("Pages").reason, /page 2: request timed out/);
   assert.equal(bad.pool("Pages").free, null);
+  assert.equal(bad.isError, false, "the other pages were read");
 });
 
 test("data_pool reads the pools of that data pool", async () => {
