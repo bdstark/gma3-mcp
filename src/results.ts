@@ -438,10 +438,48 @@ export function isErrorResult(result: OperationResult): boolean {
   return result.outcome !== "succeeded" || result.verification.status === "mismatched";
 }
 
+/** A success nothing more needs to be read from: carried out, and the read-back matched or was not asked for. */
+export function isCleanSuccess(result: OperationResult): boolean {
+  return result.outcome === "succeeded" && (result.verification.status === "matched" || result.verification.status === "not_requested");
+}
+
+export interface ItemsCompaction {
+  /** One entry per item (fixture): its id and, as [before, after], the fields the call changed. */
+  items: Array<Record<string, unknown>>;
+  /** Top-level fields to leave out (the per-item state dumps). */
+  drop?: string[];
+  /** Top-level fields to replace with a short form, e.g. target as a count instead of an echo of every item. */
+  set?: Record<string, unknown>;
+  /** Replaces the steps; by default every step stays with its name and status, without its detail. */
+  steps?: StepResult[];
+  hint: string;
+}
+
+/**
+ * The compact form of a batch tool's clean success (#100): renaming 88 fixtures returned 171 KB, mostly every fixture's
+ * state repeated in the pre-check, the edit reply, `before` and the read-back. Instead: one entry per item, the steps
+ * without their details and the verification without its expected and actual values. Anything but a clean success is
+ * returned whole, because then the details are what the caller needs; `detail: true` keeps them on a success too.
+ */
+export function compactItems(result: OperationResult, detail: boolean, o: ItemsCompaction): OperationResult {
+  if (detail || !isCleanSuccess(result)) return result;
+  const { actual: _a, expected: _e, ...verification } = result.verification;
+  const out: OperationResult = {
+    ...result,
+    ...(o.set ?? {}),
+    verification,
+    steps: o.steps ?? result.steps.map(({ detail: _d, ...rest }) => rest),
+  };
+  for (const k of o.drop ?? []) delete out[k];
+  out.items = o.items;
+  out.detailHint = o.hint;
+  return out;
+}
+
 export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
 /** Render an OperationResult as an MCP tool result, flagging anything but a verified success. */
 export function toToolResult(result: OperationResult): ToolResult {
-  const text = JSON.stringify(result, null, 2);
+  const text = JSON.stringify(result);
   return isErrorResult(result) ? { content: [{ type: "text", text }], isError: true } : { content: [{ type: "text", text }] };
 }

@@ -131,7 +131,7 @@ export function normaliseResult(raw: unknown): FeedbackResult {
 }
 
 function validationError(errors: string[]): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify({ tool: "gma3_feedback", error: "validation failed", validationErrors: errors }, null, 2) }], isError: true };
+  return { content: [{ type: "text", text: JSON.stringify({ tool: "gma3_feedback", error: "validation failed", validationErrors: errors }) }], isError: true };
 }
 
 function bridgeFailure(err: unknown): ToolResult {
