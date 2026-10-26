@@ -12,7 +12,8 @@
  *                              menu) and no modal is open
  *   2. read   check_*          the tool's pre-flight (patch.check): FIDs and DMX ranges free, fixtures exist
  *   3. mut.   enter            patch.enter queues ChangeDestination into the copy (CmdIndirect)
- *   4. read   wait_copy        poll patch.state until the copy is open at the stage's Fixtures
+ *   4. read   wait_copy        poll patch.state until the copy is open at the stage's Fixtures (from bridge 0.45.0
+ *                              the stage is compared by the destination object's address, not its text: #98)
  *   5. mut.   add|set|remove   the edit, in the copy only (the bridge re-checks and undoes its own change
  *                              on any problem)
  *   6. read   isolation_check  fingerprints of the copy and the live patch, one collection per request,
@@ -58,6 +59,11 @@ export interface PatchState {
   modal: false | { name?: string; class?: string; display?: number };
   stages: string[];
   lastCommand?: string;
+  /**
+   * Bridge 0.45.0: the copy's stage whose Fixtures the command line is at (index: its position in Stages), found by the
+   * destination object's address (by "text" only when that cannot be read). Absent when it is at none.
+   */
+  destinationStage?: { index: number; no?: number; name?: string; text?: string; by?: string } | null;
 }
 
 export interface FixtureRow {
@@ -169,8 +175,11 @@ async function checkStateStep(bridge: Gma3Bridge, t: number): Promise<StepResult
   }
 }
 
-/** Poll patch.state until `pred` holds. */
-async function waitStep(bridge: Gma3Bridge, name: string, t: number, pred: (s: PatchState) => boolean, what: string): Promise<StepResult> {
+/**
+ * Poll patch.state until `pred` holds. `settled` explains a last state that will not change by waiting longer (the copy
+ * open at another destination): the step then fails with that message instead of the timing one.
+ */
+async function waitStep(bridge: Gma3Bridge, name: string, t: number, pred: (s: PatchState) => boolean, what: string, settled?: (s: PatchState) => string | undefined): Promise<StepResult> {
   let last: PatchState | undefined;
   for (let i = 0; i < POLL_TRIES; i++) {
     try {
@@ -181,7 +190,28 @@ async function waitStep(bridge: Gma3Bridge, name: string, t: number, pred: (s: P
     if (pred(last)) return asRead({ name, status: "succeeded", op: "patch.state", detail: { destination: last.destination, copyOpen: last.copyOpen, polls: i + 1 } });
     await sleep(POLL_MS);
   }
+  const why = last && settled?.(last);
+  if (why) return asRead({ name, status: "failed", op: "patch.state", error: why, detail: last });
   return asRead({ name, status: "unknown", op: "patch.state", error: `${what} did not happen within ${(POLL_TRIES * POLL_MS) / 1000} s (CmdIndirect lands on a later frame)`, detail: last });
+}
+
+/**
+ * What wait_copy waits for, from patch.enter's reply. A bridge from 0.45.0 names the stage's position (stageIndex), and
+ * patch.state the stage whose Fixtures the command line is at, compared by address: a named stage's Fixtures reads
+ * "Stage 1 'Main Floor'.Fixtures", never the "<name>.Fixtures" an older bridge expected (#98). An older bridge, and the
+ * fixture-type pool (SU-03), are still compared by the exact destination text.
+ */
+export function copyArrival(entered: { expectDestination?: string; stageIndex?: number } | undefined): { at: (s: PatchState) => boolean; settled: (s: PatchState) => string | undefined } {
+  const expectDest = entered?.expectDestination;
+  const index = typeof entered?.stageIndex === "number" ? entered.stageIndex : undefined;
+  const there = (s: PatchState) => (index !== undefined ? s.destinationStage?.index === index : expectDest === undefined || s.destination === expectDest);
+  const expected = index !== undefined ? `${expectDest !== undefined ? JSON.stringify(expectDest) : "the Fixtures"} (stage ${index})` : JSON.stringify(expectDest);
+  // An older bridge at a named stage's Fixtures: say why its text can never match.
+  const oldBridge = (s: PatchState) => (index === undefined && expectDest?.endsWith(".Fixtures") && /^Stage \d+ '.*'\.Fixtures$/.test(s.destination ?? "") ? ` (a bridge before 0.45.0 expects "<name>.Fixtures", which a named stage never shows: install bridge 0.45.0)` : "");
+  return {
+    at: (s) => s.copyOpen && there(s),
+    settled: (s) => (s.copyOpen && !there(s) ? `the patch copy is open, but the command line destination is ${JSON.stringify(s.destination)}, expected ${expected}${oldBridge(s)}` : undefined),
+  };
 }
 
 /**
@@ -367,10 +397,10 @@ export async function runSessionLocked(ctx: ToolContext, spec: SessionSpec): Pro
       steps.push(...skippedSteps(planned(1), "entering the patch copy was refused"));
       return finish("failed", `${spec.operation} was not performed: entering the patch copy was refused: ${enter.error}. The show is unchanged.`, spec.verify ? unavailable("nothing was changed") : notRequested(), { committed: false, copyLeftOpen: false });
     }
-    const entered = enter.detail as { expectDestination?: string; stage?: string } | undefined;
-    const expectDest = entered?.expectDestination;
+    const entered = enter.detail as { expectDestination?: string; stageIndex?: number; stage?: string } | undefined;
+    const arrival = copyArrival(entered);
     const wc = enter.status === "succeeded"
-      ? await waitStep(bridge, "wait_copy", t, (s) => s.copyOpen && (expectDest === undefined || s.destination === expectDest), "opening the patch copy")
+      ? await waitStep(bridge, "wait_copy", t, arrival.at, "opening the patch copy", arrival.settled)
       : asRead({ name: "wait_copy", status: "unknown", op: "patch.state", error: "the enter request got no reply" } as StepResult);
     steps.push(wc);
 
@@ -383,7 +413,7 @@ export async function runSessionLocked(ctx: ToolContext, spec: SessionSpec): Pro
       return finish(outcome, `${spec.operation} was not completed: ${reason}. ${state}.`, spec.verify ? unavailable("nothing was committed") : notRequested(), { committed: false, copyLeftOpen: c.leftOpen });
     };
 
-    if (wc.status !== "succeeded") return abort("unknown", `the patch copy did not open as expected (${wc.error ?? wc.status})`, planned(2));
+    if (wc.status !== "succeeded") return abort(wc.status === "failed" ? "failed" : "unknown", wc.status === "failed" ? `${wc.error}` : `the patch copy did not open as expected (${wc.error ?? wc.status})`, planned(2));
 
     let editSteps: StepResult[];
     let editDetail: unknown;
@@ -1163,7 +1193,7 @@ export const SESSION_DESC =
   "Runs one patch session through the patch edit copy, never a dialog: read-only pre-checks (command line at Root, the copy closed, so nobody is in the Patch menu, no modal open, plus the tool's own checks), then enter the copy, apply the change there, an isolation check, commit, and read back. " +
   "Requires exclusive: true. Patch changes need exclusive use of the console: the isolation check compares fingerprints of the copy and the live patch, left out the touched FIDs, over several seconds. It is best-effort detection of someone else's changes, not a guarantee, and on a mismatch nothing is committed and the copy is left open for the operator. " +
   "A committed patch change has NO UNDO (Oops does not revert it). Takes about 10 s (mostly the isolation check). " +
-  "When a session cannot be finished, the copy is closed again only if it provably holds no change; otherwise the result says copyLeftOpen: true and the command line stays inside the edit patch with no Patch window open: the operator keeps the copy by typing ChangeDestination Root at the console (no way to discard it without the Patch menu is known). Needs bridge 0.19.0.";
+  "When a session cannot be finished, the copy is closed again only if it provably holds no change; otherwise the result says copyLeftOpen: true and the command line stays inside the edit patch with no Patch window open: the operator keeps the copy by typing ChangeDestination Root at the console (no way to discard it without the Patch menu is known). Needs bridge 0.19.0; a session in a stage with a Name needs bridge 0.45.0.";
 export const EXCLUSIVE_DESC = "Required, must be true: confirms nobody else uses the console while this runs (see the description). Without it the call is refused and nothing is sent.";
 export const VERIFY_DESC = "Read the patch back after the commit and compare (default true).";
 export const DETAIL_DESC =
@@ -1223,7 +1253,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
         name: z.string().optional().describe("Optional name for the new fixtures (default: the console's naming)."),
         address: z.string().optional().describe('DMX start address "U.AAA" (e.g. "2.001"); the block must be free and inside one universe.'),
         findFreeFrom: z.string().optional().describe('Instead of address: use the first free block from this "U.AAA".'),
-        stage: z.string().optional().describe("Stage name (default: the first stage)."),
+        stage: z.string().optional().describe("Stage name (default: the first stage). A stage with a Name needs bridge 0.45.0."),
         exclusive: z.boolean().optional().describe(EXCLUSIVE_DESC),
         verify: z.boolean().optional().describe(VERIFY_DESC),
         detail: z.boolean().optional().describe(DETAIL_DESC),

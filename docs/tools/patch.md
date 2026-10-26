@@ -47,7 +47,7 @@ required rather than implied.
 | `check_state` | read | `patch.state` | The command line is at Root, the copy is closed (nobody is in the Patch menu) and no modal is open |
 | `check_add` / `check_edits` / `check_fixtures` | read | `patch.check` | The tool's pre-flight (below) |
 | `enter` | mutation | `patch.enter` | Queues the two `ChangeDestination` commands into the copy and its stage's Fixtures |
-| `wait_copy` | read | `patch.state` | Polls (100 ms, up to 3 s) until the copy is open at that destination |
+| `wait_copy` | read | `patch.state` | Polls (100 ms, up to 3 s) until the copy is open at that destination. From bridge 0.45.0 the stage is compared by the destination object's address (`patch.enter`'s `stageIndex` against `patch.state`'s `destinationStage`), not its text: the console shows a named stage's Fixtures as `Stage 1 'Main Floor'.Fixtures` and only an unnamed one as `Stage 1.Fixtures` (#98). An older bridge is still compared by its exact `expectDestination`, which only an unnamed stage matches. A copy open at another destination fails the step with "the command line destination is X, expected Y" |
 | `add` / `set` / `remove` | mutation | `patch.add` / `patch.set` / `patch.remove` | The change, in the copy only |
 | `isolation_check` | read | `patch.collections`, `patch.fingerprint` | Fingerprints of copy and live per collection, touched FIDs left out |
 | `commit` | mutation | `patch.commit` | Queues `ChangeDestination Root` |
@@ -72,7 +72,7 @@ open on a display (someone is patching there), close it there with **Save and Ex
 | --- | --- |
 | `succeeded` | The change was committed and the copy closed. `committed: true`; `verification` reports the read-back |
 | `failed` | Nothing was committed (`committed: false`): a refusal before anything was sent, a refused change with the copy closed again, or a failed isolation check (`copyLeftOpen: true`) |
-| `unknown` | A step after `enter` got no reply, the copy never opened, or the commit was not confirmed; `committed` / `copyLeftOpen` say what is known |
+| `unknown` | A step after `enter` got no reply, the copy never opened (a copy open at the wrong destination is `failed`), or the commit was not confirmed; `committed` / `copyLeftOpen` say what is known |
 
 **Result size (#100).** On a clean success (`succeeded`, read-back `matched` or `not_requested`), `gma3_patch_set`,
 `gma3_patch_add` with `count` above 1, `gma3_patch_move` and `gma3_patch_retype` return `items`, one entry per fixture
@@ -83,7 +83,7 @@ A clean rename of 88 fixtures returned 171 KB before (79 KB of it without the in
 in one result; the compact form is about 6 KB.
 
 **Bridge-side safety net.** Each mutating op re-checks in the console:
-- `patch.add`: the copy, the destination, a free FID range, a free DMX range inside one universe, a single-break
+- `patch.add`: the copy, the destination (the Fixtures of the named stage, by address from bridge 0.45.0), a free FID range, a free DMX range inside one universe, a single-break
   mode. It calls `AddFixtures` once per fixture (amount 1, the fixture's own FID and address; bridge 0.25.2), stops
   at the first call that fails, checks that exactly the requested fixtures exist where requested, and deletes them
   again on any problem. A single call for a whole block crashed onPC 2.5.1 for a mode with cells (see
@@ -128,7 +128,7 @@ paginate.
 | `name` | Optional; the console names the fixtures otherwise |
 | `address` | DMX start `"U.AAA"`; fixtures are patched consecutively by the mode's footprint |
 | `findFreeFrom` | Instead of `address`: the first free block from this `"U.AAA"` (`FindBestDMXPatchAddr`, re-checked) |
-| `stage` | Default: the first stage. Fixtures are added at the stage's top level |
+| `stage` | Default: the first stage. Fixtures are added at the stage's top level. A stage with a Name needs bridge 0.45.0; a name with `"` in it cannot be entered (the command quotes the name), one with `'` can (compared by address; its display text is ambiguous) |
 | `exclusive` | Must be `true` |
 | `verify` | Default `true` |
 | `detail` | Default `false`: with `count` above 1 a clean success lists `items` (`{fid, name, address}` per new fixture) and `check` as just the type and mode; `true` returns the rows (`fixtures`) and the full pre-check. With `verify: false` there is no read-back: `name` is the one asked for (every fixture of the block gets that same name), else the console's own name as `patch.add` reported it right after adding (left out when the reply has none), and `address` is the block address the bridge checked in the copy |
