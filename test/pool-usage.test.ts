@@ -12,6 +12,7 @@ import {
   PAGE_SIZE,
   parsePool,
   registerPoolUsageTools,
+  versionAtLeast,
 } from "../src/tools/poolusage.ts";
 
 /**
@@ -20,7 +21,7 @@ import {
  * gma3_list_children over the real server.
  */
 
-type Kid = { index: number; name: string; class?: string; addr?: string; childCount?: number; fields?: Record<string, unknown> };
+type Kid = { index: number; name: string; class?: string; addr?: string; childCount?: number; fields?: Record<string, unknown>; fieldErrors?: Record<string, string> };
 
 /** A show: listings by reference or address. */
 class FakeShow {
@@ -29,6 +30,8 @@ class FakeShow {
   failAt?: { ref: string; offset: number };
   /** Grow the listing between pages. */
   growAfterFirstPage?: string;
+  /** What ping reports as bridgeVersion (an Error: ping fails). */
+  bridgeVersion: string | Error = "0.47.0";
 
   set(ref: string, kids: Kid[]): this {
     this.listings.set(ref, kids);
@@ -36,6 +39,10 @@ class FakeShow {
   }
 
   install(h: Harness): void {
+    h.fake.on("ping", () => {
+      if (this.bridgeVersion instanceof Error) throw this.bridgeVersion;
+      return { bridgeVersion: this.bridgeVersion };
+    });
     h.fake.on("children", (args) => {
       const ref = String(args.ref);
       const kids = this.listings.get(ref);
@@ -47,6 +54,7 @@ class FakeShow {
       const items = kids.slice(offset, offset + limit).map((k) => {
         const s: Record<string, unknown> = { name: k.name, class: k.class ?? "Object", addr: k.addr ?? `1.2.${k.index}`, addrNative: `ShowData.${k.name}`, index: k.index, childCount: k.childCount ?? 0 };
         if (fields.length) s.fields = Object.fromEntries(fields.map((f) => [f, k.fields?.[f] ?? null]));
+        if (fields.length && k.fieldErrors) s.fieldErrors = Object.fromEntries(Object.entries(k.fieldErrors).filter(([f]) => fields.includes(f)));
         return s;
       });
       const total = kids.length;
@@ -328,6 +336,59 @@ test("a wider executor's covered numbers are neither unassigned nor free (KB-21:
   assert.equal(bad.pool("Page 1").complete, false);
   assert.match(bad.pool("Page 1").reason, /Width of executor\(s\) 180 could not be read/);
   assert.equal(bad.pool("Page 1").free, null);
+});
+
+test("an executor whose Object read raised (bridge 0.47.0 fieldErrors) is unreadable, not free", async () => {
+  const failed: Kid = { index: 102, name: "Exec 102", class: "Exec", fields: { No: 102 }, fieldErrors: { Object: "cannot read Object" } };
+  const failedWidth: Kid = { ...exec(104, { class: "Sequence", name: "B" }), fieldErrors: { Width: "cannot read Width" } };
+  show.set("Page 1", [exec(101, { class: "Sequence", name: "A" }), failed, exec(103)]);
+  const { result, isError, pool } = await usage({ pools: ["Page 1"], free: { size: 1, from: 102 } });
+  assert.equal(isError, false);
+  assert.equal(result.complete, false);
+  const p = pool("Page 1");
+  assert.equal(p.unreadable, "102");
+  assert.equal(p.unassigned, "103");
+  assert.match(p.reason, /assignment of executor\(s\) 102 could not be read/);
+  assert.equal(p.free, null, "102 may be occupied");
+  // A Width read that raised leaves the numbers it covers unknown.
+  show.set("Page 1", [failedWidth]);
+  const w = await usage({ pools: ["Page 1"], free: { size: 1 } });
+  assert.equal(w.pool("Page 1").complete, false);
+  assert.match(w.pool("Page 1").reason, /Width of executor\(s\) 104 could not be read/);
+  assert.equal(w.pool("Page 1").free, null);
+});
+
+test("with a bridge before 0.47.0 no executor free block is offered, and the reason says why; pool blocks stay", async () => {
+  show.set("Page 1", [exec(101, { class: "Sequence", name: "A" })]);
+  show.set("DataPool.Groups", objs([1, 2], "Group"));
+  show.bridgeVersion = "0.46.0";
+  const { result, pool } = await usage({ pools: ["Page 1", "Groups"], free: { size: 2 } });
+  assert.equal(result.complete, true, "the reads themselves are complete");
+  assert.equal(pool("Page 1").free, null);
+  assert.match(pool("Page 1").freeNote, /bridge 0\.46\.0 .*need bridge 0\.47\.0/);
+  assert.equal(pool("Page 1").used, "101");
+  assert.equal(pool("Groups").free, "3-4");
+  assert.equal(h.fake.requests.filter((r) => r.op === "ping").length, 1);
+
+  show.bridgeVersion = new Error("request timed out");
+  assert.match((await usage({ pools: ["Page 1"], free: { size: 2 } })).pool("Page 1").freeNote, /version could not be read \(request timed out\)/);
+  show.bridgeVersion = "0.47.1";
+  assert.equal((await usage({ pools: ["Page 1"], free: { size: 2 } })).pool("Page 1").free, "102-103");
+  // Without free, and without a page, no ping is sent.
+  h.fake.requests.length = 0;
+  await usage({ pools: ["Page 1"] });
+  await usage({ pools: ["Groups"], free: { size: 1 } });
+  assert.equal(h.fake.requests.filter((r) => r.op === "ping").length, 0);
+});
+
+test("versionAtLeast", () => {
+  assert.equal(versionAtLeast("0.47.0", "0.47.0"), true);
+  assert.equal(versionAtLeast("0.48.0", "0.47.0"), true);
+  assert.equal(versionAtLeast("1.0", "0.47.0"), true);
+  assert.equal(versionAtLeast("0.46.9", "0.47.0"), false);
+  assert.equal(versionAtLeast("0.9.0", "0.47.0"), false);
+  assert.equal(versionAtLeast(undefined, "0.47.0"), false);
+  assert.equal(versionAtLeast("test", "0.47.0"), false);
 });
 
 test("Pages lists every page with its used executor count, read per page by address", async () => {

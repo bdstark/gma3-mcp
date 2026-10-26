@@ -134,6 +134,8 @@ interface Item {
   index?: number;
   invalid?: boolean;
   fields?: Record<string, unknown>;
+  /** Bridge 0.47.0: the fields whose read raised, with the error (absent before 0.47.0 and when every read worked). */
+  fieldErrors?: Record<string, unknown>;
 }
 
 interface Listing {
@@ -253,6 +255,8 @@ export function parsePool(raw: string): Spec {
 interface Options {
   names: boolean;
   free?: { size: number; from?: number };
+  /** Why executor free blocks are not offered (a bridge before 0.47.0); undefined when they are. */
+  executorFreeBlocked?: string;
 }
 
 type Row = Record<string, unknown>;
@@ -276,12 +280,15 @@ function numbered(items: Item[], no: (it: Item) => number | undefined) {
 /** Rows whose listing answered at least once: usable data, even when incomplete. The call fails only without any. */
 const ANSWERED = new WeakSet<Row>();
 
-function finish(row: Row, used: number[], read: { complete: boolean; reason?: string; answered: boolean }, opts: Options, freeOf: (used: number[], size: number, from?: number) => string | null): Row {
+function finish(row: Row, used: number[], read: { complete: boolean; reason?: string; answered: boolean }, opts: Options, freeOf: (used: number[], size: number, from?: number) => string | null, blocked?: string): Row {
   if (read.answered) ANSWERED.add(row);
   row.complete = read.complete;
   if (!read.complete) row.reason = read.reason;
   if (opts.free) {
-    if (read.complete) {
+    if (blocked !== undefined) {
+      row.free = null;
+      row.freeNote = blocked;
+    } else if (read.complete) {
       const hit = freeOf(used, opts.free.size, opts.free.from);
       row.free = hit;
       if (hit === null) row.freeNote = `no free block of ${opts.free.size}${opts.free.from !== undefined ? ` from ${opts.free.from}` : ""}`;
@@ -347,12 +354,13 @@ async function readExecutors(bridge: Gma3Bridge, ref: string, t: number) {
   const covered = new Set<number>();
   const badWidth: number[] = [];
   for (const [n, it] of byNo) {
-    const obj = assigned(it.fields?.Object);
+    // A failed Object read (bridge 0.47.0 names it in fieldErrors) says nothing about whether the executor is empty.
+    const obj = it.fieldErrors?.Object !== undefined ? "unknown" : assigned(it.fields?.Object);
     if (obj === "empty") unassigned.push(n);
     else if (obj === "unknown") unknown.push(n);
     else {
       used.push([n, obj.class ?? null, obj.name ?? null]);
-      const span = coveredBy(n, it.fields?.Width);
+      const span = it.fieldErrors?.Width !== undefined ? null : coveredBy(n, it.fields?.Width);
       if (span === null) badWidth.push(n);
       else for (const c of span) covered.add(c);
     }
@@ -377,7 +385,7 @@ async function readPage(bridge: Gma3Bridge, spec: Extract<Spec, { kind: "page" }
   if (covered.length) row.covered = compressRanges(covered);
   if (empty.length) row.unassigned = compressRanges(empty);
   if (unknown.length) row.unreadable = compressRanges(unknown);
-  return finish(row, [...nos, ...covered], read, opts, executorFree);
+  return finish(row, [...nos, ...covered], read, opts, executorFree, opts.executorFreeBlocked);
 }
 
 /**
@@ -418,6 +426,37 @@ async function readContainer(bridge: Gma3Bridge, spec: Extract<Spec, { kind: "pa
 
 export const MAX_POOLS = 30;
 
+/** The bridge that reports a failed field read (fieldErrors) instead of an absent field. */
+export const FIELD_ERRORS_BRIDGE = "0.47.0";
+
+/** Is version a at least b ("0.47.0" >= "0.46.2"); false for a version that does not parse. */
+export function versionAtLeast(a: unknown, b: string): boolean {
+  const parse = (v: string) => (/^\d+(\.\d+)*$/.test(v) ? v.split(".").map(Number) : null);
+  const x = typeof a === "string" ? parse(a.trim()) : null;
+  const y = parse(b)!;
+  if (!x) return false;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d !== 0) return d > 0;
+  }
+  return true;
+}
+
+/**
+ * Executor free blocks need bridge 0.47.0: an older one drops a failed Object read, so an occupied executor would read
+ * as empty. Returns the reason when they are not offered, undefined when they are.
+ */
+async function executorFreeGate(bridge: Gma3Bridge, t: number): Promise<string | undefined> {
+  let version: unknown;
+  try {
+    version = ((await bridge.request("ping", {}, t)) as { bridgeVersion?: unknown } | null)?.bridgeVersion;
+  } catch (err) {
+    return `not offered: the bridge version could not be read (${err instanceof Error ? err.message : String(err)}); executor free blocks need bridge ${FIELD_ERRORS_BRIDGE}`;
+  }
+  if (versionAtLeast(version, FIELD_ERRORS_BRIDGE)) return undefined;
+  return `not offered: bridge ${typeof version === "string" ? version : "(unknown version)"} reads a failed Object read like an empty executor; executor free blocks need bridge ${FIELD_ERRORS_BRIDGE}`;
+}
+
 export interface PoolUsageArgs {
   pools?: string[];
   preset_pools?: number[];
@@ -435,8 +474,9 @@ export async function poolUsage(ctx: ToolContext, args: PoolUsageArgs): Promise<
   const unique = specs.filter((s) => (seen.has(s.label.toLowerCase()) ? false : (seen.add(s.label.toLowerCase()), true)));
   if (unique.length > MAX_POOLS) throw new Error(`at most ${MAX_POOLS} pools per call (got ${unique.length})`);
   const bridge = scopedBridge(ctx.bridge, args.data_pool);
-  const opts: Options = { names: args.names === true, free: args.free };
   const t = ctx.requestTimeoutMs;
+  const opts: Options = { names: args.names === true, free: args.free };
+  if (args.free && unique.some((s) => s.kind === "page")) opts.executorFreeBlocked = await executorFreeGate(ctx.bridge, t);
   const rows: Row[] = [];
   for (const s of unique) {
     if (s.kind === "pool" || s.kind === "preset") rows.push(await readPool(bridge, s, opts, t));
@@ -459,7 +499,7 @@ const DESCRIPTION =
   "Read-only: which numbers a show already uses, per pool, before you store into it. For each pool: stored (the number of stored objects), used (their numbers as ranges, \"1-11, 5001-5534\"), " +
   "with names: true [no, name] pairs, and with free: {size, from?} the first free block of that size (\"21-40\"; null when there is none up to 9999 or the read is incomplete). " +
   'Pools: DataPool pools by name ("Groups", "Sequences", "Macros", "MAtricks", "Timecodes", "Layouts", ...); a preset pool as "Preset 4" or in preset_pools (stored presets, not the pool\'s 1000 slots); "PresetPools" (every preset pool as [no, name, stored, used]); ' +
-  '"Page 2" (its executors with an assigned object as [no, class, name]; covered: the numbers a wider executor (Width > 1) spans, never free; an assignment that cannot be read is listed as unreadable and makes the page incomplete; free searches one row: 101-198, 201-298, 301-390, 401-490, from 101 by default); "Pages" (every page as [no, name, executors used, used]). ' +
+  '"Page 2" (its executors with an assigned object as [no, class, name]; covered: the numbers a wider executor (Width > 1) spans, never free; an assignment that cannot be read (an invalid handle, or a read that raised: bridge 0.47.0) is listed as unreadable and makes the page incomplete; executor free blocks need bridge 0.47.0; free searches one row: 101-198, 201-298, 301-390, 401-490, from 101 by default); "Pages" (every page as [no, name, executors used, used]). ' +
   "Every pool is read to its end page by page; complete: false with reason (keeping what was read) when a read fails, the pool changes during the read or an object has no number; the call is an error only when no pool could be read at all. Ranges such as \"Page 1.101 Thru 1.115\" are not accepted (executor ranges can hang onPC). " +
   "Use this instead of gma3_objects \"Macro Thru\" or a Lua walk of the pools.";
 

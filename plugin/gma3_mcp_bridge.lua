@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.45.0"
+local VERSION      = "0.47.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -686,8 +686,14 @@ local function childSummary(c, fields, asText, playback)
   if fields and #fields > 0 then
     s.fields = {}
     for _, f in ipairs(fields) do
-      local v = getProp(c, f, asText)
+      local v, err = getProp(c, f, asText)
       s.fields[f] = v
+      -- 0.47.0 (#96): a read that raised is named in fieldErrors instead of reading like an empty field (an
+      -- executor whose Object read failed is not an empty executor). Absent when every field was read.
+      if err ~= nil then
+        s.fieldErrors = s.fieldErrors or {}
+        s.fieldErrors[f] = err
+      end
     end
   end
   return s

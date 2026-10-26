@@ -131,12 +131,15 @@ as the display text the editor shows, and object references are resolved to the 
 | A DataPool pool: `Groups`, `Sequences`, `Macros`, `MAtricks`, `Timecodes`, `Layouts`, ... (any `gma3_pool` name) | `children` on `DataPool.<Pool>` | `stored`, `used` (`"1-11, 5001-5534"`), with `names: true` `names: [[no, name], ...]` |
 | `Preset 4`, or `preset_pools: [1, 4, 21]` | `children` on `Preset 4` | the same; `stored` counts the stored presets, not the pool's 1000 slots (its `No` reads `4 (1000)`) |
 | `PresetPools` | `DataPool.PresetPools`, then each pool | `presetPools: [[no, name, stored, used], ...]` |
-| `Page 2` | `children` on `Page 2` (`No`, `Object`, handles) | the executors with an object: `executors: [[no, class, name], ...]`; `covered` for the numbers a wider executor spans (Width 2 on 180 covers 181, KB-21), never offered as free; `unassigned` for executors without one; `unreadable` for an assignment that could not be read (such as an invalid handle), which makes the page incomplete |
+| `Page 2` | `children` on `Page 2` (`No`, `Object`, handles) | the executors with an object: `executors: [[no, class, name], ...]`; `covered` for the numbers a wider executor spans (Width 2 on 180 covers 181, KB-21), never offered as free; `unassigned` for executors without one; `unreadable` for an assignment that could not be read (an invalid handle, or from bridge 0.47.0 an `Object` read that raised), which makes the page incomplete |
 | `Pages` | `DataPool.Pages`, then each page by address | `pages: [[no, name, executors used, used], ...]` |
 
 `free: {size, from?}` adds each pool's first free block of `size` numbers from `from` (default 1) up to 9999,
 such as `"21-40"`. For a page it stays inside one executor row (101-198, 201-298, 301-390, 401-490) and starts at 101;
-an executor without an object counts as free unless a wider executor covers it. An executor's Width that cannot be read makes the page incomplete. `free` is `null` with `freeNote` when there is no such block or the
+an executor without an object counts as free unless a wider executor covers it. An executor's Width that cannot be read makes the page incomplete.
+Executor free blocks need bridge 0.47.0 (the tool asks the bridge's `ping`): an older bridge drops a failed `Object` read,
+so an occupied executor would read as empty. With an older bridge, or when the version cannot be read, a page's `free`
+is `null` and `freeNote` says why; pool free blocks are unaffected. `free` is `null` with `freeNote` when there is no such block or the
 read is incomplete. `data_pool` reads another data pool.
 
 Every listing is read page by page (500 children per request) to its end. A failed request, a total that changes
@@ -144,6 +147,10 @@ between requests or an object without a number makes that pool `complete: false`
 read; the call is an error only when no pool could be read at all (a pool whose first page was read is not). Page and executor ranges are refused before any read:
 the tool reads a page's executors with `children` on the page, never with `ObjectList` over a range
 ([above](#page-and-executor-ranges-plugin-v0200)).
+
+From bridge 0.47.0 an item of the `children` and `objects` ops carries `fieldErrors: {<field>: <error>}` for each
+requested field whose read raised (the field itself stays absent, as before); an item whose fields were all read has
+no `fieldErrors`. Before 0.47.0 such a field was simply absent, like an empty one.
 
 `gma3_objects` and `gma3_list_children` add `truncated: true` and a `note` with the next offset whenever the
 returned items stop before `total` (a read of `Macro Thru` stops at the default limit of 500). With `fields`,
