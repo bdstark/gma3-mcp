@@ -36,7 +36,7 @@ The plan the tool returns (`plan.steps[].stepTiming`, `plan.distribution`, `plan
 | `effects` | several effects in one call instead of the fields above (SU-13) |
 | `detail` | with several presets: every preset's plan, steps and store result |
 | `mode` | `selective` (default) or `global`; universal cannot hold a per-fixture phase |
-| `existing`, `name` | as for `gma3_store_preset` |
+| `existing`, `name`, `on_name_taken` | as for `gma3_store_preset`: a name (variant names included) another preset of the pool has is refused before anything is sent, naming the holder, unless `on_name_taken: "allow_suffix"`; two presets of one call with the same name in one pool are refused at validation |
 | `audition_ms` | 0 (default: no playback) up to 30000 |
 | `exclusive`, `preview`, `verify` | `exclusive` required unless preview; `verify` default true |
 
@@ -104,7 +104,8 @@ a template.
   - mirror: the spread mirrored about the centre (`repeat: {wings: 2}`), with `mirror.attributes` (default Pan, for a
     position effect) inverted on the second half.
 - **Several effects.** `effects: [{preset, fixtures | group, steps | template, phaser, mirror, variants, name, ...}]`,
-  at most 64 presets per call. `unit`, `mode`, `existing` and `verify` given for the call are defaults. Every effect is
+  at most 64 presets per call. `unit`, `mode`, `existing`, `on_name_taken` and `verify` given for the call are
+  defaults. Every effect is
   inspected first (nothing is sent when one is refused). Then all are built in one Preview session, with a confirmed
   Preview and `ClearAll` between them. An effect whose build check or store fails does not stop the others; a step
   without a reply (also inside the store, such as its name write) does. The result has one line per preset (`items`)
@@ -118,7 +119,9 @@ a template.
 ### Requests, in order
 
 1. Read checks:
-   - `read_context`: the pool exists, StoreLook is off, and the existing-preset policy holds;
+   - `read_context`: the pool exists, StoreLook is off, the existing-preset policy holds, and (with a name and
+     `on_name_taken: "refuse"`) no other preset of the pool has the name: the pool's names are read once per pool
+     and call with `children` and shared with the stores ([#102](https://github.com/bdstark/gma3-mcp/issues/102));
    - `resolve_fixtures`: every fixture exists and **has every attribute of the effect**. The console answers OK and
      ignores an attribute a fixture lacks, so a missing one is refused with the fixture named;
    - `check_step_presets`: the step presets exist;

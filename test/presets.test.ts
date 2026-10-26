@@ -69,6 +69,10 @@ class Console {
   commands: string[] = [];
   /** Never answer a Name write (a lost reply after the store went through). */
   silentNameSet = false;
+  /** #102: the pool listing (children of "Preset <pool>") fails. */
+  failChildren = false;
+  /** #102: the pool listings read, in order. */
+  listed: string[] = [];
   /** SU-12: the Preview environment has its own programmer and selection; `prog` is the current environment's. */
   env = "Normal";
   private other: Array<ProgrammerRow & { active: boolean }> = [];
@@ -181,11 +185,26 @@ class Console {
       const ids = this.select(ref);
       return { total: ids.length, items: ids.map((id) => ({ name: `fx ${id}`, class: "Fixture" })) };
     });
+    h.fake.on("children", (args) => {
+      const ref = String(args.ref);
+      this.listed.push(ref);
+      if (this.failChildren) throw new Error("timeout");
+      const pool = ref.match(/^Preset (\d+)$/)?.[1];
+      if (!pool) throw new Error(`unexpected children ${ref}`);
+      const items = [...this.presets].filter(([k]) => k.startsWith(`${pool}.`)).map(([k, p]) => ({ name: p.name, class: "Preset", addr: `addr.${k}`, fields: { No: k.split(".")[1], Name: p.name } }));
+      return { total: items.length, offset: 0, count: items.length, items };
+    });
     h.fake.on("set", (args) => {
       if (this.silentNameSet && args.property === "Name") return SILENT;
       const key = String(args.ref).replace(/^Preset /, "");
       const p = this.presets.get(key)!;
-      if (args.property === "Name" && !p.lock) p.name = String(args.value);
+      if (args.property === "Name" && !p.lock) {
+        // #102: names are unique within a pool; a taken one gets "#2" (live 2026-10-25: "Orange" -> "Orange#2").
+        const value = String(args.value);
+        const pool = key.split(".")[0];
+        const taken = [...this.presets].some(([k, o]) => k !== key && k.startsWith(`${pool}.`) && o.name.toLowerCase() === value.toLowerCase());
+        p.name = taken ? `${value}#2` : value;
+      }
       return { ref: args.ref, property: args.property, value: p.name };
     });
     h.fake.on("cmd", (args) => {
@@ -621,4 +640,106 @@ test("store_preset batch (review round 1): stop_on_failure stops after the first
   assert.equal(con.presets.has("23.1"), false);
   assert.equal(con.env, "Normal");
   assert.deepEqual(con.commands.slice(-2), ["ClearAll", "Preview Off"], "Preview cleanup still runs");
+});
+
+// ---------------------------------------------------------------------------
+// #102: a name another preset of the pool has
+// ---------------------------------------------------------------------------
+
+const holdName = (key: string, name: string) => con.presets.set(key, { name, lock: "", presetMode: "Universal", rows: [], deps: [] });
+
+test("#102: a name another preset of the pool has is refused before the store, naming the holder (case-insensitively)", async () => {
+  holdName("4.5", "Orange");
+  con.set("401", "ColorRGB_R", 100);
+  const { result, isError } = await store({ preset: "4.101", fixtures: [401], mode: "selective", name: "Orange" });
+  assert.equal(isError, true);
+  assert.equal(result.outcome, "failed");
+  assert.match(stepError(result, "check_name"), /the name "Orange" is taken: "Orange" is Preset 4\.5\. .*"Orange#2".*on_name_taken: "allow_suffix"; nothing was sent/);
+  assert.match(result.summary, /"Orange" is Preset 4\.5/);
+  assert.equal(sent(), 0, "no store is sent");
+  assert.equal(con.presets.has("4.101"), false);
+  assert.deepEqual(con.listed, ["Preset 4"]);
+  const lower = await store({ preset: "4.101", fixtures: [401], mode: "selective", name: "orange" });
+  assert.match(stepError(lower.result, "check_name"), /"Orange" is Preset 4\.5 \(names are compared case-insensitively\)/);
+  const pv = await h.callJson("gma3_store_preset", { preset: "4.101", fixtures: [401], mode: "selective", name: "Orange", preview: true });
+  assert.match(stepError(pv.result, "check_name"), /"Orange" is Preset 4\.5/, "preview reports it too");
+  assert.equal(sent(), 0);
+  // Another pool's name is no collision.
+  const other = await store({ preset: "23.1", fixtures: [401], mode: "selective", name: "Orange" });
+  assert.equal(other.result.verification.status, "matched", JSON.stringify(other.result));
+  assert.equal(con.presets.get("23.1")!.name, "Orange");
+});
+
+test("#102: storing a preset again under its own name is no collision", async () => {
+  holdName("4.5", "Orange");
+  con.set("401", "ColorRGB_R", 100);
+  const { result, isError } = await store({ preset: "4.5", fixtures: [401], mode: "selective", name: "Orange", existing: "overwrite" });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  assert.equal(result.steps.find((s: any) => s.name === "check_name").status, "succeeded");
+  assert.equal(con.presets.get("4.5")!.name, "Orange");
+});
+
+test("#102: on_name_taken allow_suffix stores and reports the console's \"#2\" name as expected, not as a mismatch", async () => {
+  holdName("4.5", "Orange");
+  con.set("401", "ColorRGB_R", 100);
+  const { result, isError } = await store({ preset: "4.101", fixtures: [401], mode: "selective", name: "Orange", on_name_taken: "allow_suffix" });
+  assert.equal(isError, false, JSON.stringify(result));
+  assert.equal(result.outcome, "succeeded");
+  assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  assert.equal(con.presets.get("4.101")!.name, "Orange#2");
+  assert.equal(result.resulting.name, "Orange#2");
+  assert.deepEqual(result.steps.find((s: any) => s.name === "set_name").detail, { readBack: "Orange#2", suffixed: true });
+  assert.ok(result.warnings.some((w: string) => /"Orange" is Preset 4\.5.*allow_suffix/.test(w)), JSON.stringify(result.warnings));
+  assert.ok(result.warnings.some((w: string) => /stored the name as "Orange#2"/.test(w)), JSON.stringify(result.warnings));
+});
+
+test("#102: an unreadable pool listing refuses a named store; with allow_suffix it is a warning", async () => {
+  con.failChildren = true;
+  con.set("401", "ColorRGB_R", 100);
+  const refused = await store({ preset: "4.101", fixtures: [401], mode: "selective", name: "Orange" });
+  assert.match(stepError(refused.result, "check_name"), /the names of preset pool 4 could not be read.*nothing was sent/);
+  assert.equal(sent(), 0);
+  const unnamed = await store({ preset: "4.101", fixtures: [401], mode: "selective" });
+  assert.equal(unnamed.result.verification.status, "matched", "a store without a name does not read the pool's names");
+  assert.equal(con.listed.length, 1);
+  con.set("401", "ColorRGB_R", 90);
+  const allowed = await store({ preset: "4.102", fixtures: [401], mode: "selective", name: "Orange", on_name_taken: "allow_suffix" });
+  assert.equal(allowed.result.verification.status, "matched", JSON.stringify(allowed.result));
+  assert.ok(allowed.result.warnings.some((w: string) => /could not be read.*allow_suffix/.test(w)));
+});
+
+test("#102 batch: a taken name fails only its preset, a name an earlier item took is taken, the pool is read once", async () => {
+  holdName("4.5", "Orange");
+  const red = [{ attribute: "ColorRGB_R", value: 100, unit: "percent" }];
+  const { result } = await store({
+    mode: "selective",
+    presets: [
+      { preset: "4.101", name: "Orange", fixtures: [401], values: red },
+      { preset: "4.102", name: "Amber", fixtures: [401], values: red },
+      { preset: "4.103", name: "amber", fixtures: [402], values: red },
+      { preset: "4.104", name: "Blue", fixtures: [403], values: red },
+    ],
+  });
+  assert.deepEqual(result.items.map((i: any) => `${i.target}:${i.outcome}`), ["Preset 4.101:failed", "Preset 4.102:succeeded", "Preset 4.103:failed", "Preset 4.104:succeeded"], JSON.stringify(result.items));
+  assert.match(result.items[0].summary, /"Orange" is Preset 4\.5/);
+  assert.match(result.items[2].summary, /"Amber" is Preset 4\.102 \(stored earlier in this call\)/);
+  assert.equal(con.commands.some((c) => /^Store Preset 4\.10[13] /.test(c)), false, "no store for the refused presets");
+  assert.deepEqual(["4.101", "4.102", "4.103", "4.104"].map((k) => con.presets.get(k)?.name ?? null), [null, "Amber", null, "Blue"]);
+  assert.deepEqual(con.listed, ["Preset 4"], "the pool's names are read once for the call");
+  assert.equal(con.env, "Normal");
+  // The same names with allow_suffix: every preset is stored; the console suffixes the taken ones.
+  con.presets.clear();
+  holdName("4.5", "Orange");
+  const allowed = await store({
+    mode: "selective",
+    on_name_taken: "allow_suffix",
+    presets: [
+      { preset: "4.101", name: "Orange", fixtures: [401], values: red },
+      { preset: "4.102", name: "Amber", fixtures: [401], values: red },
+      { preset: "4.103", name: "Amber", fixtures: [402], values: red },
+    ],
+  });
+  assert.deepEqual(allowed.result.items.map((i: any) => `${i.target}:${i.outcome}:${i.verification}`), ["Preset 4.101:succeeded:matched", "Preset 4.102:succeeded:matched", "Preset 4.103:succeeded:matched"], JSON.stringify(allowed.result.items));
+  assert.deepEqual(["4.101", "4.102", "4.103"].map((k) => con.presets.get(k)!.name), ["Orange#2", "Amber", "Amber#2"]);
 });
