@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.46.0"
+local VERSION      = "0.47.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -776,15 +776,30 @@ local function childSummary(c, fields, asText, playback)
   if fields and #fields > 0 then
     s.fields = {}
     for _, f in ipairs(fields) do
-      local v = getProp(c, f, asText)
+      local v, err = getProp(c, f, asText)
       s.fields[f] = v
+      -- 0.47.0 (#96): a read that raised is named in fieldErrors instead of reading like an empty field (an
+      -- executor whose Object read failed is not an empty executor). Absent when every field was read.
+      if err ~= nil then
+        s.fieldErrors = s.fieldErrors or {}
+        s.fieldErrors[f] = err
+      end
     end
   end
   return s
 end
 
 local function listChildren(h, fields, limit, offset, asText, playback)
-  local children = safeCall(h, "Children") or {}
+  -- 0.47.0 (#96): a Children() that raises is reported as enumerationError next to the empty listing it gave before,
+  -- so a parent whose children could not be listed no longer reads like an empty one. A missing method is still empty.
+  local children, enumerationError = {}, nil
+  local okF, f = pcall(function() return h.Children end)
+  if okF and type(f) == "function" then
+    local ok, res = pcall(f, h)
+    if not ok then enumerationError = tostring(res) elseif type(res) == "table" then children = res end
+  elseif not okF then
+    enumerationError = tostring(f)
+  end
   local total = #children
   offset = tonumber(offset) or 0
   limit = tonumber(limit) or 200
@@ -793,7 +808,7 @@ local function listChildren(h, fields, limit, offset, asText, playback)
     table.insert(out, childSummary(children[i], fields, asText, playback))
   end
   if #out == 0 then setmetatable(out, { __jsontype = "array" }) end
-  return { total = total, offset = offset, count = #out, items = out }
+  return { total = total, offset = offset, count = #out, items = out, enumerationError = enumerationError }
 end
 
 -------------------------------------------------------------------------------

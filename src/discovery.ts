@@ -31,7 +31,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "OSC input and output", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
   { task: "save the show (current or new name) and list show files", tools: ["gma3_save_show", "gma3_show_files"] },
   { task: "tempo-sync plugin: status, configuration, ReSync of phasers", tools: ["gma3_tempo_sync_status", "gma3_configure_tempo_sync", "gma3_playback"] },
-  { task: "read show data and live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences"] },
+  { task: "read show data and live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences", "gma3_pool_usage"] },
 ];
 
 /** Tools that watch the console over time on the server side: no Lua loop, no Lua time budget. */
@@ -59,9 +59,9 @@ export const BATCH_TOOLS: ReadonlyArray<{ tool: string; list: string }> = [
   { tool: "gma3_configure_tag", list: "tags" },
 ];
 
-const BATCH_NOTE = `Many objects at once: ${BATCH_TOOLS.map((b) => `${b.tool} (${b.list})`).join(", ")} take a list in one call, with per-item checks, read-back and one result line per item; never loop over them in Lua.`;
+const BATCH_NOTE = `Many objects at once: ${BATCH_TOOLS.map((b) => `${b.tool} (${b.list})`).join(", ")} take a list per call, with per-item checks, read-back and one line per item; never loop over them in Lua.`;
 
-const OBSERVE_NOTE = `Watching over time: ${OBSERVING_TOOLS.map((o) => `${o.tool} (${o.what})`).join(", ")}. They sample on the server side; never write a Lua waiting or polling loop (gma3_lua has a 5 s budget).`;
+const OBSERVE_NOTE = `Watching over time: ${OBSERVING_TOOLS.map((o) => `${o.tool} (${o.what})`).join(", ")}. They sample server-side; never write a Lua waiting or polling loop (gma3_lua has a 5 s budget).`;
 
 /** The server instructions: sent on every start; a stale build's warning comes first. */
 export function serverInstructions(staleWarning?: string): string {
@@ -80,7 +80,7 @@ export function serverInstructions(staleWarning?: string): string {
 export const LUA_FALLBACK_NOTE =
   "FALLBACK: use a structured tool when one fits; they check, read back and need no Lua. Patch: gma3_patch_library, gma3_patch_import, gma3_patch_add, gma3_patch_set, gma3_patch_move, gma3_patch_retype, gma3_patch_type_structure, gma3_place_fixtures, gma3_layout_cells. Dialogs: gma3_dialog (never Mouse()). " +
   "Groups: gma3_store_group, gma3_configure_matricks. Presets: gma3_apply_preset, gma3_store_preset. Phasers: gma3_build_phaser. Looks: gma3_set_attributes. Cues: gma3_store_cues, gma3_edit_cues, gma3_build_chase, gma3_cue_contents. Recipe cues: gma3_store_recipe_cues, then gma3_cook_recipes. " +
-  "Playback: gma3_configure_sequence, gma3_configure_executor, gma3_playback, gma3_goto_cue. Reads: gma3_objects, gma3_get_object, gma3_list_children, gma3_programmer. " +
+  "Playback: gma3_configure_sequence, gma3_configure_executor, gma3_playback, gma3_goto_cue. Reads: gma3_objects, gma3_get_object, gma3_list_children, gma3_programmer; used and free pool numbers and executors: gma3_pool_usage. " +
   `${BATCH_NOTE} ` +
   `${OBSERVE_NOTE} `;
 
