@@ -1113,20 +1113,20 @@ const arrangementSchema = z
   .optional();
 
 const rangeSchema = (unit: string) => z.object({ from: z.number().nullable(), to: z.number().nullable() }).nullable().optional().describe(`{from, to} in ${unit} (null = None); null clears both.`);
-const axisSchema = z
-  .object({
-    wings: z.number().nullable().optional().describe("Wings (mirrored parts); null/0 = None."),
-    blocks: z.number().nullable().optional().describe("Block size (neighbours that act as one); null/0 = None."),
-    groups: z.number().nullable().optional().describe("Group count (repeat the distribution every n); null/0 = None."),
-    width: z.number().nullable().optional().describe("Width; null/0 = None."),
-    shift: z.number().nullable().optional().describe("Shift (may be negative); null/0 = None."),
-    shuffle: z.number().nullable().optional().describe("Shuffle seed; null/0 = None."),
-    fade: rangeSchema("seconds"),
-    delay: rangeSchema("seconds"),
-    phase: rangeSchema("degrees"),
-    speed: rangeSchema("BPM"),
-  })
-  .optional();
+/** The per-axis MAtricks settings (also the per-line MAtricks columns of gma3_store_recipe_cues). */
+export const axisSettingsShape = {
+  wings: z.number().nullable().optional().describe("Wings (mirrored parts); null/0 = None."),
+  blocks: z.number().nullable().optional().describe("Block size (neighbours that act as one); null/0 = None."),
+  groups: z.number().nullable().optional().describe("Group count (repeat the distribution every n); null/0 = None."),
+  width: z.number().nullable().optional().describe("Width; null/0 = None."),
+  shift: z.number().nullable().optional().describe("Shift (may be negative); null/0 = None."),
+  shuffle: z.number().nullable().optional().describe("Shuffle seed; null/0 = None."),
+  fade: rangeSchema("seconds"),
+  delay: rangeSchema("seconds"),
+  phase: rangeSchema("degrees"),
+  speed: rangeSchema("BPM"),
+};
+const axisSchema = z.object(axisSettingsShape).optional();
 
 export const registerGroupTools: RegisterTools = (server, ctx) => {
   server.registerTool(

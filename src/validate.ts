@@ -168,6 +168,23 @@ export function objectName(field: string, value: unknown, opts: { optional?: boo
 }
 
 /**
+ * A note (a cue's or another object's Note), written with the `set` op, never on the command line, so quotes and the
+ * characters names may not hold are kept. Control characters and line breaks are refused. The bridge reads text back
+ * trimmed, so the note is returned trimmed; "" clears it.
+ */
+export function noteText(field: string, value: unknown, opts: { optional?: boolean; maxLength?: number } = {}): string | undefined {
+  if (value === undefined || value === null) {
+    if (opts.optional) return undefined;
+    throw new ValidationError(`${field} is required`, field);
+  }
+  if (typeof value !== "string") throw new ValidationError(`${field} must be a string (got ${describe(value)})`, field);
+  if (/[\x00-\x1f\x7f]/.test(value)) throw new ValidationError(`${field} must be one line without control characters`, field);
+  const max = opts.maxLength ?? 2000;
+  if (value.length > max) throw new ValidationError(`${field} is longer than ${max} characters`, field);
+  return value.trim();
+}
+
+/**
  * True when a name cannot be placed inside a quoted command-line string and must be set via the `set`
  * op. After `objectName()` validation this only happens for names that bypassed it (raw quotes,
  * padding, empty); it is kept so callers can defend against unvalidated input.

@@ -99,6 +99,7 @@ minutes, stored 68 groups in 5 and placed 93 fixtures in 76 seconds.
 | Patch plan (CSV) | `fid,name,unit,fixture_type,mode,footprint,ma_universe,artnet_universe,address,patch,line,note` | `gma3_patch_add` in blocks (FID, count, type, mode, address), then one `gma3_patch_set` for the names |
 | Groups plan (JSON) | `[{group, name, items: [{fixture, x, y}], overwrite: true}]` | `gma3_store_group` in batches of about 8, with `detail: false` |
 | 3D placements (JSON) | `[{fid, position: {x, y, z}, rotation: {x, y, z}}]` | one `gma3_place_fixtures` call; save the returned `restore` list next to the plan |
+| Recipe cues (JSON) | per sequence `[{cue, name, note, lines: [{selection, values: "N.M", matricks, x: {blocks, select, fade}}]}]` | the cues with `gma3_store_cues`, then their lines and notes with `gma3_store_recipe_cues` (up to 500 lines a call, `cook` at the end), not Lua; the Halloween build wrote 4,300 lines from a Lua script with only a line count as check |
 
 - **FIDs.** Show Start owns FIDs 1 to 8. Start the rig at 101. Use the hundreds for areas and the tens for fixture
   kinds. In the Halloween build, 1xx was the main floor, 2xx the basement, 3xx the Hue lights (300 plus the
