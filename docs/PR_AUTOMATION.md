@@ -1,5 +1,25 @@
 # PR review, approval, merge and cleanup
 
+## Current operating mode
+
+The API-backed service is dormant. `PR_AUTOMATION_ENABLED` and `PR_MERGE_ENABLED` are
+`false` in all four repositories, and the `PR automation` and `PR review event`
+workflows are manually disabled in repository Actions settings. The local Codex
+chat monitor performs independent review and gated merging. The official Codex
+Connector is a separate reviewer; these Actions switches do not configure it.
+
+Both entry workflows also check `PR_AUTOMATION_ENABLED` before allocating work.
+Re-enabling a workflow alone therefore does not start paid API reviews. Keep the
+account-wide Actions budget at $10 with its hard stop enabled. Do not restore the
+API service as part of routine CI maintenance. The setup instructions below
+describe the dormant service, not the active chat monitor.
+
+CI cancels superseded PR validations on code or base updates. Description/title
+edits do not cancel a useful validation already in progress. CI retains full
+validation on its existing edit triggers: skipping named checks could overwrite
+a failed check with a successful skip. A future controller must preserve actual
+test evidence before optimizing metadata-only events.
+
 The reusable workflows in this repository serve only `bdstark/gma3-mcp`, `bdstark/gma3-beat-sync` and
 `bdstark/gma3-phrase-sync`, plus `bdstark/gma3-surface`. Callers pin an immutable revision. Each job fetches only the shared automation directory
 from its pinned controller revision. The candidate repository is fetched separately with trusted main checked out; PR commits are inspected as data using git diff/show, under its own

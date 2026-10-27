@@ -6,6 +6,7 @@ on:
 permissions: {}
 jobs:
   notify:
+    if: vars.PR_AUTOMATION_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       # No checkout, secrets, artifacts or PR-controlled expressions. The trusted

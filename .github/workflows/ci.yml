@@ -6,6 +6,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited]
 
+# New code/base updates supersede older validation; metadata edits do not cancel it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base != null) }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
