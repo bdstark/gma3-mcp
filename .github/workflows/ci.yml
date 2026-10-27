@@ -6,14 +6,13 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited]
 
-# Metadata-only edits must not cancel a running validation of the same PR.
+# New code/base updates supersede older validation; metadata edits do not cancel it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'metadata' || 'code' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base != null) }}
 
 jobs:
   test:
-    if: github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base != null
     runs-on: ubuntu-latest
     strategy:
       matrix:

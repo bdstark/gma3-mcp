@@ -14,11 +14,11 @@ account-wide Actions budget at $10 with its hard stop enabled. Do not restore th
 API service as part of routine CI maintenance. The setup instructions below
 describe the dormant service, not the active chat monitor.
 
-CI cancels superseded PR validations. Description/title-only edits skip runner
-jobs, while a base change still runs validation. Metadata-only edits use a
-separate concurrency group so they cannot cancel a useful code validation.
-A skipped metadata run is not new test evidence; use the successful validation
-for the current code and base when assessing readiness.
+CI cancels superseded PR validations on code or base updates. Description/title
+edits do not cancel a useful validation already in progress. CI retains full
+validation on its existing edit triggers: skipping named checks could overwrite
+a failed check with a successful skip. A future controller must preserve actual
+test evidence before optimizing metadata-only events.
 
 The reusable workflows in this repository serve only `bdstark/gma3-mcp`, `bdstark/gma3-beat-sync` and
 `bdstark/gma3-phrase-sync`, plus `bdstark/gma3-surface`. Callers pin an immutable revision. Each job fetches only the shared automation directory
