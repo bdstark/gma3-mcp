@@ -25,6 +25,7 @@ permissions:
   statuses: read
 jobs:
   service:
+    if: vars.PR_AUTOMATION_ENABLED == 'true'
     uses: ./.github/workflows/pr-review-service.yml
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
