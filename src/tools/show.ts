@@ -87,12 +87,26 @@ const same = (a: string | null | undefined, b: string | null | undefined) => typ
 const iso = (epoch: number | null | undefined) => (typeof epoch === "number" ? new Date(epoch * 1000).toISOString() : null);
 const fileView = (f: ShowFile | undefined) => (f ? { name: f.name, file: f.file, size: f.size ?? null, time: iso(f.time), localTime: f.localTime ?? null } : null);
 
+/**
+ * The longest show name SaveShow keeps. Live (onPC 2.5.1, 2026-10-29): `SaveShow "Halloween 2026 Creative pre-slots"`
+ * (33) asked to change the name to "Halloween 2026 Creative pre-slot" (32), so the dialog never named the requested show
+ * and was left open. The 2.5.1 help says 31; the console kept 32. Only ASCII was seen, so a name with other characters
+ * is counted in UTF-8 bytes: a refusal is better than a cut name.
+ */
+export const SHOW_NAME_MAX = 32;
 /** A show name as SaveShow takes it; ".show" is dropped. Throws a readable reason. */
 export function showName(raw: unknown): string {
   if (typeof raw !== "string") throw new Error("name must be text");
   const n = raw.replace(/\.show$/i, "");
-  if (!n || n.length > 128 || /[\u0000-\u001f"/\\:*?<>|]/.test(n) || n !== n.trim()) {
-    throw new Error('name must be 1-128 characters without quotes, slashes, \\ : * ? < > | or control characters, and without leading or trailing spaces');
+  if (!n || /[\u0000-\u001f"/\\:*?<>|]/.test(n) || n !== n.trim()) {
+    throw new Error('name must be 1-32 characters without quotes, slashes, \\ : * ? < > | or control characters, and without leading or trailing spaces');
+  }
+  const bytes = Buffer.byteLength(n, "utf8");
+  if (bytes > SHOW_NAME_MAX) {
+    const ascii = bytes === n.length;
+    const size = ascii ? `${n.length} characters` : `${n.length} characters, ${bytes} bytes in UTF-8 (outside ASCII the tool counts bytes)`;
+    const cut = ascii ? ` (SaveShow would ask about "${n.slice(0, SHOW_NAME_MAX)}" instead)` : "";
+    throw new Error(`name "${n}" is ${size}; the console keeps at most ${SHOW_NAME_MAX} and cuts the rest${cut}, so choose a shorter name`);
   }
   return n;
 }
@@ -298,10 +312,10 @@ export const registerShowTools: RegisterTools = (server, ctx) => {
     {
       title: "Save the show file",
       description:
-        "Save the show: under the current name (default) or a new name (which becomes the console's current show). Refuses to replace another show's existing file unless overwrite: true, and refuses while a dialog is open. SaveShow is sent so that it cannot stall the bridge; the tool answers SaveShow's own confirmation (\"Change show file name?\", or \"... and overwrite existing show file?\" with overwrite: true) and nothing else. " +
+        "Save the show: under the current name (default) or a new name (which becomes the console's current show). A new name is at most 32 characters (the console cuts longer names; non-ASCII counts in UTF-8 bytes) and is refused before anything is sent. Refuses to replace another show's existing file unless overwrite: true, and refuses while a dialog is open. SaveShow is sent so that it cannot stall the bridge; the tool answers SaveShow's own confirmation (\"Change show file name?\", or \"... and overwrite existing show file?\" with overwrite: true) and nothing else. " +
         "Verification: matched when the file carries a time from this save and the console names it current; the result reports the file (size, time). Requires exclusive: true. Use gma3_show_files to see the files first. Needs bridge 0.35.0.",
       inputSchema: {
-        name: z.string().optional().describe("Show name (without .show). Default: the current show."),
+        name: z.string().optional().describe("Show name (without .show), at most 32 characters. Default: the current show."),
         overwrite: z.boolean().optional().describe("Replace an existing file of another show with this name (default false: refuse)."),
         timeout_ms: z.number().optional().describe("How long to wait for the save (2000-120000, default 20000)."),
         exclusive: z.boolean().optional(),
