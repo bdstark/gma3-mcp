@@ -7,7 +7,7 @@
  */
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { OVERWRITE_TITLE, RENAME_TITLE, registerShowTools, showName } from "../src/tools/show.ts";
+import { OVERWRITE_TITLE, RENAME_TITLE, SHOW_NAME_MAX, registerShowTools, showName } from "../src/tools/show.ts";
 
 /**
  * The console's messages as probed live, kept here independent of the code under test: the name sits between the
@@ -359,4 +359,39 @@ test("review 3: \"Show B\" and \"Show  B\" (two spaces) are different files, in 
   const own = await h.callJson("gma3_save_show", { name: "Show  B", overwrite: true, exclusive: true });
   assert.equal(own.result.verification.status, "matched", own.text);
   assert.equal(con.current, "Show  B");
+});
+
+// --- show name length (live 2026-10-29: a 33-character name was cut to 32 in the dialog, which was left open) ----------
+
+test("save_show: 32 characters is saved; 33 is refused before anything is sent, naming the cut", async () => {
+  assert.equal(SHOW_NAME_MAX, 32);
+  const name32 = "Halloween 2026 Creative pre-slot";
+  const name33 = "Halloween 2026 Creative pre-slots";
+  assert.equal(name32.length, 32);
+  assert.equal(name33.length, 33);
+
+  const refused = await h.callJson("gma3_save_show", { name: name33, exclusive: true });
+  assert.equal(refused.isError, true, refused.text);
+  assert.match(refused.result.validationErrors.join(" "), /is 33 characters; the console keeps at most 32/);
+  assert.match(refused.result.validationErrors.join(" "), /SaveShow would ask about "Halloween 2026 Creative pre-slot" instead/);
+  assert.equal(h.fake.requests.length, 0);
+  assert.deepEqual(con.saves, []);
+  // ".show" is not part of the name: 32 characters plus the extension is still 32.
+  assert.equal(showName(`${name32}.show`), name32);
+  assert.throws(() => showName(`${name33}.show`), /is 33 characters/);
+
+  const saved = await h.callJson("gma3_save_show", { name: name32, exclusive: true });
+  assert.equal(saved.isError, false, saved.text);
+  assert.equal(saved.result.verification.status, "matched", saved.text);
+  assert.deepEqual(sent(), [`show.save ${name32}`, "show.answer OK"]);
+  assert.equal(con.current, name32);
+});
+
+test("save_show: outside ASCII the limit is 32 bytes in UTF-8", async () => {
+  assert.equal(showName("é".repeat(16)), "é".repeat(16)); // 16 characters, 32 bytes
+  const r = await h.callJson("gma3_save_show", { name: "é".repeat(17), exclusive: true });
+  assert.equal(r.isError, true, r.text);
+  assert.match(r.result.validationErrors.join(" "), /is 17 characters, 34 bytes in UTF-8/);
+  assert.doesNotMatch(r.result.validationErrors.join(" "), /would ask about/);
+  assert.equal(h.fake.requests.length, 0);
 });

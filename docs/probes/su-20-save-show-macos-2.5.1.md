@@ -37,6 +37,14 @@ With the local DST flag carried over, the corrected time matched the file's `sta
 The bridge kept answering throughout, since CmdIndirect lands on a later frame and the dialog never opened on the
 plugin thread.
 
+## Name length
+
+Seen on onPC 2.5.1 on 2026-10-29 during a show build (bridge 0.49.0): `SaveShow "Halloween 2026 Creative pre-slots"`
+(33 characters) opened "Change show file name?" with "Do you intend to change the show file name to 'Halloween
+2026 Creative pre-slot'?", the name cut to 32 characters. The tool did not answer a dialog for another name, and it was
+cancelled by hand. The 2.5.1 help (Save Show File) gives a maximum of 31 characters; the console kept 32. Names
+outside ASCII were not tried, so whether the console counts characters or bytes is unverified.
+
 ## Live test
 
 `test/live/save-show.live.ts`, 4/4 with bridge 0.35.0 (needs `GMA3_LIVE_EXCLUSIVE=1` and `GMA3_LIVE_SAVE=1`;

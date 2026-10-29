@@ -34,10 +34,15 @@ UTC) and `localTime` (the console's wall clock). It includes the open dialog, if
 
 | Parameter | Meaning |
 | --- | --- |
-| `name` | Show name without `.show` (it is dropped if given). Default: the current show. 1-128 characters, no quotes, slashes, `\ : * ? < > |` or control characters, no leading or trailing spaces |
+| `name` | Show name without `.show` (it is dropped if given). Default: the current show. 1-32 characters (outside ASCII, 32 bytes in UTF-8), no quotes, slashes, `\ : * ? < > |` or control characters, no leading or trailing spaces |
 | `overwrite` | Replace another show's existing file with this name (default false: refuse) |
 | `timeout_ms` | How long to wait for the save (2000-120000, default 20000) |
 | `exclusive` | Required: the file is written and the current show name may change |
+
+The console cuts a show name longer than 32 characters, so SaveShow's dialog would name another show and the tool
+could not answer it. A longer name is refused before anything is sent. The 2.5.1 help says 31, but onPC 2.5.1 kept 32
+live (see the [probe record](../probes/su-20-save-show-macos-2.5.1.md#name-length)). Only ASCII names have been seen,
+so a name with other characters is counted in UTF-8 bytes, which may refuse a name the console would keep.
 
 Steps:
 1. **Read** the files and the current show. The tool refuses when a dialog is already open, when whether one is
