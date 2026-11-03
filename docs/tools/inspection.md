@@ -163,7 +163,8 @@ Raw universe read.
 | --- | --- | --- |
 | `universe` | integer | 1..1024; the op further bounds it by `Patch().DmxUniverses:Count()`. |
 | `from`, `to` | integer | 1..512, `from <= to`; `to` defaults to `from`. |
-| `nonzero_only` | boolean | Explicit filter, default false. |
+| `count` | integer | Addresses from `from`, instead of `to` (`from + count - 1 <= 512`; `to` and `count` together are refused). |
+| `nonzero_only` | boolean | Explicit filter, default false. `nonzeroOnly` (the result's spelling) is accepted too; the two must agree. |
 | `unit` | `raw8` / `percent` | `raw8` (default): 0..255 per address. `percent`: 0..100 as converted by the console (8-bit precision). |
 | `patched` | boolean | Map each returned address to `{fid, channel, part}` via every fixture's RT channels (default false; skipped with a limitation above 6000 RT channels). |
 

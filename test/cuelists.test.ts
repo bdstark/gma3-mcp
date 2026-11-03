@@ -1241,3 +1241,131 @@ test("#102 store_cues batch: a rejected rename keeps the holder's real name, an 
     await h.close();
   }
 });
+
+// Live 2026-11-03 (onPC 2.5.1, "Festoon Demo"): `trigger: "follow", time: 0.25, fade: 0` given for the call with a
+// 72-cue list reached no cue (the call-level keys were read only for a preset range), and the read-back still said
+// "matched". The call's keys are defaults for every cue now, and each cue's TrigType/TrigTime is read back.
+test("store_cues: the call's trigger, time and fade are defaults for every cue and are read back; a cue's own keys win", async () => {
+  const { h, c } = await setup();
+  try {
+    const { result, isError } = await h.callJson("gma3_store_cues", {
+      sequence: 954,
+      mode: "create",
+      fixtures: "101",
+      exclusive: true,
+      trigger: "follow",
+      time: 0.25,
+      fade: 0,
+      cues: [
+        { cue: 1, presets: [{ pool: 4, preset: 1 }] },
+        { cue: 2, presets: [{ pool: 4, preset: 2 }], time: 0.5 },
+        { cue: 3, presets: [{ pool: 4, preset: 3 }], trigger: "time", time: 2, fade: 1 },
+        { cue: 4, presets: [{ pool: 4, preset: 1 }], trigger: "go" },
+      ],
+    });
+    assert.equal(isError, false, JSON.stringify(result, null, 2));
+    assert.equal(result.verification.status, "matched");
+    assert.deepEqual(result.cues.map((x: any) => [x.cue, x.status, x.verification]), [["1", "stored", "matched"], ["2", "stored", "matched"], ["3", "stored", "matched"], ["4", "stored", "matched"]]);
+    const seq = c.seqs.get(954)!;
+    assert.deepEqual(
+      seq.cues.map((x) => [x.no, x.trigType, x.trigTime, x.part0.CueInFade]),
+      [
+        [1, "Follow", 0.25, "0.00"], // the call's trigger, time and fade
+        [2, "Follow", 0.5, "0.00"], // the call's trigger, its own time
+        [3, "Time", 2, "1.00"], // its own trigger, time and fade
+        [4, "Go", 0, "0.00"], // its own trigger: the call's time does not apply to Go
+      ],
+    );
+    const sets = h.fake.requests.filter((r) => r.op === "set" && /^Sequence 954 Cue \d( Part 0)?$/.test(String(r.args.ref))).map((r) => `${r.args.ref} ${r.args.property}=${r.args.value}`);
+    assert.deepEqual(
+      sets.filter((s) => /TrigType|TrigTime|CueInFade/.test(s)),
+      [
+        "Sequence 954 Cue 1 Part 0 CueInFade=0",
+        "Sequence 954 Cue 1 TrigType=Follow",
+        "Sequence 954 Cue 1 TrigTime=0.25",
+        "Sequence 954 Cue 2 Part 0 CueInFade=0",
+        "Sequence 954 Cue 2 TrigType=Follow",
+        "Sequence 954 Cue 2 TrigTime=0.5",
+        "Sequence 954 Cue 3 Part 0 CueInFade=1",
+        "Sequence 954 Cue 3 TrigType=Time",
+        "Sequence 954 Cue 3 TrigTime=2",
+        "Sequence 954 Cue 4 Part 0 CueInFade=0",
+        "Sequence 954 Cue 4 TrigType=Go",
+      ],
+      "every cue gets the call's fade and trigger written, except where its own keys replace them",
+    );
+    const reads = h.fake.requests.filter((r) => r.op === "objects" && /^Sequence 954 Cue \d$/.test(String(r.args.ref)));
+    assert.equal(reads.length, 4, "every cue's TrigType and TrigTime are read back");
+    assert.ok(reads.every((r) => (r.args.fields as string[]).includes("TrigType") && (r.args.fields as string[]).includes("TrigTime")));
+
+    // The batch form: the call's keys are defaults for every sequence's cues too.
+    const batch = await h.callJson("gma3_store_cues", {
+      mode: "create",
+      fixtures: "101",
+      exclusive: true,
+      trigger: "follow",
+      time: 0.25,
+      sequences: [
+        { sequence: 956, cues: [{ cue: 1, presets: [{ pool: 4, preset: 1 }] }] },
+        { sequence: 957, cues: [{ cue: 1, presets: [{ pool: 4, preset: 2 }] }, { cue: 2, presets: [{ pool: 4, preset: 3 }], trigger: "go" }] },
+      ],
+    });
+    assert.equal(batch.isError, false, JSON.stringify(batch.result, null, 2));
+    assert.deepEqual([c.cue(956, 1)!.trigType, c.cue(956, 1)!.trigTime], ["Follow", 0.25]);
+    assert.deepEqual(c.seqs.get(957)!.cues.map((x) => [x.trigType, x.trigTime]), [["Follow", 0.25], ["Go", 0]]);
+
+    // A per-cue time under a call-level trigger it does not apply to, and a call-level time without a trigger, are refused.
+    let bad = await h.callJson("gma3_store_cues", { sequence: 955, mode: "create", fixtures: "101", exclusive: true, trigger: "go", cues: [{ cue: 1, presets: [{ pool: 4, preset: 1 }], time: 1 }] });
+    assert.equal(bad.isError, true);
+    assert.match(bad.text, /cues\[0\]\.time is not applicable to trigger/);
+    bad = await h.callJson("gma3_store_cues", { sequence: 955, mode: "create", fixtures: "101", exclusive: true, time: 1, cues: [{ cue: 1, presets: [{ pool: 4, preset: 1 }] }] });
+    assert.equal(bad.isError, true);
+    assert.match(bad.text, /time needs a trigger/);
+    // A call-level Time trigger may leave the time to each cue (Codex review 1); a cue that then has none is refused by name.
+    bad = await h.callJson("gma3_store_cues", { sequence: 955, mode: "create", fixtures: "101", exclusive: true, trigger: "time", cues: [{ cue: 1, presets: [{ pool: 4, preset: 1 }], time: 2 }, { cue: 2, presets: [{ pool: 4, preset: 2 }] }] });
+    assert.equal(bad.isError, true);
+    assert.match(bad.text, /cues\[1\]\.time \(seconds\) is required for trigger \\"time\\" \(the call's trigger; give time for the call or for this cue\)/);
+    assert.doesNotMatch(bad.text, /restore_times/);
+    assert.equal(c.seqs.has(955), false, "nothing was sent for the refused calls");
+    const perCue = await h.callJson("gma3_store_cues", { sequence: 955, mode: "create", fixtures: "101", exclusive: true, trigger: "time", cues: [{ cue: 1, presets: [{ pool: 4, preset: 1 }], time: 2 }, { cue: 2, presets: [{ pool: 4, preset: 2 }], trigger: "follow" }] });
+    assert.equal(perCue.isError, false, JSON.stringify(perCue.result, null, 2));
+    assert.deepEqual(c.seqs.get(955)!.cues.map((x) => [x.trigType, x.trigTime]), [["Time", 2], ["Follow", 0]], "the call's Time trigger with each cue's own time, and a cue's own trigger");
+    // The preset-range form still needs a complete call-level trigger (nothing per preset could supply the time).
+    bad = await h.callJson("gma3_store_cues", { sequence: 962, mode: "create", fixtures: "101", exclusive: true, trigger: "time", presets: { pool: 4, from: 1, to: 3 } });
+    assert.equal(bad.isError, true);
+    assert.match(bad.text, /time \(seconds\) is required for trigger/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues: a trigger the console accepts but does not apply is reported as mismatched, never as matched", async () => {
+  const { h, c } = await setup();
+  try {
+    // The console replies to the TrigType set as if it took it, but the cue stays on Go (live 2026-11-03).
+    c.ignoreSet = /^Sequence 958 Cue \d+ TrigType$/;
+    const { result } = await h.callJson("gma3_store_cues", {
+      sequence: 958,
+      mode: "create",
+      fixtures: "101",
+      exclusive: true,
+      trigger: "follow",
+      time: 0.25,
+      cues: [{ cue: 1, presets: [{ pool: 4, preset: 1 }] }, { cue: 2, presets: [{ pool: 4, preset: 2 }] }],
+    });
+    assert.equal(result.verification.status, "mismatched", JSON.stringify(result, null, 2));
+    assert.match(result.verification.detail, /cue 1: .*TrigType: expected "Follow", read "Go"/);
+    assert.match(result.verification.detail, /cue 2: .*TrigType: expected "Follow", read "Go"/);
+    assert.deepEqual(result.cues.map((x: any) => [x.cue, x.status, x.verification]), [["1", "stored", "mismatched"], ["2", "stored", "mismatched"]]);
+    assert.deepEqual(c.seqs.get(958)!.cues.map((x) => x.trigType), ["Go", "Go"]);
+    c.ignoreSet = undefined;
+
+    // A trigger time the console does not take is a mismatch too.
+    c.ignoreSet = /^Sequence 959 Cue 1 TrigTime$/;
+    const r2 = await h.callJson("gma3_store_cues", { sequence: 959, mode: "create", fixtures: "101", exclusive: true, cues: [{ cue: 1, presets: [{ pool: 4, preset: 1 }], trigger: "follow", time: 0.25 }] });
+    assert.equal(r2.result.verification.status, "mismatched");
+    assert.match(r2.result.verification.detail, /TrigTime: expected 0\.25, read /);
+  } finally {
+    await h.close();
+  }
+});

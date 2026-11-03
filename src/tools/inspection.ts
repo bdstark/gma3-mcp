@@ -358,12 +358,14 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
         "Raw DMX output for an explicit universe and channel range (channels 1..512; universe 1..1024, further bounded by the console's universe count). `unit` is explicit: \"raw8\" (0..255 per address) or \"percent\" (0..100 as the console converts it). " +
         WORKS_WITHOUT_LUA +
         "Source is \"dmx output\": output levels, NOT programmer values. A universe that is not granted on this onPC returns no values with `granted: false`, a limitation (never zeros) and outputState explaining why (gma3_dmx_output has the whole picture). " +
-        "`nonzero_only` is an explicit filter. `patched: true` additionally maps each returned address to its fixture/channel through the RT channels (bounded; stated in limitations when skipped). 16-bit attributes appear as two separate 8-bit addresses.",
+        "The range is from..to, or from plus count addresses (one of to or count; neither reads the one address from). `nonzero_only` (also accepted as `nonzeroOnly`, the result's spelling) is an explicit filter. `patched: true` additionally maps each returned address to its fixture/channel through the RT channels (bounded; stated in limitations when skipped). 16-bit attributes appear as two separate 8-bit addresses.",
       inputSchema: {
         universe: z.number().int().describe("DMX universe number (1..1024)."),
         from: z.number().int().describe("First channel (1..512)."),
-        to: z.number().int().optional().describe("Last channel (1..512, >= from). Default: same as from."),
+        to: z.number().int().optional().describe("Last channel (1..512, >= from). Default: same as from. Not with count."),
+        count: z.number().int().optional().describe("Number of addresses from `from` (1..512; from + count - 1 <= 512), instead of to."),
         nonzero_only: z.boolean().optional().describe("Only return addresses whose value is not zero (default false)."),
+        nonzeroOnly: z.boolean().optional().describe("Same as nonzero_only (the spelling the result uses)."),
         unit: z.enum(["raw8", "percent"]).optional().describe("raw8 (default): 0..255 per address. percent: 0..100 as converted by the console."),
         patched: z.boolean().optional().describe("Map each returned address to fixture ID / channel name via the RT channels (default false)."),
       },
@@ -373,11 +375,19 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
         const v = new Validator();
         const universe = v.check(() => finiteNumber("universe", args.universe, { integer: true, min: 1, max: 1024 }));
         const from = v.check(() => finiteNumber("from", args.from, { integer: true, min: 1, max: 512 }));
-        const to = v.check(() => finiteNumber("to", args.to, { integer: true, min: 1, max: 512, optional: true })) ?? from;
+        // Live 2026-11-03: `count` (addresses from `from`) is an alternative to `to`; both at once is refused (a conflict would be
+        // silently resolved otherwise), and a range past 512 is refused rather than clipped.
+        if (args.to !== undefined && args.count !== undefined) v.fail("give to or count, not both");
+        const count = v.check(() => finiteNumber("count", args.count, { integer: true, min: 1, max: 512, optional: true }));
+        const toGiven = v.check(() => finiteNumber("to", args.to, { integer: true, min: 1, max: 512, optional: true }));
+        const to = toGiven ?? (from !== undefined && count !== undefined ? from + count - 1 : from);
         if (from !== undefined && to !== undefined && to < from) v.fail(`to must be >= from (got from ${from}, to ${to})`);
+        if (from !== undefined && count !== undefined && from + count - 1 > 512) v.fail(`from ${from} plus count ${count} reaches address ${from + count - 1}; the last address is 512`);
         const unit = v.check(() => oneOf("unit", args.unit, ["raw8", "percent"] as const, { optional: true })) ?? "raw8";
+        // Live 2026-11-03: the result spells the filter nonzeroOnly, so that spelling is accepted on input too; the two must agree.
+        if (typeof args.nonzero_only === "boolean" && typeof args.nonzeroOnly === "boolean" && args.nonzero_only !== args.nonzeroOnly) v.fail("nonzero_only and nonzeroOnly disagree; give one of them");
         if (!v.ok || universe === undefined || from === undefined || to === undefined) return validationError("gma3_dmx", v.errors);
-        const nonzeroOnly = args.nonzero_only === true;
+        const nonzeroOnly = args.nonzero_only === true || args.nonzeroOnly === true;
         const patched = args.patched === true;
         const res = await op(bridge, "dmx", { universe, from, to, nonzeroOnly, percent: unit === "percent", patched }, timeoutMs);
         const outputState = res.granted === false ? await explainUniverses(bridge, [universe], timeoutMs) : undefined;
