@@ -74,7 +74,7 @@
 -- package.loaded.
 
 local NAME        = "gma3_mcp_feedback"
-local VERSION     = "0.8.0"
+local VERSION     = "0.8.1"
 local API_VERSION = 1
 
 local DEFAULTS = {
@@ -93,6 +93,7 @@ local DEFAULTS = {
   encoderBar         = 1,     -- the EncoderBar of CurrentProfile().EncoderBarPool whose banks/pages are read
   maxSlots           = 5,     -- encoder slots read per page (the pool page has five; onPC renders four)
   maxSelectionScan   = 8,     -- selected (sub)fixtures scanned for availability and value state per read
+  maxSubfixtureDepth = 4,     -- grouping levels followed to a fixture's first cell with UI channels (KB-16)
   maxSelectionIdentity = 512, -- selected fixture ids walked for the selection identity (no channel reads)
   maxUIChannels      = 64,    -- UI channels mapped per scanned fixture
   maxGenerations     = 8,     -- binding-generation records kept (one per distinct snapshot spec)
@@ -377,19 +378,29 @@ local function scanSelection(d, cfg)
       local okU, ui = pcall(d.uiChannels, idx)
       if not okU then discoveryFailed(idx, "GetUIChannels raised: " .. tostring(ui)); ui = {}; failed = true
       elseif type(ui) ~= "table" then discoveryFailed(idx, "GetUIChannels returned " .. type(ui)); ui = {}; failed = true end
-      if not failed and #ui == 0 and type(d.subfixtureCount) == "function" then
-        local okS, sc = pcall(d.subfixtureCount, idx)
-        if not okS then discoveryFailed(idx, "GetSubfixtureCount raised: " .. tostring(sc)); failed = true
-        elseif (tonumber(sc) or 0) > 0 then
-          local okSub, sub = pcall(d.subfixture, idx, 0)
-          if not okSub then discoveryFailed(idx, "GetSubfixture raised: " .. tostring(sub)); failed = true
-          elseif sub == nil then discoveryFailed(idx, "GetSubfixture gave no first subfixture although " .. tostring(sc) .. " were counted"); failed = true
-          else
-            target = sub
+      -- KB-16 grouping fixtures, corrected live 2026-11-02 (Festoon strings selected by parent): GetSubfixture(i) is
+      -- the (sub)fixture handle at flat patch index i (its second argument is ignored) and GetSubfixtureCount() counts
+      -- the whole patch, so the old GetSubfixtureCount(i) / GetSubfixture(i, 0) pair always handed the parent back and
+      -- every slot read "unavailable". The first cell is the handle's first child (Count()/Ptr(1)); GetUIChannels
+      -- accepts that child handle. Nested groupings (string -> pixel) are followed a bounded number of levels.
+      if not failed and #ui == 0 and type(d.subfixture) == "function" then
+        local okH, h = pcall(d.subfixture, idx)
+        if not okH then discoveryFailed(idx, "GetSubfixture raised: " .. tostring(h)); failed = true
+        elseif h ~= nil and type(d.subfixtureChildCount) == "function" and type(d.subfixtureChild) == "function" then
+          local depth = 0
+          while not failed and h ~= nil and depth < cfg.maxSubfixtureDepth do
+            depth = depth + 1
+            local okC, n = pcall(d.subfixtureChildCount, h)
+            if not okC then discoveryFailed(idx, "Count() of the fixture handle raised: " .. tostring(n)); failed = true; break end
+            if (tonumber(n) or 0) == 0 then break end
+            local okSub, sub = pcall(d.subfixtureChild, h, 1)
+            if not okSub then discoveryFailed(idx, "Ptr(1) of the fixture handle raised: " .. tostring(sub)); failed = true; break end
+            if sub == nil then discoveryFailed(idx, "the fixture counts " .. tostring(n) .. " subfixture(s) but Ptr(1) gave nothing"); failed = true; break end
             local okU2, ui2 = pcall(d.uiChannels, sub)
-            if not okU2 then discoveryFailed(idx, "GetUIChannels(subfixture) raised: " .. tostring(ui2)); ui = {}; failed = true
-            elseif type(ui2) ~= "table" then discoveryFailed(idx, "GetUIChannels(subfixture) returned " .. type(ui2)); ui = {}; failed = true
-            else ui = ui2 end
+            if not okU2 then discoveryFailed(idx, "GetUIChannels(subfixture) raised: " .. tostring(ui2)); ui = {}; failed = true; break end
+            if type(ui2) ~= "table" then discoveryFailed(idx, "GetUIChannels(subfixture) returned " .. type(ui2)); ui = {}; failed = true; break end
+            if #ui2 > 0 then target = sub; ui = ui2; break end
+            h = sub
           end
         end
       end
@@ -996,8 +1007,11 @@ local function consoleDeps(env)
     progPhaser = function(ui) return env.GetProgPhaser(ui, false) end,
     -- KB-19: the fixture type's logical channel behind a UI channel (its children are the channel functions)
     logicalChannel = function(ui) local u = env.GetUIChannel(ui); return u and u.logical_channel end,
-    subfixtureCount = function(i) return env.GetSubfixtureCount(i) end,
-    subfixture = function(i, n) return env.GetSubfixture(i, n) end,
+    -- KB-16 grouping fixtures (live onPC 2.5.1, 2026-11-02): GetSubfixture(i) is the handle at flat patch index i and
+    -- GetSubfixtureCount() takes no argument, so a parent's first cell is its handle's first child.
+    subfixture = function(i) return env.GetSubfixture(i) end,
+    subfixtureChildCount = function(h) return h:Count() end,
+    subfixtureChild = function(h, k) return h:Ptr(k) end,
     attributeDefinitions = function() return env.Root().ShowData.LivePatch.AttributeDefinitions.Attributes end,
     attributeIndex = function(n) return env.GetAttributeIndex(n) end,
     -- reservedExecutors is supplied by the consumer that owns a Quickey bank (the bridge): a function

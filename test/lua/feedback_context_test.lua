@@ -21,7 +21,7 @@ local function loadModule(file)
   return chunk("test_plugin", (file:gsub("%.lua$", "")), {}, nil)
 end
 local FB = loadModule("gma3_mcp_feedback.lua")
-check("feedback 0.8.0 loads", FB.VERSION == "0.8.0" and FB.API_VERSION == 1)
+check("feedback 0.8.1 loads", FB.VERSION == "0.8.1" and FB.API_VERSION == 1)
 
 -------------------------------------------------------------------------------
 -- Fake console
@@ -86,6 +86,7 @@ local attrIndex = { ColorRGB_R = 107, ColorRGB_G = 108, ColorRGB_B = 109, Dimmer
 -- Selection: fixture 63 (RGB: R/G/B + Dimmer) and 64 (R/G + Dimmer). UI channel -> attribute name.
 local selection = { list = { 63, 64 } }
 local uiOf = { [63] = { 320, 321, 322, 1 }, [64] = { 420, 421, 2 }, [65] = { 520, 521, 522, 3 } }
+local subfixtureOf = {}  -- flat index -> fake fixture handle (Count()/Ptr(k)) for grouping fixtures
 local attrOfUi = { [320] = "ColorRGB_R", [321] = "ColorRGB_G", [322] = "ColorRGB_B", [1] = "Dimmer", [420] = "ColorRGB_R", [421] = "ColorRGB_G", [2] = "Dimmer",
                    [520] = "ColorRGB_R", [521] = "ColorRGB_G", [522] = "ColorRGB_B", [3] = "Dimmer" }
 -- KB-19: logical channels (channel functions with physical ranges) per UI channel. Fixture 64's R has a
@@ -169,7 +170,9 @@ local function deps(overrides)
     attributeByUIChannel = function(ui) local n = attrOfUi[ui]; return n and { name = n } or nil end,
     progPhaser = function(ui) return programmer[ui] end,
     logicalChannel = function(ui) if ui == 421 then error("GetUIChannel exploded") end return logical[ui] end,
-    subfixtureCount = function() return 0 end,
+    subfixture = function(i) return subfixtureOf[i] end,
+    subfixtureChildCount = function(h) return h:Count() end,
+    subfixtureChild = function(h, k) return h:Ptr(k) end,
     attributeDefinitions = function() return defs end,
     attributeIndex = function(n) return attrIndex[n] end,
     reservedExecutors = function() return reserved end,
@@ -315,10 +318,30 @@ check("no pool page for the selector: slots unavailable with the reason", r.avai
 console.page = 0
 r = f:read("encoderSlots", { display = 2 }, 1)
 check("slots on a display without an encoder bar are unavailable", r.available == false and r.reason:find("no encoder bar"), json.encode(r))
-local f7 = FB.new({ owner = "kb17g", deps = deps({ uiChannels = function(i) if i == 63 then return {} end return uiOf[i] end, subfixtureCount = function(i) return i == 63 and 2 or 0 end, subfixture = function(i, n) return 630 + n end }) }):init()
+-- Live onPC 2.5.1 (2026-11-02): GetSubfixture(i) returns the fixture at flat index i itself, so the first cell is the
+-- handle's first child. A fake handle mirrors Count()/Ptr(k); the child 630 is what uiChannels is asked about.
+local function grouping(children) return { Count = function() return #children end, Ptr = function(_, k) return children[k] end } end
+subfixtureOf[63] = grouping({ 630, 631 })
+local f7 = FB.new({ owner = "kb17g", deps = deps({ uiChannels = function(i) if i == 63 then return {} end return uiOf[i] end }) }):init()
 uiOf[630] = { 320, 321 }
 r = f7:read("encoderSlots", nil, 1)
 check("a grouping fixture is read through its first subfixture", r.available and r.value.slots[1].availability == "available" and r.value.slots[1].valueFixture == 63 and r.value.slots[3].availability == "unavailable", json.encode(r.value.slots[1]))
+check("the grouping fixture's channels are a complete discovery", r.value.selection.discoveryFailures == 0 and not r.value.slots[1].discoveryIncomplete, json.encode(r.value.selection))
+-- Regression: the fallback must not hand the parent back. A handle that is its own "first subfixture" (the old
+-- GetSubfixture(i, 0) behaviour) has Count() 0 here and is simply a fixture without the attribute.
+subfixtureOf[63] = grouping({})
+r = FB.new({ owner = "kb17h", deps = deps({ uiChannels = function(i) if i == 63 then return {} end return uiOf[i] end }) }):init():read("encoderSlots", nil, 1)
+check("a fixture without channels or children lacks the attribute (mixed with 64), not a discovery failure", r.value.slots[1].availability == "mixed" and r.value.slots[1].with == 1 and r.value.slots[1].valueFixture == 64 and r.value.selection.discoveryFailures == 0, json.encode(r.value.slots[1]))
+-- Nested groupings (string -> pixel): the descent follows first children until one has UI channels.
+subfixtureOf[63] = grouping({ grouping({ 630 }) })
+r = FB.new({ owner = "kb17i", deps = deps({ uiChannels = function(i) if i == 63 then return {} end return type(i) == "table" and {} or uiOf[i] end }) }):init():read("encoderSlots", nil, 1)
+check("a nested grouping is read through its first pixel", r.value.slots[1].availability == "available" and r.value.slots[1].valueFixture == 63, json.encode(r.value.slots[1]))
+-- A descent that never reaches channels stops at the depth bound and reports the fixture as lacking the attribute.
+local deep = 630; for _ = 1, 6 do deep = grouping({ deep }) end
+subfixtureOf[63] = deep
+r = FB.new({ owner = "kb17j", deps = deps({ uiChannels = function(i) if i == 63 then return {} end return type(i) == "table" and {} or uiOf[i] end }) }):init():read("encoderSlots", nil, 1)
+check("the grouping descent is bounded: 63 stays without the attribute", r.value.slots[1].availability == "mixed" and r.value.slots[1].with == 1 and r.value.selection.discoveryFailures == 0, json.encode(r.value.slots[1]))
+subfixtureOf[63] = nil
 
 -------------------------------------------------------------------------------
 -- executorTarget, pageExecutors
@@ -432,7 +455,7 @@ do
   local fe = FB.new({ owner = "kb19e", deps = deps({ attributeByUIChannel = function(ui) if ui == 420 then return { name = "" } end local n = attrOfUi[ui]; return n and { name = n } or nil end }) }):init()
   local re = fe:read("encoderSlots", nil, 19.17)
   check("kb19 review 3: an attribute handle whose name raises or is empty is a discovery failure (no range, incomplete)", ru.value.selection.discoveryFailures == 1 and ru.value.slots[1].physicalRange == nil and ru.value.slots[1].physicalUnavailable:find("no readable name") and re.value.selection.discoveryFailures == 1 and re.value.slots[1].physicalRange == nil and re.value.slots[1].physicalUnavailable:find("no readable name"), json.encode({ ru.value.slots[1].physicalUnavailable, re.value.slots[1].physicalUnavailable }))
-  local fz = FB.new({ owner = "kb19z", deps = deps({ uiChannels = function(i) if i == 64 then return {} end return uiOf[i] end, subfixtureCount = function(i) if i == 64 then error("count exploded") end return 0 end }) }):init()
+  local fz = FB.new({ owner = "kb19z", deps = deps({ uiChannels = function(i) if i == 64 then return {} end return uiOf[i] end, subfixture = function(i) if i == 64 then error("count exploded") end return nil end }) }):init()
   local rz = fz:read("encoderSlots", nil, 19.2)
   check("kb19 review 2: a raising subfixture discovery is a discovery failure (no range, incomplete)", rz.value.selection.discoveryFailures == 1 and rz.value.slots[1].physicalRange == nil and rz.value.slots[1].physicalUnavailable:find("count exploded"), json.encode(rz.value.slots[1].physicalUnavailable))
   local sOk = f:read("encoderSlots", nil, 19.3).value
