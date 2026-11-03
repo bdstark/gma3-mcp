@@ -1321,7 +1321,19 @@ test("store_cues: the call's trigger, time and fade are defaults for every cue a
     bad = await h.callJson("gma3_store_cues", { sequence: 955, mode: "create", fixtures: "101", exclusive: true, time: 1, cues: [{ cue: 1, presets: [{ pool: 4, preset: 1 }] }] });
     assert.equal(bad.isError, true);
     assert.match(bad.text, /time needs a trigger/);
+    // A call-level Time trigger may leave the time to each cue (Codex review 1); a cue that then has none is refused by name.
+    bad = await h.callJson("gma3_store_cues", { sequence: 955, mode: "create", fixtures: "101", exclusive: true, trigger: "time", cues: [{ cue: 1, presets: [{ pool: 4, preset: 1 }], time: 2 }, { cue: 2, presets: [{ pool: 4, preset: 2 }] }] });
+    assert.equal(bad.isError, true);
+    assert.match(bad.text, /cues\[1\]\.time \(seconds\) is required for trigger \\"time\\" \(the call's trigger; give time for the call or for this cue\)/);
+    assert.doesNotMatch(bad.text, /restore_times/);
     assert.equal(c.seqs.has(955), false, "nothing was sent for the refused calls");
+    const perCue = await h.callJson("gma3_store_cues", { sequence: 955, mode: "create", fixtures: "101", exclusive: true, trigger: "time", cues: [{ cue: 1, presets: [{ pool: 4, preset: 1 }], time: 2 }, { cue: 2, presets: [{ pool: 4, preset: 2 }], trigger: "follow" }] });
+    assert.equal(perCue.isError, false, JSON.stringify(perCue.result, null, 2));
+    assert.deepEqual(c.seqs.get(955)!.cues.map((x) => [x.trigType, x.trigTime]), [["Time", 2], ["Follow", 0]], "the call's Time trigger with each cue's own time, and a cue's own trigger");
+    // The preset-range form still needs a complete call-level trigger (nothing per preset could supply the time).
+    bad = await h.callJson("gma3_store_cues", { sequence: 962, mode: "create", fixtures: "101", exclusive: true, trigger: "time", presets: { pool: 4, from: 1, to: 3 } });
+    assert.equal(bad.isError, true);
+    assert.match(bad.text, /time \(seconds\) is required for trigger/);
   } finally {
     await h.close();
   }

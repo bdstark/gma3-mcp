@@ -247,11 +247,16 @@ export function validateLooks(v: Validator, raw: Record<string, unknown>, path: 
   return look ? [look] : [];
 }
 
-function validateTrigger(v: Validator, rawTrigger: unknown, rawTime: unknown, path: string, timeFromSaved = false): { trigger?: TriggerKey; time?: number } {
+/**
+ * A trigger and its time. `timeElsewhere`: a Time trigger without a time passes here because the time comes from
+ * somewhere else (gma3_edit_cues restore_times: the saved ones; the call-level default of a cue list: each cue's own,
+ * checked per cue). `hint` names the way to give a missing time.
+ */
+function validateTrigger(v: Validator, rawTrigger: unknown, rawTime: unknown, path: string, timeElsewhere = false, hint = ""): { trigger?: TriggerKey; time?: number } {
   const trigger = v.check(() => oneOf(`${path}trigger`, rawTrigger, TRIGGER_KEYS, { optional: true }));
   const time = v.check(() => timeSeconds(`${path}time`, rawTime, { optional: true }));
   if (time !== undefined && trigger === undefined) v.fail(`${path}time needs a trigger ("time" or "follow")`);
-  if (trigger === "time" && time === undefined && !timeFromSaved) v.fail(`${path}time (seconds) is required for trigger "time" (or restore_times: true to set the saved ones)`);
+  if (trigger === "time" && time === undefined && !timeElsewhere) v.fail(`${path}time (seconds) is required for trigger "time"${hint}`);
   if ((trigger === "go" || trigger === "sound" || trigger === "bpm") && time !== undefined) v.fail(`${path}time is not applicable to trigger "${trigger}"`);
   return { trigger, time };
 }
@@ -297,7 +302,7 @@ function validateCues(v: Validator, raw: unknown, defaultFixtures: string | unde
     const note = v.check(() => noteText(`${path}.note`, r.note, { optional: true }));
     const looks = validateLooks(v, r, path, defaultFixtures, command !== undefined);
     const timing = { ...defaults.timing, ...validateTiming(v, r, `${path}.`) };
-    const trig = r.trigger !== undefined ? validateTrigger(v, r.trigger, r.time, `${path}.`) : validateTrigger(v, defaults.trigger, r.time ?? defaults.time, `${path}.`);
+    const trig = r.trigger !== undefined ? validateTrigger(v, r.trigger, r.time, `${path}.`) : validateTrigger(v, defaults.trigger, r.time ?? defaults.time, `${path}.`, false, defaults.trigger === "time" ? " (the call's trigger; give time for the call or for this cue)" : "");
     if (cue && out.some((x) => Number(x.cue) === Number(cue))) v.fail(`${path}: cue ${cue} appears twice`);
     if (cue) out.push({ cue, name, looks, ...(command !== undefined ? { command } : {}), ...(note !== undefined ? { note } : {}), timing, ...trig });
   });
@@ -1284,9 +1289,10 @@ export async function storeCues(ctx: ToolContext, raw: Record<string, unknown>, 
   let cues: CueSpec[] = [];
   let range: PresetRange | undefined;
   let firstCue = 1;
-  // The call's timing and trigger: the cues of a preset range, and the defaults of a cue list.
+  // The call's timing and trigger: the cues of a preset range (complete here), and the defaults of a cue list (a Time
+  // trigger may leave the time to each cue: the merged cue specs are checked in validateCues; Codex review 1).
   const timing = validateTiming(v, raw, "");
-  const trig = validateTrigger(v, raw.trigger, raw.time, "");
+  const trig = validateTrigger(v, raw.trigger, raw.time, "", raw.presets === undefined && raw.cues !== undefined);
   if ((raw.cues === undefined) === (raw.presets === undefined)) v.fail("give exactly one of cues (a list) or presets ({pool, from, to}: one cue per preset)");
   else if (raw.presets !== undefined) {
     range = validatePresetRange(v, raw.presets, "presets");
@@ -1417,7 +1423,7 @@ export async function editCues(ctx: ToolContext, raw: Record<string, unknown>): 
   const from = v.check(() => cueNumber("from", raw.from, { optional: true }));
   const to = v.check(() => cueNumber("to", raw.to, { optional: true }));
   if (from !== undefined && to !== undefined && Number(from) > Number(to)) v.fail("from must not be after to");
-  const trig = validateTrigger(v, raw.trigger, raw.time, "", raw.restore_times === true);
+  const trig = validateTrigger(v, raw.trigger, raw.time, "", raw.restore_times === true, " (or restore_times: true to set the saved ones)");
   const timing: Partial<Record<TimingKey, number>> = validateTiming(v, raw, "");
   const snap = v.check(() => timeSeconds("snap_delay", raw.snap_delay, { optional: true }));
   if (snap !== undefined) timing.snap_delay = snap;
