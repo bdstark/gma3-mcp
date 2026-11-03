@@ -41,7 +41,7 @@ activates the fixture's whole colour group (KB-17), so a cue can hold more value
 4. **Leaving Preview.** The console is confirmed in Preview, then `ClearAll` and `Preview Off`, whatever happened.
    The Normal programmer is read again and must equal the snapshot from step 1.
 5. **Sequence name** (`sequence_name`, or `name` for a chase), written once a cue was stored.
-6. **Read-back** per stored cue: it exists, and its name, timing and trigger as given. A cue stored without a name
+6. **Read-back** per stored cue: it exists, and its name, timing and trigger as given (the call-level defaults included: a TrigType or TrigTime the console did not take is a mismatch, live 2026-11-03). A cue stored without a name
    takes the preset's name (`[4.902]`), and the result reports that name.
 
 **The look check.** Each check runs in the Preview programmer right after the command it verifies:
@@ -77,6 +77,7 @@ cue. The look check is the evidence that the programmer held the right values at
 | `mode` | `create` (refuse existing cues), `merge`, `overwrite` |
 | `fixtures` | default target for looks without their own |
 | `cues` | 1–100 cues: `cue` (number), `name`, content, `fade`, `delay`, `out_fade`, `out_delay`, `trigger` (`go`, `time` with `time`, `follow` with optional `time`, `sound`, `bpm`), `note` |
+| `fade`, `delay`, `out_fade`, `out_delay`, `trigger`, `time` | call-level defaults for every cue: a cue's own keys win; a cue without a trigger takes the call's trigger and time (its own `time` replaces the call's); a cue with its own trigger takes none of the call's `time`. In the batch form they apply to every sequence's cues too. |
 | `exclusive`, `verify` | `exclusive` required; `verify` default true (look checks and read-back) |
 
 `note` (#101) is the cue's `Note`, for example the scene metadata a plugin reads. It is written with `set` on the cue

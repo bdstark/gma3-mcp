@@ -265,7 +265,20 @@ function validateTiming(v: Validator, raw: Record<string, unknown>, path: string
   return timing;
 }
 
-function validateCues(v: Validator, raw: unknown, defaultFixtures: string | undefined): CueSpec[] {
+/** The call-level timing and trigger of gma3_store_cues: defaults for every cue. */
+interface CueDefaults {
+  timing: CueSpec["timing"];
+  trigger?: TriggerKey;
+  time?: number;
+}
+
+/**
+ * The cues of a call. A cue's own timing keys and trigger win over the call's defaults: a cue without a trigger takes
+ * the call's trigger and time (its own time, when given, replaces the call's time under that trigger); a cue with its
+ * own trigger takes none of the call's time (live 2026-11-03: the call-level trigger used to reach only the presets form, so
+ * `trigger: "follow", time: 0.25` for the whole call left every cue on Go).
+ */
+function validateCues(v: Validator, raw: unknown, defaultFixtures: string | undefined, defaults: CueDefaults = { timing: {} }): CueSpec[] {
   if (!Array.isArray(raw) || raw.length === 0) {
     v.fail("cues must be a non-empty list");
     return [];
@@ -283,8 +296,8 @@ function validateCues(v: Validator, raw: unknown, defaultFixtures: string | unde
     const command = v.check(() => cueCommand(`${path}.command`, r.command));
     const note = v.check(() => noteText(`${path}.note`, r.note, { optional: true }));
     const looks = validateLooks(v, r, path, defaultFixtures, command !== undefined);
-    const timing = validateTiming(v, r, `${path}.`);
-    const trig = validateTrigger(v, r.trigger, r.time, `${path}.`);
+    const timing = { ...defaults.timing, ...validateTiming(v, r, `${path}.`) };
+    const trig = r.trigger !== undefined ? validateTrigger(v, r.trigger, r.time, `${path}.`) : validateTrigger(v, defaults.trigger, r.time ?? defaults.time, `${path}.`);
     if (cue && out.some((x) => Number(x.cue) === Number(cue))) v.fail(`${path}: cue ${cue} appears twice`);
     if (cue) out.push({ cue, name, looks, ...(command !== undefined ? { command } : {}), ...(note !== undefined ? { note } : {}), timing, ...trig });
   });
@@ -898,7 +911,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
       ? unavailable("no cue was stored")
       : worst(
           [...attempted.map((r) => ({ ...r.verification, detail: r.verification.detail ? `cue ${r.cue}: ${r.verification.detail}` : undefined })), ...(normalProgrammer === "changed" ? [{ status: "mismatched" as const, detail: "the Normal programmer changed during the build" }] : [])],
-          `${attempted.length} cue(s): each look in the Preview programmer before its store, then the cue's existence, name, timing and trigger`,
+          `${attempted.length} cue(s): each look in the Preview programmer before its store, then the cue's existence, its name, and the timing, trigger, command and note it was given`,
         );
   return { steps, readBack, warnings, cues: reports, sent: true, backInNormal: built.backInNormal, normalProgrammer, sequenceExisted, verification: overall };
 }
@@ -1271,14 +1284,15 @@ export async function storeCues(ctx: ToolContext, raw: Record<string, unknown>, 
   let cues: CueSpec[] = [];
   let range: PresetRange | undefined;
   let firstCue = 1;
+  // The call's timing and trigger: the cues of a preset range, and the defaults of a cue list.
+  const timing = validateTiming(v, raw, "");
+  const trig = validateTrigger(v, raw.trigger, raw.time, "");
   if ((raw.cues === undefined) === (raw.presets === undefined)) v.fail("give exactly one of cues (a list) or presets ({pool, from, to}: one cue per preset)");
   else if (raw.presets !== undefined) {
     range = validatePresetRange(v, raw.presets, "presets");
     firstCue = v.check(() => finiteNumber("first_cue", raw.first_cue, { integer: true, min: 1, max: 9999, optional: true })) ?? 1;
     if (!defaultFixtures) v.fail("presets needs fixtures (the target every preset is recalled on)");
-  } else cues = validateCues(v, raw.cues, defaultFixtures);
-  const timing = range ? validateTiming(v, raw, "") : {};
-  const trig = range ? validateTrigger(v, raw.trigger, raw.time, "") : {};
+  } else cues = validateCues(v, raw.cues, defaultFixtures, { timing, ...trig });
   const settings = validateSequenceSettings(v, raw.sequence_settings);
   const protect = raw.protect_running === true;
   if (protect && !settings?.priority) v.fail("protect_running applies to an override: give sequence_settings.priority above ltp");
@@ -1839,7 +1853,7 @@ export const registerCueListTools: RegisterTools = (server, ctx) => {
       title: "Store a list of cues from explicit content",
       description:
         "Store several cues of one sequence in one call, each from explicit content: a look (fixtures with presets, intensity, attribute values and/or a phaser) or several looks, with an optional name, timing, trigger, command and note (the cue's Note, e.g. scene metadata a plugin reads) per cue; a cue with a command needs no look (stored empty). mode create refuses (nothing sent) when any of the cues exists; merge and overwrite store into existing cues. The store creates the sequence when it does not exist; sequence_name names it: a new name another sequence has is refused before anything is sent, naming the holder (a duplicate makes lookups by name ambiguous; whether the console would store \"<name>#2\" is not verified for sequences), unless on_name_taken: \"allow_suffix\"; in the batch form a name an earlier sequence of the call took counts as taken. " +
-        "presets {pool, from, to} (instead of cues): one cue per existing preset of the range on fixtures, named after it, with the call's timing and trigger. replace: true deletes the existing cues first (the sequence object, its settings and executor assignments stay, checked). sequence_settings (as gma3_configure_sequence) are applied after the build in the same call; a priority above ltp lists the running sequences it would switch off (Off When Overridden on), and protect_running: true turns that off on them. " +
+        "fade, delay, out_fade, out_delay, trigger and time given for the call are defaults for every cue (a cue's own keys win; a cue with its own trigger takes none of the call's time); each stored cue's TrigType and TrigTime are read back against what it was given. presets {pool, from, to} (instead of cues): one cue per existing preset of the range on fixtures, named after it, with the call's timing and trigger. replace: true deletes the existing cues first (the sequence object, its settings and executor assignments stay, checked). sequence_settings (as gma3_configure_sequence) are applied after the build in the same call; a priority above ltp lists the running sequences it would switch off (Off When Overridden on), and protect_running: true turns that off on them. " +
         BUILD_NOTE +
         " " +
         COMPACT_NOTE +

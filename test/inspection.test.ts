@@ -342,3 +342,37 @@ test("inspection tools never send commands or take the mutation lock", async () 
   );
   assert.equal(h.ctx.mutations.busy, false);
 });
+
+// Live 2026-11-03: {universe: 1, from: 120, count: 240} read one address, and {from: 1, to: 512, nonzeroOnly: true}
+// returned all 512 with nonzeroOnly false: neither key was in the schema, so both were dropped without a word.
+test("gma3_dmx: count reads from..from+count-1, nonzeroOnly (the result's spelling) filters like nonzero_only", async () => {
+  h.fake.on("dmx", (args) => ({
+    universe: args.universe, granted: true, from: args.from, to: args.to, unit: "raw8", nonzeroOnly: args.nonzeroOnly, readVia: "GetDMXUniverse",
+    count: 1, values: [{ channel: 130, value: 255 }], source: "dmx output", limitations: [],
+  }));
+  let res = await h.callJson("gma3_dmx", { universe: 1, from: 120, count: 240 });
+  assert.equal(res.isError, false, res.text);
+  assert.deepEqual(lastArgs("dmx"), { universe: 1, from: 120, to: 359, nonzeroOnly: false, percent: false, patched: false });
+  assert.equal(res.result.to, 359);
+
+  res = await h.callJson("gma3_dmx", { universe: 1, from: 1, to: 512, nonzeroOnly: true });
+  assert.equal(res.isError, false, res.text);
+  assert.deepEqual(lastArgs("dmx"), { universe: 1, from: 1, to: 512, nonzeroOnly: true, percent: false, patched: false });
+  assert.equal(res.result.nonzeroOnly, true);
+
+  res = await h.callJson("gma3_dmx", { universe: 1, from: 1, count: 512, nonzero_only: true, nonzeroOnly: true });
+  assert.equal(res.isError, false, res.text);
+  assert.deepEqual(lastArgs("dmx"), { universe: 1, from: 1, to: 512, nonzeroOnly: true, percent: false, patched: false });
+
+  const sent = h.fake.requests.length;
+  const bad = async (args: Record<string, unknown>, re: RegExp) => {
+    const r = await h.callJson("gma3_dmx", args);
+    assert.equal(r.isError, true, JSON.stringify(args));
+    assert.match(r.text, re);
+  };
+  await bad({ universe: 1, from: 120, to: 200, count: 240 }, /give to or count, not both/);
+  await bad({ universe: 1, from: 300, count: 240 }, /from 300 plus count 240 reaches address 539; the last address is 512/);
+  await bad({ universe: 1, from: 1, count: 0 }, /count must be >= 1/);
+  await bad({ universe: 1, from: 1, nonzero_only: false, nonzeroOnly: true }, /nonzero_only and nonzeroOnly disagree/);
+  assert.equal(h.fake.requests.length, sent, "nothing sent for the refused calls");
+});
