@@ -82,17 +82,21 @@ A new name makes it the current show. The result warns that later saves without 
 ### After-save hook
 
 Once a save is `matched` (and only then), the server starts a local program so the saved file can be recorded
-elsewhere, for example committed to a git repository of show files. It runs detached and never delays or fails the
-save. The result reports `afterSave: { hook, started }`, and a hook that is configured but can't start adds a warning.
+elsewhere, for example committed to a git repository of show files. It runs detached with no stdio and never fails
+the save. The tool waits at most 2 s for the program to start, because Node reports start failures (a missing
+interpreter, a wrong path) as an event, not an exception. The result reports `afterSave: { hook, started }`, and a hook
+that is configured but can't start adds a warning.
 
 | Setting | Effect |
 | --- | --- |
-| `GMA3_AFTER_SAVE_HOOK=/path/to/program` | Run this program |
+| `GMA3_AFTER_SAVE_HOOK=/path/to/program` | Run this program (a relative path is resolved against the server's working folder) |
 | `GMA3_AFTER_SAVE_HOOK=` (empty) | Never run a hook |
 | unset | Run `$XDG_CONFIG_HOME/gma3-mcp/after-save` (`~/.config/gma3-mcp/after-save`) if it exists and is executable; otherwise do nothing |
 
-The program gets the show name as its argument, `GMA3_SHOW_NAME` and `GMA3_SHOWS_PATH` (the console's shows folder as
-the console reports it), and the server's own environment, so `GMA3_INSTALL_DIR` and `GMA3_BRIDGE_PORT` say which
-console saved.
+The program gets the name of the file the console wrote as its argument. Names compare case-insensitively, so this is
+the console's spelling, not necessarily the one requested. It also gets `GMA3_SHOW_NAME`, `GMA3_SHOWS_PATH` (the
+console's shows folder as the console reports it; empty if unknown) and the server's own environment, so
+`GMA3_INSTALL_DIR` and `GMA3_BRIDGE_PORT` say which console saved. Two quick saves can start two hooks at once, so a
+hook that writes to git should take a lock.
 
 The bridge answers only SaveShow's own two dialogs (`show.answer` checks the title) and clicks only OK or Cancel.

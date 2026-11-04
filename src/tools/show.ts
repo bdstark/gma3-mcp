@@ -263,7 +263,8 @@ export async function saveShow(ctx: ToolContext, raw: Record<string, unknown>): 
     }
     const renamed = !isCurrent && same(after?.current, to);
     // Only a verified write starts the after-save hook (e.g. a git checkpoint of the show file); it never blocks the save.
-    const afterSave = verification.status === "matched" ? runAfterSaveHook(to, before.path) : undefined;
+    // The file the console wrote (names compare case-insensitively, so it can differ from the requested spelling).
+    const afterSave = verification.status === "matched" ? await runAfterSaveHook(written?.name ?? after?.current ?? to, before.path) : undefined;
     return buildResult({
       operation: op,
       target: { ...target, name: to },
