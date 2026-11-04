@@ -17,6 +17,7 @@ import { z } from "zod";
 import type { Gma3Bridge } from "../bridge.js";
 import { asRead, buildResult, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
+import { runAfterSaveHook } from "../afterSave.js";
 
 export interface ShowFile {
   name: string;
@@ -261,6 +262,8 @@ export async function saveShow(ctx: ToolContext, raw: Record<string, unknown>): 
       };
     }
     const renamed = !isCurrent && same(after?.current, to);
+    // Only a verified write starts the after-save hook (e.g. a git checkpoint of the show file); it never blocks the save.
+    const afterSave = verification.status === "matched" ? runAfterSaveHook(to, before.path) : undefined;
     return buildResult({
       operation: op,
       target: { ...target, name: to },
@@ -274,6 +277,7 @@ export async function saveShow(ctx: ToolContext, raw: Record<string, unknown>): 
         ...(renamed ? [`the console's current show is now ${to}: later saves without a name write ${to}.show, not ${before.current}.show`] : []),
         ...(unread ? [`${unread} read(s) of the shows folder failed while waiting`] : []),
         ...(queueUncertain ? ["the reply to SaveShow was lost: it was not resent"] : []),
+        ...(afterSave && !afterSave.started ? [`the after-save hook ${afterSave.hook} did not start: ${afterSave.error}`] : []),
       ],
       extra: {
         file: fileView(written),
@@ -282,6 +286,7 @@ export async function saveShow(ctx: ToolContext, raw: Record<string, unknown>): 
         ...(!after && last ? { lastObserved: { current: last.current ?? null, file: fileView(last.files.find((x) => same(x.name, to))), note: "an earlier read, not the final state" } } : {}),
         ...(expect ? { dialog: { expected: expect, answered } } : { dialog: "none (the current name saves without a dialog)" }),
         path: before.path,
+        ...(afterSave ? { afterSave } : {}),
       },
     });
   });
