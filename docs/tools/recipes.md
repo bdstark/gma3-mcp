@@ -201,9 +201,9 @@ preset slot** (a cue then calls the preset with a standard line, `gma3_store_rec
 `action: "create"`, `preset: "P.N"`, `name?`, `exclusive: true`, and one line's fields at the top level or
 `lines: [...]` (1-8). A line has `selection` (group), `shape` (default 1), `steps: [{preset, curve?}, {preset, curve?}]`
 (exactly 2, from one preset pool: the line's family, whose attributes come from the step presets), `matricks?`,
-`speed_bpm?`, `phase?: {from, to}`. The target is in the line's pool, or in an **All pool (21-25)**, which lines of
-different families need (a Dimmer line and a Colour line in one preset). `preview: true` runs the checks and returns
-the plan.
+`speed_bpm?`, `phase?: {from, to}`. The target may be in **any pool**: the preset's pool does not filter its recipe
+lines (verified: a Dimmer + RGBW preset in the Dimmer pool and an RGBW phaser in the Position pool cooked completely).
+`preview: true` runs the checks and returns the plan.
 
 **Several lines.** A step holds one value source: a second `At Preset` on the same step replaces the first, and a
 second `At Shape` on the same group re-shapes the line instead of adding one. Line 1 is therefore built in Edit Recipe

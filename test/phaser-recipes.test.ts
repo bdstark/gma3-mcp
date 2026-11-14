@@ -102,7 +102,7 @@ test("create: refused before anything is sent (programmer not empty, slot taken,
   for (const [opts, args, re] of [
     [{ programmer: 4 }, ARGS, /programmer holds 4 value/],
     [{ slotTaken: true }, ARGS, /Preset 1\.9010 exists/],
-    [{}, { ...ARGS, steps: [{ preset: "4.9001" }, { preset: "1.9000" }] }, /pool 4.*pool 1/],
+    [{}, { ...ARGS, steps: [{ preset: "4.9001" }, { preset: "1.9000" }] }, /one family per line.*pools 4 and 1/],
     [{}, { ...ARGS, steps: [{ preset: "1.9001" }, { preset: "1.9000" }, { preset: "1.9000" }] }, /exactly 2/],
     [{}, { ...ARGS, exclusive: undefined }, /exclusive must be true/],
     [{}, { ...ARGS, selection: 9999 }, /not in the show: Group 9999/],
@@ -170,6 +170,17 @@ test("create: a cooked speed that is not the one asked is a mismatch", async () 
     assert.equal(isError, true);
     assert.equal(result.verification.status, "mismatched");
     assert.match(result.verification.detail, /do not run at 120 BPM \(2\.000 Hz/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("create: a phaser preset in another family's pool is allowed (the pool does not filter recipe lines)", async () => {
+  const { h } = await multiSetup();
+  try {
+    const { result } = await h.callJson("gma3_edit_phaser_recipe", { ...MULTI, preset: "2.9010", preview: true, exclusive: undefined });
+    assert.equal(result.preview, true, JSON.stringify(result));
+    assert.equal(result.outcome, "succeeded");
   } finally {
     await h.close();
   }
@@ -311,9 +322,8 @@ test("create with lines: a curve the console did not apply is a mismatch", async
   }
 });
 
-test("create with lines: families in a feature pool, mixed steps, duplicate lines and both forms are refused before anything is sent", async () => {
+test("create with lines: mixed steps, duplicate lines and both forms are refused before anything is sent", async () => {
   for (const [args, re] of [
-    [{ ...MULTI, preset: "1.9010" }, /lines\[1\]: its step presets are in pool 4.*All pool \(21-25\)/],
     [{ ...MULTI, lines: [{ selection: 9000, steps: [{ preset: "1.9001" }, { preset: "4.9000" }] }] }, /one family per line/],
     [{ ...MULTI, lines: [MULTI.lines[0], MULTI.lines[0]] }, /same 2 step presets/],
     [{ ...MULTI, selection: 9000 }, /not both/],

@@ -21,16 +21,17 @@
  *     ClearAll removes them. A line left in Part Zero (an aborted build) is removed by ClearAll too.
  *   - More lines (another family in the same preset): `Copy Preset P.N.1 At Preset P.N.k /NoConfirmation` copies the
  *     first line; `Assign Group|Shape|MAtricks n At Preset P.N.k` and `Assign Preset X At Preset P.N.k.1.<step>.1`
- *     retarget it. A preset with lines of different families goes in an All pool (21-25): 21.9001 held a Dimmer line
- *     and an RGBW line, 20/20 cooked, each at its own speed.
+ *     retarget it. 21.9001 (All) held a Dimmer line and an RGBW line, 20/20 cooked, each at its own speed.
+ *   - The preset's pool does not filter its recipe lines: a Dimmer + RGBW preset in the Dimmer pool (1.9012) and an
+ *     RGBW phaser built in Edit Recipe mode in the Position pool (2.9003) cooked completely. The pool is free.
  *   - The line of a preset is `Preset P.N.L`; SPEEDX (BPM), PHASEFROMX and PHASETOX are its properties.
  *   - Step curve: `Set Preset P.N.L.1.<step>.1 Property "Curve" "<name>"` from the command line (the Lua `set` of the
  *     property is ignored, and CURVE reads back as an opaque id). With Link Steps (the default) a step's curve sets its
  *     DECEL and the next step's ACCEL (Snap also TRANS 0): Linear 0/0, Ease In +100/-100, Ease Out -100/+100,
  *     Ease In and Out -100/-100, Swing +100/+100, Snap 0/0 with TRANS 0. The cooked steps carry these values.
  *
- * Release: a free preset slot, 1 to 8 lines of exactly 2 steps each; the 2 steps of a line come from one pool, which
- * is the target's pool or the target is in an All pool (21-25). The cue calls the preset with a standard line.
+ * Release: a free preset slot in any pool, 1 to 8 lines of exactly 2 steps each, the 2 steps of a line from one preset
+ * pool (one family per line). The cue calls the preset with a standard line.
  */
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
@@ -46,7 +47,6 @@ const MAX_LINES = 8;
 const UPDATE_DIALOG = "Update last object?";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const notFound = (err: unknown) => err instanceof BridgeError && /no objects? found|no object at address|path not found/i.test(err.message);
-const isAllPool = (pool: number) => pool >= 21 && pool <= 25;
 
 /** The predefined step curves and what each writes, with Link Steps: [own DECEL, next step's ACCEL, own TRANS or undefined]. */
 export const CURVES = {
@@ -188,12 +188,7 @@ export async function createPhaserRecipe(ctx: ToolContext, raw: CreateArgs): Pro
     if (s) specs.push(s);
   }
   if (target) {
-    for (const [i, l] of specs.entries()) {
-      const pool = l.steps[0].pool;
-      if (pool !== target.pool && !isAllPool(target.pool))
-        v.fail(`${specs.length > 1 ? `lines[${i}]` : "steps"}: its step presets are in pool ${pool}, the phaser preset in pool ${target.pool}: put the phaser in the pool of its step presets, or in an All pool (21-25) for lines of different families`);
-      if (l.steps.some((s) => s.pool === target.pool && s.number === target.number)) v.fail("a step preset cannot be the target preset itself");
-    }
+    for (const l of specs) if (l.steps.some((s) => s.pool === target.pool && s.number === target.number)) v.fail("a step preset cannot be the target preset itself");
   }
   const pairs = specs.map(pair);
   if (new Set(pairs).size !== pairs.length) v.fail("two lines have the same 2 step presets: their output could not be told apart in the read-back");
@@ -544,7 +539,7 @@ export const registerPhaserRecipeTools: RegisterTools = (server, ctx) => {
       title: "Build phaser recipe lines in a preset",
       description:
         "action create: builds PhaserRecipe lines (each: selection group, shape, 2 steps from presets with an optional curve, MAtricks, speed, phase) in a FREE preset slot. One line: give its fields at the top level; several (e.g. Dimmer + Colour in one preset): lines: [{...}, ...] (1-8). " +
-        "The 2 steps of a line come from one preset pool (the line's family). The target is in that pool, or in an All pool (21-25), which is required when the lines are of different families. " +
+        "The 2 steps of a line come from one preset pool (the line's family). The target preset may be in any pool: the pool does not filter recipe lines (a Dimmer + Colour preset in the Dimmer pool cooks both). " +
         "Checked first, nothing sent otherwise: the slot is free, the groups, shapes, presets and MAtricks exist, the Edit Recipe mode is off with an empty Part Zero, no dialog is open, the programmer is empty (read completely), RecipeStoreMode is Normal. " +
         "Line 1: an empty Store of the preset (it clears the pending Edit Recipe target, so \"Update last object?\" does not open), EditRecipe queued without blocking the bridge (if \"Update last object?\" opens anyway it is answered Cancel, never OK, and the call stops), Group / At Shape / Step / At Preset / MAtricks one command at a time with the line checked in Part Zero, Store /Merge, the mode switched off and read back, ClearAll (line 1 runs on stage from At Shape until then). A failure up to here switches the mode off, clears the programmer and deletes the preset this call created. " +
         "Then the name; lines 2+ as copies of line 1 (Copy, then Assign of their group, shape, MAtricks and step presets; what they do not set is line 1's); SPEEDX / PHASEFROMX / PHASETOX per line; curves (Set ... Property \"Curve\"); Cook /MergeLowPriority. " +
@@ -553,7 +548,7 @@ export const registerPhaserRecipeTools: RegisterTools = (server, ctx) => {
         "The cue calls the preset with a standard line (gma3_store_recipe_cues); a cue line's Speed X replaces the preset's speed. preview: true runs the checks and returns the plan. Needs bridge 0.52.0.",
       inputSchema: {
         action: z.enum(["create"]),
-        preset: z.string().describe('Target preset "P.N": a free slot, in the pool of the step presets or in an All pool (21-25).'),
+        preset: z.string().describe('Target preset "P.N": a free slot in any pool (the pool does not filter recipe lines).'),
         name: z.string().optional().describe("Preset name (otherwise the console names it after the lines)."),
         lines: z.array(z.object(lineShape)).optional().describe("Several lines (1-8), instead of the one-line fields below."),
         selection: lineShape.selection.optional(),
