@@ -5,7 +5,9 @@ Four tools combine groups, presets and MAtricks into programming that adapts to 
 - `gma3_edit_recipe` adds, changes, moves or removes one line;
 - `gma3_store_recipe_cues` writes the lines of many cue parts in one call (a recipe-driven show build, #101);
 - `gma3_cook_recipes` cooks a preset, a cue part, a cue or a whole sequence with an explicit option, after listing
-  every affected target.
+  every affected target;
+- `gma3_edit_phaser_recipe` builds one phaser recipe line in a free preset slot, through the programmer's Edit Recipe
+  mode (bridge **0.52.0**).
 
 Recipe definitions are read and written with the existing object ops (`children`, `objects`, `set`) and `Assign` /
 `Move` / `Delete` / `Cook` commands. The cooked state of a target comes from `preset.read`, which bridge **0.24.0**
@@ -18,6 +20,7 @@ extends to cue parts (see [the bridge protocol](../reference.md#cue-part-data-pl
 | `gma3_edit_recipe` | one recipe line of a preset or cue part; **the console cooks the edited line at once** | untouched |
 | `gma3_store_recipe_cues` | the recipe lines of up to 100 cue parts of one sequence, their cue names and notes; each written line is cooked at once, as above | untouched |
 | `gma3_cook_recipes` | the cooked (and, with merge or overwrite, the uncooked) data of the affected targets | untouched |
+| `gma3_edit_phaser_recipe` | creates one preset with one PhaserRecipe line, cooked | **used**: must be empty first, cleared with ClearAll at the end |
 
 ## The things to know first
 
@@ -188,6 +191,44 @@ or Preview. Phaser recipe lines (`PhaserRecipe`, e.g. in the Show Start's phaser
      recipes' own pairs and the acknowledged possible replacements; under overwrite they may be gone.
    - Lines that are not predicted are named, and their fixtures are not reported as stray.
 
+## `gma3_edit_phaser_recipe`
+
+No command or property creates a PhaserRecipe line outside the programmer (onPC 2.5.1: `Assign Shape … At <line>` is
+an illegal object, `Store … Part P.L` makes a StandardRecipe). The console builds one in **Edit Recipe mode**: the
+line is made in the programmer's Part Zero and stored into the target. This tool runs that sequence for a **free
+preset slot** (a cue then calls the preset with a standard line, `gma3_store_recipe_cues`).
+
+`action: "create"`, `preset: "P.N"`, `selection` (group), `shape` (default 1), `steps: [{preset}, {preset}]`
+(exactly 2, both in pool P: the phaser's attributes come from its step presets), `matricks?`, `speed_bpm?`,
+`phase?: {from, to}`, `name?`, `exclusive: true`; `preview: true` runs the checks and returns the plan.
+
+1. Checks, nothing sent otherwise: the slot is free; group, shape, step presets and MAtricks exist; the mode is off,
+   Part Zero empty, no dialog open (`recipe.editState`); the programmer read completely and empty; RecipeStoreMode
+   is Normal.
+2. `Store Preset P.N /NoConfirmation` with the empty programmer: creates the preset and **clears the pending Edit
+   Recipe target**. A store made in Edit Recipe mode leaves its target pending, and the next `EditRecipe <other
+   target>` opens "Update last object?" (OK overwrites that pending target with the programmer; an empty programmer
+   wipes its recipe lines). A normal store just before prevents the dialog (verified live).
+3. `recipe.editBegin` queues `EditRecipe Preset P.N` with CmdIndirect: sent with Cmd() from the plugin thread, the
+   dialog would stall the bridge. The server polls `recipe.editState` until the mode reads on. If "Update last
+   object?" opens anyway, it is answered **Cancel** (never OK) with `dialog.press` and the call stops.
+4. `Group`, `At Shape` (the line appears in Part Zero, checked), `Step 1`, `At Preset`, `Step 2`, `At Preset`,
+   `MAtricks`, one command at a time; Part Zero is checked again (exactly one PhaserRecipe line), then
+   `Store Preset P.N /Merge /NoConfirmation` (Part Zero empties).
+5. `recipe.editEnd` queues the `EditRecipe` toggle (only while the mode reads on); the mode is read back off.
+6. `ClearAll`: after the mode is off the programmer still holds the phaser's values, **output on stage from
+   `At Shape` until here**. The programmer and Part Zero are read back empty.
+7. Name, then `SPEEDX` / `PHASEFROMX` / `PHASETOX` on `Preset P.N.1` (replies compared as numbers), then
+   `Cook Preset P.N /MergeLowPriority`.
+8. Read back: one PhaserRecipe line with the group and MAtricks, no failed cook, every value cooked, each with 2
+   steps integrating the 2 step presets in order, nothing uncooked, mode off, Part Zero and programmer empty.
+
+A failure before the store switches the mode off, clears the programmer and deletes the preset the call created (its
+slot was free). After the store the preset is kept and the failure reported.
+
+Speed: a cue line's Speed X **replaces** the preset's (RELATIVESPEED No); an empty column (`SPEEDFROMX` None) follows
+the preset. 60 BPM = 1 Hz.
+
 ## What is and is not verified
 
 - Verified live (onPC 2.5.1, `test/live/recipes.live.ts`, 1/1, 5.4 s):
@@ -206,10 +247,15 @@ or Preview. Phaser recipe lines (`PhaserRecipe`, e.g. in the Show Start's phaser
   not known. Cue names on Part 0 and `set` on lines are verified (SU-06, SB-05); the cue's `Note` is not.
 - Not covered:
   - the background cook's exact timing (observed: not yet on an immediate read, done after 3 s);
-  - phaser recipe lines;
+  - phaser recipe lines other than `gma3_edit_phaser_recipe`'s create (editing an existing phaser line, more than 2
+    steps, a cue part as the target);
   - filters and worlds;
   - recipe templates;
-  - the programmer's Edit Recipe mode.
+  - the Edit Recipe mode outside `gma3_edit_phaser_recipe`.
+- Verified live for `gma3_edit_phaser_recipe` (onPC 2.5.1, bridge 0.52.0, 2026-11-14): a Dimmer phaser (8 fixtures,
+  8/8 cooked) and a colour phaser (4 fixtures, RGBW, 16/16 cooked) built back to back, no dialog; the bridge stays
+  responsive while "Update last object?" is open and Cancel leaves the pending preset intact; an aborted build (mode
+  off after `At Shape`, then ClearAll) leaves the target empty and the programmer empty.
 
 ## Live test
 

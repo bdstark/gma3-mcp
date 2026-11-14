@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.51.0"
+local VERSION      = "0.52.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -6756,6 +6756,97 @@ end)()
     return { clicked = args.button, title = md.title, text = md.text, class = md.class, display = md.display, at = at }
   end
   GUARDED_OPS["dialog.press"] = "a dialog answer"
+
+  ---------------------------------------------------------------------------
+  -- Edit Recipe mode (phaser recipes, bridge 0.52.0)
+  ---------------------------------------------------------------------------
+  -- recipe.editState  read-only: whether the operator's Edit Recipe mode is on (RecipeEditor.RecipeEditing of the
+  --                   current environment), the recipe lines in the programmer's Part Zero, the top modal and the
+  --                   console's last command
+  -- recipe.editBegin  queues `EditRecipe <target>` with CmdIndirect after checking that no dialog is open, the mode is
+  --                   off and Part Zero holds no recipe line
+  -- recipe.editEnd    queues `EditRecipe` (the toggle) with CmdIndirect, only while the mode is on and no dialog is open
+  -- Console facts (onPC 2.5.1, live 2026-11-14, THK migration docs/phaser-recipes.md §1.7): a store made in Edit
+  -- Recipe mode leaves its target pending; the next `EditRecipe <other target>` opens "Update last object?" (OK
+  -- updates the pending target with the programmer, an empty programmer wipes its recipe lines; Cancel aborts the
+  -- EditRecipe). Sent with Cmd() from the plugin thread, that dialog stalls the bridge, so the command is queued
+  -- and the server polls recipe.editState. A normal store with an empty programmer (the target's own empty Store)
+  -- clears the pending target.
+  local function recipeEditor()
+    local okE, env = pcall(CurrentEnvironment)
+    if not okE or env == nil then raise("[no-environment] the current user environment cannot be read") end
+    local okR, re = pcall(function() return env.RecipeEditor end)
+    if not okR or re == nil then raise("[no-recipe-editor] the environment " .. tostring(safeProp(env, "name")) .. " has no RecipeEditor") end
+    return env, re
+  end
+  local function truthy(v)
+    if v == true or v == 1 then return true end
+    if v == false or v == 0 or v == nil then return false end
+    local s = tostring(v):lower()
+    return s == "yes" or s == "on" or s == "true" or s == "1"
+  end
+  local function partZero()
+    local okP, prog = pcall(Programmer)
+    if not okP or prog == nil then raise("[no-programmer] the programmer cannot be read") end
+    for _, c in ipairs(prog:Children() or {}) do
+      if tostring(safeProp(c, "name")) == "Part Zero" or tonumber(safeProp(c, "no")) == 0 then return c end
+    end
+    raise("[no-part-zero] the programmer has no Part Zero")
+  end
+  local function editState()
+    local env, re = recipeEditor()
+    local okG, raw = pcall(function() return re:Get("RecipeEditing") end)
+    if not okG or raw == nil then raw = safeProp(re, "RecipeEditing") end
+    local pz = partZero()
+    local lines = {}
+    for i, c in ipairs(pz:Children() or {}) do lines[#lines + 1] = { index = i, class = safeCall(c, "GetClass"), name = tostring(safeProp(c, "name")) } end
+    local md, _, why = topModal()
+    return {
+      environment = tostring(safeProp(env, "name")),
+      editing = truthy(raw),
+      editingRaw = raw ~= nil and tostring(raw) or nil,
+      partZeroLines = emptyArray(lines),
+      modal = md or false,
+      modalError = why,
+      lastCommand = lastCommand(),
+    }
+  end
+  -- The target forms the server sends; anything else is refused (the text goes into a command line).
+  local function recipeTarget(ref)
+    if type(ref) ~= "string" then raise("[bad-args] target must be a string") end
+    if ref:match("^Preset %d+%.%d+$") or ref:match("^Sequence %d+ Cue %d+%.?%d* Part %d+$") then return ref end
+    raise("[bad-args] target must read \"Preset P.N\" or \"Sequence S Cue C Part P\", not " .. ref)
+  end
+
+  ops["recipe.editState"] = function() return editState() end
+
+  -- args: { target, exclusive }
+  ops["recipe.editBegin"] = function(args)
+    if args.exclusive ~= true then raise("[not-exclusive] recipe.editBegin needs exclusive = true: the client confirms that nobody else uses the programmer while it builds a recipe") end
+    local ref = recipeTarget(args.target)
+    local before = editState()
+    if before.modalError then raise("[modal-unknown] whether a dialog is open cannot be read (" .. before.modalError .. "); EditRecipe was not sent") end
+    if before.modal then raise({ code = "modal-open", message = "a dialog is open (" .. tostring(before.modal.title) .. "); EditRecipe was not sent", modal = before.modal }) end
+    if before.editing then raise("[editing-on] the Edit Recipe mode is already on; EditRecipe was not sent") end
+    if #before.partZeroLines > 0 then raise({ code = "part-zero-busy", message = "the programmer's Part Zero holds " .. #before.partZeroLines .. " recipe line(s); EditRecipe was not sent", lines = before.partZeroLines }) end
+    local command = "EditRecipe " .. ref
+    CmdIndirect(command)
+    return { queued = true, command = command, before = before }
+  end
+  GUARDED_OPS["recipe.editBegin"] = "an Edit Recipe session"
+
+  -- args: { exclusive } -> queues `EditRecipe` (a toggle) with CmdIndirect, only while the mode reads on and no dialog
+  -- is open, so it can only switch the mode off. Part Zero is left as it is (lines not stored stay; ClearAll removes them).
+  ops["recipe.editEnd"] = function(args)
+    if args.exclusive ~= true then raise("[not-exclusive] recipe.editEnd needs exclusive = true: the client confirms that nobody else uses the programmer") end
+    local before = editState()
+    if before.modalError then raise("[modal-unknown] whether a dialog is open cannot be read (" .. before.modalError .. "); EditRecipe was not sent") end
+    if before.modal then raise({ code = "modal-open", message = "a dialog is open (" .. tostring(before.modal.title) .. "); EditRecipe was not sent", modal = before.modal }) end
+    if not before.editing then raise("[editing-off] the Edit Recipe mode is already off; EditRecipe (a toggle) was not sent") end
+    CmdIndirect("EditRecipe")
+    return { queued = true, command = "EditRecipe", before = before }
+  end
+  GUARDED_OPS["recipe.editEnd"] = "an Edit Recipe session"
 
   ---------------------------------------------------------------------------
   -- Moving fixtures

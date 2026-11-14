@@ -22,7 +22,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "chases", tools: ["gma3_build_chase"] },
   { task: "executors and sequence playback", tools: ["gma3_assign_to_executor", "gma3_configure_executor", "gma3_configure_sequence", "gma3_playback", "gma3_goto_cue", "gma3_set_fader"] },
   { task: "speed masters and tempo", tools: ["gma3_configure_speed_master", "gma3_speed_master_action", "gma3_speed_masters"] },
-  { task: "recipes, many cues per call", tools: ["gma3_recipes", "gma3_edit_recipe", "gma3_store_recipe_cues", "gma3_cook_recipes"] },
+  { task: "recipes, many cues per call", tools: ["gma3_recipes", "gma3_edit_recipe", "gma3_store_recipe_cues", "gma3_cook_recipes", "gma3_edit_phaser_recipe"] },
   { task: "macros and their dialogs", tools: ["gma3_store_macro", "gma3_edit_macro_line", "gma3_run_macro", "gma3_macros", "gma3_dialog"] },
   { task: "console variables ($name in macros, cue commands)", tools: ["gma3_variables", "gma3_set_variable"] },
   { task: "tags: tagging, kill types, which objects carry a tag", tools: ["gma3_tags", "gma3_assign_tag", "gma3_store_tag", "gma3_delete_tag", "gma3_configure_tag", "gma3_playback"] },
