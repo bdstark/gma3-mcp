@@ -13,8 +13,11 @@
  *     Preview programmer. Preset links (abs_preset) read back there as in Normal.
  *   - The programmer keeps its values after a Store, so each cue starts from ClearAll (sent only after the console
  *     confirms Preview: in Normal it would discard the operator's programmer).
- *   - A cue's stored values cannot be read back (no GetCueData on 2.5.1), so each look is checked in the programmer
- *     right before its store; a look that did not apply stops the batch before that cue is stored.
+ *   - Each look is checked in the programmer right before its store; a look that did not apply stops the batch before
+ *     that cue is stored. After the store, the values stored in Part 0 are read with GetPresetData and compared with
+ *     what the store preference (ChannelFilter) was expected to take from the Preview programmer (storeverify.ts,
+ *     live 2026-11-14). With "Active For Selected" only the last look's selection is stored: the values of the cue's
+ *     other looks it keeps out are counted (leftOutByFilter) and the cue's verification is mismatched.
  *   - A cue stored without a name is named after the preset it holds ("[4.901]").
  *   - A Time trigger counts from the previous cue's start (a fade does not lengthen the step); with Wrap Around the
  *     last cue is followed by cue 1 only when cue 1 has a trigger too. `Goto Sequence N Cue C` from off starts the
@@ -66,6 +69,7 @@ import { SEQUENCE_SETTINGS, configureSequence, findReferences, settingValue, typ
 import { HeldLock } from "../mutations.js";
 import { VarTracker, variablePresence, variableRefs } from "./variables.js";
 import { dataPoolShape, inDataPool } from "./datapool.js";
+import { captureStoreExpectation, channelFilterWarning, readStorePreferences, verifyStoredValues, type StoreExpectation, type StoredCheck } from "./storeverify.js";
 
 export const MAX_CUES = 100;
 export const MAX_LOOKS = 16;
@@ -74,8 +78,8 @@ const OBSERVE_DEFAULT_S = 45;
 const OBSERVE_MAX_S = 120;
 const SAMPLE_MS = 40;
 
-const NOT_READABLE =
-  "A cue's stored values cannot be read back on 2.5.1 (no GetCueData); each look was checked in the Preview programmer right before its cue was stored.";
+const VALUE_CHECK =
+  "Each look was checked in the Preview programmer right before its cue was stored; after the store, the values stored in Part 0 were read back (GetPresetData) and compared with the programmer values the store preference (ChannelFilter) was expected to take. Preset references and values a merged cue already held are not judged.";
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -378,6 +382,8 @@ interface CueReport {
   name?: string | null;
   looks?: Array<{ fixtures: string; presets: string[]; verification: string; detail?: string }>;
   error?: string;
+  /** The stored-value check after the store: the preference followed and the counts. */
+  storedValues?: StoredCheck["storedValues"];
 }
 
 interface BatchResult {
@@ -806,11 +812,31 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
       return asRead({ name: "read_sequence", status: "succeeded", op: "children", detail: { exists: list !== null, cues: list?.length ?? 0, ...(clash.length ? { replaced: clash } : {}) } });
     },
   };
-  const items: PreviewItem[] = b.cues.map((c) => {
+  // The programmer values each store is expected to take, captured in Preview right before it (verify only).
+  const expectations = new Map<number, StoreExpectation>();
+  const filterWarnings: string[] = [];
+  const verifyTimeout = Math.max(t, Math.min(t * 3, 60000));
+  const items: PreviewItem[] = b.cues.map((c, idx) => {
     const pre = `cue ${c.cue}: `;
     const part0 = cueRef(b.sequence, c.cue, 0);
     const cueObj = cueRef(b.sequence, c.cue);
-    const store: Array<{ name: string; run: StepFn }> = [{ name: `${pre}store`, run: () => commandStep(bridge, `${pre}store`, storeCommand(b.sequence, c.cue, b.mode), t) }];
+    const store: Array<{ name: string; run: StepFn }> = [
+      {
+        name: `${pre}store`,
+        run: async () => {
+          let channelFilter: string | null;
+          if (b.verify) {
+            const exp = await captureStoreExpectation(bridge, verifyTimeout, { leftOut: true });
+            expectations.set(idx, exp);
+            channelFilter = exp.channelFilter;
+          } else channelFilter = (await readStorePreferences(bridge, t)).channelFilter;
+          // A ChannelFilter other than Active is reported once per call, verify or not.
+          const w = channelFilterWarning(channelFilter, { multiLook: true });
+          if (w && !filterWarnings.includes(w)) filterWarnings.push(w);
+          return commandStep(bridge, `${pre}store`, storeCommand(b.sequence, c.cue, b.mode), t);
+        },
+      },
+    ];
     if (c.name !== undefined) store.push(setStep(bridge, `${pre}name`, part0, "Name", c.name, t));
     for (const [k, val] of Object.entries(c.timing) as Array<[keyof CueSpec["timing"], number]>) store.push(setStep(bridge, `${pre}${k}`, part0, TIMING_PROPS[k], val, t));
     if (c.trigger) store.push(setStep(bridge, `${pre}trigger`, cueObj, "TrigType", TRIGGERS[c.trigger], t));
@@ -855,6 +881,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
   const checkVars = { name: "check_variables", run: () => checkCommandVariables(bridge, byNumber.filter((c) => c.command !== undefined).map((c) => ({ label: `cue ${c.cue}`, command: c.command as string })), t) };
   const built = await buildInPreview(ctx, { items, verify: b.verify, noun: "cues", inspect: [readSequence, checkVars], ...(b.replace ? { prepare: deleteSteps } : {}) });
   const { steps, readBack, warnings, normalProgrammer } = built;
+  warnings.push(...filterWarnings);
   const reports: CueReport[] = b.cues.map((c, i) => {
     const r = built.items[i];
     return { cue: c.cue, status: r.status, verification: r.verification, ...(r.looks ? { looks: r.looks } : {}), ...(r.error ? { error: r.error } : {}) };
@@ -905,7 +932,18 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
         readBack.push(asRead({ name: `cue ${c.cue}: read_back`, status: "failed", op: "objects", error: message }));
         props = unavailable(`read-back failed: ${message}`, checked);
       }
-      r.verification = worst([r.verification, props], `cue ${c.cue}: looks in the programmer before the store; ${checked}`);
+      const exp = expectations.get(i);
+      let valueCheck: StoredCheck | undefined;
+      if (exp) {
+        valueCheck = await verifyStoredValues(bridge, cueRef(b.sequence, c.cue, 0), exp, verifyTimeout);
+        if (valueCheck.storedValues) r.storedValues = valueCheck.storedValues;
+        readBack.push(asRead({ name: `cue ${c.cue}: read_stored_values`, status: "succeeded", op: "preset.read", detail: { verification: valueCheck.status, ...(valueCheck.detail ? { detail: valueCheck.detail } : {}) } }));
+      }
+      // The looks were asked for this cue: values the preference kept out of the store are missing from it.
+      const leftOut: Verification[] = exp?.leftOut?.count
+        ? [{ status: "mismatched", detail: `ChannelFilter ${JSON.stringify(exp.channelFilter)} stored only the selected fixtures (the last look's selection): ${exp.leftOut.count} value(s) of the cue's other looks are not in it (${exp.leftOut.shown.slice(0, 5).join(", ")}${exp.leftOut.count > 5 ? ", ..." : ""})` }]
+        : [];
+      r.verification = worst([r.verification, props, ...(valueCheck ? [valueCheck] : []), ...leftOut], `cue ${c.cue}: looks in the programmer before the store; ${checked}${valueCheck ? `; ${valueCheck.checked}; every look's values` : ""}`);
     }
   }
 
@@ -916,7 +954,7 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
       ? unavailable("no cue was stored")
       : worst(
           [...attempted.map((r) => ({ ...r.verification, detail: r.verification.detail ? `cue ${r.cue}: ${r.verification.detail}` : undefined })), ...(normalProgrammer === "changed" ? [{ status: "mismatched" as const, detail: "the Normal programmer changed during the build" }] : [])],
-          `${attempted.length} cue(s): each look in the Preview programmer before its store, then the cue's existence, its name, and the timing, trigger, command and note it was given`,
+          `${attempted.length} cue(s): each look in the Preview programmer before its store, then the cue's existence, its name, the timing, trigger, command and note it was given, and the values stored against the store preference`,
         );
   return { steps, readBack, warnings, cues: reports, sent: true, backInNormal: built.backInNormal, normalProgrammer, sequenceExisted, verification: overall };
 }
@@ -1057,7 +1095,8 @@ function batchResult(op: string, target: Record<string, unknown>, r: BatchResult
       cues: r.cues,
       stored: r.cues.filter((c) => c.status === "stored").length,
       normalProgrammer: r.normalProgrammer,
-      notVerified: NOT_READABLE,
+      valueCheck: VALUE_CHECK,
+      ...storedTotals(r.cues),
       ...extra,
     },
   });
@@ -1807,6 +1846,25 @@ const triggerShape = {
   time: z.number().optional().describe("Trigger time in seconds (TrigTime)."),
 };
 
+/** The stored-value counts summed over the cues that were checked (absent when none was). */
+function storedTotals(cues: CueReport[]): { storedValues?: Record<string, unknown> } {
+  const checked = cues.filter((c) => c.storedValues);
+  if (!checked.length) return {};
+  const sum = (k: "expected" | "stored" | "compared" | "missing" | "different" | "leftOutByFilter") => checked.reduce((n, c) => n + (c.storedValues?.[k] ?? 0), 0);
+  const filters = [...new Set(checked.map((c) => c.storedValues?.channelFilter ?? null))];
+  return {
+    storedValues: {
+      channelFilter: filters.length === 1 ? filters[0] : filters,
+      cues: checked.length,
+      expected: sum("expected"),
+      compared: sum("compared"),
+      missing: sum("missing"),
+      different: sum("different"),
+      ...(sum("leftOutByFilter") ? { leftOutByFilter: sum("leftOutByFilter") } : {}),
+    },
+  };
+}
+
 /**
  * The compact form of a store_cues / build_chase result (SU-12): compactResult's step filtering, one line per cue
  * (its status and verification; the look details only for a cue that did not match), and the observed cycle as its
@@ -1824,7 +1882,7 @@ export function compactCueResult(r: OperationResult, detail: boolean): Operation
         verification: c.verification.status,
         ...(c.name !== undefined && c.name !== null ? { name: c.name } : {}),
         ...(c.error ? { error: c.error } : {}),
-        ...(ok ? {} : { detail: c.verification.detail, looks: c.looks }),
+        ...(ok ? {} : { detail: c.verification.detail, looks: c.looks, ...(c.storedValues ? { storedValues: c.storedValues } : {}) }),
       };
     });
   }
@@ -1850,7 +1908,7 @@ const COMPACT_NOTE =
 
 const BUILD_NOTE =
   "Built in the console's Preview environment: its own programmer and selection, so nothing is output and the operator's Normal programmer is untouched (checked before and after). Each cue starts from an empty programmer (ClearAll, sent only in Preview), its looks are applied in order (presets, then intensity, then values; a later look wins on shared fixtures), each look is checked in the programmer (preset links, values per fixture and cell), then the cue is stored. " +
-  "A look that did not apply stops the batch before that cue is stored; the cues already stored stay (nothing is undone or retried) and the result lists every cue with its status. A cue's stored values cannot be read back on 2.5.1; the cue's existence, name, timing, trigger, command and note are. A cue stored without a name takes the preset's name. Requires exclusive: true.";
+  "A look that did not apply stops the batch before that cue is stored; the cues already stored stay (nothing is undone or retried) and the result lists every cue with its status. The cue's existence, name, timing, trigger, command and note are read back, and so are the values stored in Part 0, compared with what the operator's ChannelFilter store preference takes from the programmer (each cue's storedValues gives the counts). With ChannelFilter Active For Selected the console stores only the last look's selection: the values of the cue's other looks are then reported missing (mismatched, nothing re-stored). The plugin expects ChannelFilter Active: any other value is reported once in warnings (read even with verify: false). A cue stored without a name takes the preset's name. Requires exclusive: true.";
 
 export const registerCueListTools: RegisterTools = (server, ctx) => {
   server.registerTool(

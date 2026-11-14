@@ -42,6 +42,7 @@ import { setPropertyChecked } from "./tools/setproperty.js";
 import { registerTempoSyncTools, resyncPlayback, RESYNC_NOTE } from "./tools/temposync.js";
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 import { registerPoolUsageTools, shapeListing } from "./tools/poolusage.js";
+import { registerAnalysisTools } from "./tools/analysis.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -705,6 +706,7 @@ registerShowTools(server, toolContext);
 registerTagTools(server, toolContext);
 registerTempoSyncTools(server, toolContext);
 registerPoolUsageTools(server, toolContext);
+registerAnalysisTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",
