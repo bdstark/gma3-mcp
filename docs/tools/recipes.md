@@ -349,9 +349,9 @@ read-back tells cooked values apart by their step presets.
   - `remove_line` of a middle line;
   - a duplicate step pair and a missing line, refused.
 
-  The cue's own values followed every change. The new order of `create` (curves after the copies) ran only against
-  the fake bridge. The console fact behind it was verified live: a copy keeps line 1's Snap, and `Assign Preset`
-  keeps it too.
+  The cue's own values followed every change. The new order of `create` (curves after the copies) was verified live
+  too: 21.9006, a Dimmer line with Snap on step 1 and an RGBW line without a curve, matched; line 2 kept the Sine
+  curve (TRANS 100) instead of line 1's Snap. A copy keeps line 1's Snap, and `Assign Preset` keeps it too.
 
 ## Live test
 
