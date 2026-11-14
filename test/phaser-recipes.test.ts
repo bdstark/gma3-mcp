@@ -61,7 +61,7 @@ async function setup(o: { pending?: boolean; programmer?: number; shapeFails?: b
     const known = ["Group 9000", "Shape 1", "MAtricks 9000"].includes(String(args.ref));
     return { total: known ? 1 : 0, items: known ? [{ name: "x" }] : [], offset: 0, count: known ? 1 : 0 };
   });
-  const row = (fixture: string) => ({ fixture, attribute: "Dimmer", cooked: true, stepCount: 2, steps: [{ step: 1, integrated: { valid: true, pool: 1, no: 9001 } }, { step: 2, integrated: { valid: true, pool: 1, no: 9000 } }] });
+  const row = (fixture: string) => ({ fixture, attribute: "Dimmer", cooked: true, stepCount: 2, speed: Number(c.speed) / 60, steps: [{ step: 1, integrated: { valid: true, pool: 1, no: 9001 } }, { step: 2, integrated: { valid: true, pool: 1, no: 9000 } }] });
   h.fake.on("preset.read", (args) => {
     const ref = String(args.ref);
     if (ref === "Preset 1.9000" || ref === "Preset 1.9001") return { ref, rows: [], dependencies: [] };
@@ -157,6 +157,19 @@ test("create: no line after At Shape -> mode switched off, ClearAll, the preset 
     assert.ok(h.fake.requests.some((r) => r.op === "recipe.editEnd"));
     assert.equal(c.editing, false);
     assert.equal(c.preset, false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("create: a cooked speed that is not the one asked is a mismatch", async () => {
+  const { h } = await setup();
+  h.fake.on("set", (args) => ({ value: args.property === "Name" ? String(args.value) : `${Number(args.value).toFixed(2)}` })); // the reply matches, the cooked speed stays 60 BPM
+  try {
+    const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", ARGS);
+    assert.equal(isError, true);
+    assert.equal(result.verification.status, "mismatched");
+    assert.match(result.verification.detail, /do not run at 120 BPM \(2\.000 Hz/);
   } finally {
     await h.close();
   }

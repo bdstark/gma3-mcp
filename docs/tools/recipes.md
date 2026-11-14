@@ -220,11 +220,22 @@ preset slot** (a cue then calls the preset with a standard line, `gma3_store_rec
    `At Shape` until here**. The programmer and Part Zero are read back empty.
 7. Name, then `SPEEDX` / `PHASEFROMX` / `PHASETOX` on `Preset P.N.1` (replies compared as numbers), then
    `Cook Preset P.N /MergeLowPriority`.
-8. Read back: one PhaserRecipe line with the group and MAtricks, no failed cook, every value cooked, each with 2
-   steps integrating the 2 step presets in order, nothing uncooked, mode off, Part Zero and programmer empty.
+8. Read back:
+   - one PhaserRecipe line with the group and MAtricks, and no failed cook;
+   - every value cooked, each with 2 steps integrating the 2 step presets in order, and nothing uncooked;
+   - the cooked speed of every value is `speed_bpm` / 60 Hz (the phase is spread per fixture by the MAtricks: only
+     its set reply is compared);
+   - the mode off, Part Zero and the programmer empty.
 
 A failure before the store switches the mode off, clears the programmer and deletes the preset the call created (its
 slot was free). After the store the preset is kept and the failure reported.
+
+Two console facts for whoever works next to this tool (verified live):
+- **After a successful build the preset stays the pending Edit Recipe target.** A manual `EditRecipe <other target>`
+  at the console then opens "Update last object?". OK would overwrite that preset with the programmer. The tool's
+  own next call is safe, because its empty store comes first.
+- **An empty `Store Preset P.N /NoConfirmation` on an existing phaser preset wipes its recipe line.** That is why
+  the tool only stores into a free slot, and refuses an existing one.
 
 Speed: a cue line's Speed X **replaces** the preset's (RELATIVESPEED No); an empty column (`SPEEDFROMX` None) follows
 the preset. 60 BPM = 1 Hz.
@@ -253,9 +264,11 @@ the preset. 60 BPM = 1 Hz.
   - recipe templates;
   - the Edit Recipe mode outside `gma3_edit_phaser_recipe`.
 - Verified live for `gma3_edit_phaser_recipe` (onPC 2.5.1, bridge 0.52.0, 2026-11-14): a Dimmer phaser (8 fixtures,
-  8/8 cooked) and a colour phaser (4 fixtures, RGBW, 16/16 cooked) built back to back, no dialog; the bridge stays
-  responsive while "Update last object?" is open and Cancel leaves the pending preset intact; an aborted build (mode
-  off after `At Shape`, then ClearAll) leaves the target empty and the programmer empty.
+  8/8 cooked, 2 Hz) and a colour phaser (4 fixtures, RGBW, 16/16 cooked, 0.5 Hz), built back to back, without a
+  dialog. The tool's Cancel and abort branches ran only against the fake bridge (`test/phaser-recipes.test.ts`).
+  The console facts behind them were probed by hand through the same bridge ops and `gma3_dialog`:
+  - The bridge stays responsive while "Update last object?" is open, and Cancel leaves the pending preset intact.
+  - An aborted build (mode off after `At Shape`, then ClearAll) leaves the target and the programmer empty.
 
 ## Live test
 

@@ -369,6 +369,11 @@ export async function createPhaserRecipe(ctx: ToolContext, raw: CreateArgs): Pro
         (r) => r.stepCount !== 2 || steps.some((p, i) => r.steps?.[i]?.integrated?.pool !== p.pool || r.steps?.[i]?.integrated?.no !== p.number),
       );
       if (badSteps.length) problems.push(`${badSteps.length} value(s) do not have 2 steps from Preset ${steps.map((p) => `${p.pool}.${p.number}`).join(" / Preset ")} (first: fixture ${badSteps[0].fixture} ${badSteps[0].attribute})`);
+      // The cooked speed is in Hz (60 BPM = 1 Hz). The phase is spread by the MAtricks per fixture, so only its set reply is compared.
+      if (speed !== undefined) {
+        const off = rows.filter((r) => typeof r.speed !== "number" || Math.abs(r.speed - speed / 60) > 0.001);
+        if (off.length) problems.push(`${off.length} value(s) do not run at ${speed} BPM (${(speed / 60).toFixed(3)} Hz; first: fixture ${off[0].fixture} ${off[0].attribute} reads ${off[0].speed ?? "none"})`);
+      }
       if (s.editing) problems.push("the Edit Recipe mode is on");
       if (s.partZeroLines.length) problems.push(`Part Zero holds ${s.partZeroLines.length} line(s)`);
       if (s.modal) problems.push(`a dialog is open (${s.modal.title ?? "untitled"})`);
@@ -397,7 +402,7 @@ export const registerPhaserRecipeTools: RegisterTools = (server, ctx) => {
         "The step presets must be in the target's pool (the phaser's attributes come from them: a Dimmer phaser goes in pool 1, a colour phaser in pool 4). Exactly 2 steps in this release. " +
         "Checked first, nothing sent otherwise: the slot is free, the group, shape, presets and MAtricks exist, the Edit Recipe mode is off with an empty Part Zero, no dialog is open, the programmer is empty (read completely), RecipeStoreMode is Normal. " +
         "Then: an empty Store of the preset (it clears the pending Edit Recipe target, so \"Update last object?\" does not open), EditRecipe queued without blocking the bridge (if \"Update last object?\" opens anyway it is answered Cancel, never OK, and the call stops), Group / At Shape / Step / At Preset / MAtricks one command at a time with the line checked in Part Zero, Store /Merge, the mode switched off and read back, ClearAll (the phaser runs on stage from At Shape until then), name, SPEEDX / PHASEFROMX / PHASETOX on the line, Cook /MergeLowPriority. " +
-        "A failure before the store switches the mode off, clears the programmer and deletes the preset this call created. Read back: one PhaserRecipe line, every value cooked with its 2 step presets, nothing uncooked, mode off, programmer and Part Zero empty. " +
+        "A failure before the store switches the mode off, clears the programmer and deletes the preset this call created. Read back: one PhaserRecipe line, every value cooked with its 2 step presets at speed_bpm, nothing uncooked, mode off, programmer and Part Zero empty. The preset then stays the pending Edit Recipe target: a manual EditRecipe elsewhere opens \"Update last object?\" (never OK). Never Store an empty programmer into an existing phaser preset: that wipes its line. " +
         "The cue calls the preset with a standard line (gma3_store_recipe_cues); a cue line's Speed X replaces the preset's speed. preview: true runs the checks and returns the plan. Needs bridge 0.52.0.",
       inputSchema: {
         action: z.enum(["create"]),
