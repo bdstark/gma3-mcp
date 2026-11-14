@@ -222,8 +222,9 @@ which properties are writable and how rotation reads back.
 `ROTDIRECT` quaternion, because the console renormalizes the angles between separate writes, and verified by
 quaternion. Mirroring is the fixture's `MESHMIRRORX` flag (the console ignores scale); mirror pairs across the stage
 centre line, lines and arcs expand into a previewable plan. Refused while the patch copy is open: its commit overwrites
-positions. No undo, so the result carries a restore list. Fixtures inside grouping fixtures are refused (not
-established).
+positions. No undo, so the result carries a restore list. Whether a fixture inside a grouping fixture is positioned
+relative to it is not established: such a fixture is placed only while every grouping fixture above it is at the
+origin with no rotation (both readings then agree), and refused otherwise, naming the grouping fixture.
 
 **Evidence:** six `gma3_lua` calls wrote `POSX/POSY/POSZ/ROTX/ROTY/ROTZ` with hand conversion from feet. Mirroring by
 `SCALEX = -1` was accepted and silently read back as `1`; the agent mirrored with `ROTY = 180`, which read back as
