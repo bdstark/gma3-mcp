@@ -193,3 +193,141 @@ test("numberMatches reads the console's formatted replies", () => {
   assert.ok(!numberMatches(360, "180.00"));
   assert.ok(!numberMatches(0, "None"));
 });
+
+/** A console with several lines: Copy appends a copy of line 1, Assign Preset at a value source retargets that step. */
+async function multiSetup() {
+  const s = await setup();
+  const { h, c, cmds } = s;
+  const lines: string[][] = [];
+  const curveSet: Array<{ line: number; step: number; curve: string }> = [];
+  const prev = h.fake.handlerFor("cmd")!;
+  h.fake.on("cmd", async (args, req) => {
+    const command = String(args.command);
+    let m: RegExpMatchArray | null;
+    if (command === "Store Preset 21.9000 /NoConfirmation") {
+      cmds.push(command);
+      c.preset = true;
+      return { feedback: "OK" };
+    }
+    if (command === "Store Preset 21.9000 /Merge /NoConfirmation") {
+      cmds.push(command);
+      if (c.pz.length) lines.push(["1.9001", "1.9000"]);
+      c.pz = [];
+      return { feedback: "OK" };
+    }
+    if ((m = command.match(/^Copy Preset 21\.9000\.1 At Preset 21\.9000\.(\d+) \/NoConfirmation$/))) {
+      cmds.push(command);
+      lines.push([...lines[0]]);
+      return { feedback: "OK" };
+    }
+    if ((m = command.match(/^Assign Preset (\d+\.\d+) At Preset 21\.9000\.(\d+)\.1\.(\d)\.1$/))) {
+      cmds.push(command);
+      lines[Number(m[2]) - 1][Number(m[3]) - 1] = m[1];
+      return { feedback: "OK" };
+    }
+    if ((m = command.match(/^Set Preset 21\.9000\.(\d+)\.1\.(\d)\.1 Property "Curve" "(.+)"$/))) {
+      cmds.push(command);
+      curveSet.push({ line: Number(m[1]), step: Number(m[2]), curve: m[3] });
+      return { feedback: "OK" };
+    }
+    return prev(args, req);
+  });
+  c.lines = 0;
+  h.fake.on("children", () => ({ total: lines.length, offset: 0, count: lines.length, items: lines.map((_, i) => ({ class: "PhaserRecipe", index: i + 1, fields: { Selection: { class: "Group", index: 9000 }, MAtricks: { class: "MAtrick", index: 9000 }, FailedCookedPart: "None" } })) }));
+  const speeds = new Map<number, number>();
+  h.fake.on("set", (args) => {
+    const m = String(args.ref).match(/^Preset 21\.9000\.(\d+)$/);
+    if (m && args.property === "SPEEDX") speeds.set(Number(m[1]), Number(args.value));
+    return { value: args.property === "Name" ? String(args.value) : `${Number(args.value).toFixed(2)}` };
+  });
+  const curveOf = (line: number, step: number) => curveSet.filter((x) => x.line === line && x.step === step).at(-1)?.curve;
+  const EFFECT: Record<string, [number, number, number?]> = { Linear: [0, 0], "Ease In": [100, -100], "Ease Out": [-100, 100], "Ease In and Out": [-100, -100], Swing: [100, 100], Snap: [0, 0, 0] };
+  h.fake.on("preset.read", (args) => {
+    const ref = String(args.ref);
+    if (/^Preset (1\.900[01]|4\.900[01])$/.test(ref)) return { ref, rows: [], dependencies: [] };
+    if (ref !== "Preset 21.9000" || !c.preset) throw new BridgeReplyError(`no object found for '${ref}'`);
+    const rows = lines.flatMap((st, i) =>
+      ["1", "2"].map((fixture) => {
+        const steps = st.map((p, n) => ({ step: n + 1, integrated: { valid: true, pool: Number(p.split(".")[0]), no: Number(p.split(".")[1]) }, trans: 100, accel: -100, decel: -100 }));
+        for (let n = 0; n < 2; n++) {
+          const cv = curveOf(i + 1, n + 1);
+          if (!cv) continue;
+          const [d, a, t] = EFFECT[cv];
+          steps[n].decel = d;
+          steps[(n + 1) % 2].accel = a;
+          if (t !== undefined) steps[n].trans = t;
+        }
+        return { fixture, attribute: st[0].startsWith("4.") ? "ColorRGB_R" : "Dimmer", cooked: true, stepCount: 2, speed: (speeds.get(i + 1) ?? speeds.get(1) ?? 60) / 60, steps };
+      }),
+    );
+    return { ref, rows, dependencies: [] };
+  });
+  return { ...s, lines, curveSet };
+}
+
+const MULTI = {
+  action: "create",
+  preset: "21.9000",
+  name: "TEST PH DIM COUL",
+  lines: [
+    { selection: 9000, steps: [{ preset: "1.9001" }, { preset: "1.9000", curve: "snap" }], matricks: 9000, speed_bpm: 120 },
+    { selection: 9000, steps: [{ preset: "4.9000" }, { preset: "4.9001" }], matricks: 9000, speed_bpm: 30, phase: { from: 0, to: 180 } },
+  ],
+  exclusive: true,
+};
+
+test("create with lines: line 1 in Edit Recipe mode, line 2 copied and retargeted, each with its speed; curves set and verified", async () => {
+  const { h, cmds, lines, curveSet } = await multiSetup();
+  try {
+    const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", MULTI);
+    assert.equal(isError, false, JSON.stringify(result, null, 1));
+    assert.equal(result.verification.status, "matched");
+    assert.deepEqual(lines, [["1.9001", "1.9000"], ["4.9000", "4.9001"]]);
+    assert.ok(cmds.includes("Copy Preset 21.9000.1 At Preset 21.9000.2 /NoConfirmation"));
+    assert.ok(!cmds.some((x) => /^Assign (Group|MAtricks)/.test(x)), "same group and MAtricks as line 1: nothing to reassign");
+    assert.deepEqual(curveSet, [{ line: 1, step: 2, curve: "Snap" }]);
+    assert.equal(cmds.at(-1), "Cook Preset 21.9000 /MergeLowPriority");
+    const sets = h.fake.requests.filter((r) => r.op === "set").map((r) => `${r.args?.ref} ${r.args?.property}=${r.args?.value}`);
+    assert.deepEqual(sets, ["Preset 21.9000 Name=TEST PH DIM COUL", "Preset 21.9000.1 SPEEDX=120", "Preset 21.9000.2 SPEEDX=30", "Preset 21.9000.2 PHASEFROMX=0", "Preset 21.9000.2 PHASETOX=180"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("create with lines: a curve the console did not apply is a mismatch", async () => {
+  const { h, curveSet } = await multiSetup();
+  const prev = h.fake.handlerFor("cmd")!;
+  h.fake.on("cmd", async (args, req) => {
+    const r = await prev(args, req);
+    if (/Property "Curve"/.test(String(args.command))) curveSet.pop(); // "OK", but nothing changes
+    return r;
+  });
+  try {
+    const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", MULTI);
+    assert.equal(isError, true);
+    assert.match(result.verification.detail, /line 1 step 2: 2 value\(s\) do not have the Snap curve/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("create with lines: families in a feature pool, mixed steps, duplicate lines and both forms are refused before anything is sent", async () => {
+  for (const [args, re] of [
+    [{ ...MULTI, preset: "1.9010" }, /lines\[1\]: its step presets are in pool 4.*All pool \(21-25\)/],
+    [{ ...MULTI, lines: [{ selection: 9000, steps: [{ preset: "1.9001" }, { preset: "4.9000" }] }] }, /one family per line/],
+    [{ ...MULTI, lines: [MULTI.lines[0], MULTI.lines[0]] }, /same 2 step presets/],
+    [{ ...MULTI, selection: 9000 }, /not both/],
+    [{ ...MULTI, lines: [MULTI.lines[0], { ...MULTI.lines[1], matricks: undefined }] }, /give every line one/],
+    [{ ...MULTI, lines: [{ ...MULTI.lines[0], steps: [{ preset: "1.9001", curve: "bounce" }, { preset: "1.9000" }] }] }, /input validation failed|curve must be one of/],
+  ] as const) {
+    const { h, cmds } = await multiSetup();
+    try {
+      const { isError, text } = await h.callJson("gma3_edit_phaser_recipe", args as Record<string, unknown>);
+      assert.equal(isError, true);
+      assert.match(text, re as RegExp);
+      assert.deepEqual(cmds, []);
+    } finally {
+      await h.close();
+    }
+  }
+});

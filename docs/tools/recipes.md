@@ -6,8 +6,8 @@ Four tools combine groups, presets and MAtricks into programming that adapts to 
 - `gma3_store_recipe_cues` writes the lines of many cue parts in one call (a recipe-driven show build, #101);
 - `gma3_cook_recipes` cooks a preset, a cue part, a cue or a whole sequence with an explicit option, after listing
   every affected target;
-- `gma3_edit_phaser_recipe` builds one phaser recipe line in a free preset slot, through the programmer's Edit Recipe
-  mode (bridge **0.52.0**).
+- `gma3_edit_phaser_recipe` builds phaser recipe lines (one family per line, several families in one preset) in a
+  free preset slot, through the programmer's Edit Recipe mode (bridge **0.52.0**).
 
 Recipe definitions are read and written with the existing object ops (`children`, `objects`, `set`) and `Assign` /
 `Move` / `Delete` / `Cook` commands. The cooked state of a target comes from `preset.read`, which bridge **0.24.0**
@@ -20,7 +20,7 @@ extends to cue parts (see [the bridge protocol](../reference.md#cue-part-data-pl
 | `gma3_edit_recipe` | one recipe line of a preset or cue part; **the console cooks the edited line at once** | untouched |
 | `gma3_store_recipe_cues` | the recipe lines of up to 100 cue parts of one sequence, their cue names and notes; each written line is cooked at once, as above | untouched |
 | `gma3_cook_recipes` | the cooked (and, with merge or overwrite, the uncooked) data of the affected targets | untouched |
-| `gma3_edit_phaser_recipe` | creates one preset with one PhaserRecipe line, cooked | **used**: must be empty first, cleared with ClearAll at the end |
+| `gma3_edit_phaser_recipe` | creates one preset with 1-8 PhaserRecipe lines, cooked | **used**: must be empty first, cleared with ClearAll at the end |
 
 ## The things to know first
 
@@ -198,9 +198,35 @@ an illegal object, `Store … Part P.L` makes a StandardRecipe). The console bui
 line is made in the programmer's Part Zero and stored into the target. This tool runs that sequence for a **free
 preset slot** (a cue then calls the preset with a standard line, `gma3_store_recipe_cues`).
 
-`action: "create"`, `preset: "P.N"`, `selection` (group), `shape` (default 1), `steps: [{preset}, {preset}]`
-(exactly 2, both in pool P: the phaser's attributes come from its step presets), `matricks?`, `speed_bpm?`,
-`phase?: {from, to}`, `name?`, `exclusive: true`; `preview: true` runs the checks and returns the plan.
+`action: "create"`, `preset: "P.N"`, `name?`, `exclusive: true`, and one line's fields at the top level or
+`lines: [...]` (1-8). A line has `selection` (group), `shape` (default 1), `steps: [{preset, curve?}, {preset, curve?}]`
+(exactly 2, from one preset pool: the line's family, whose attributes come from the step presets), `matricks?`,
+`speed_bpm?`, `phase?: {from, to}`. The target is in the line's pool, or in an **All pool (21-25)**, which lines of
+different families need (a Dimmer line and a Colour line in one preset). `preview: true` runs the checks and returns
+the plan.
+
+**Several lines.** A step holds one value source: a second `At Preset` on the same step replaces the first, and a
+second `At Shape` on the same group re-shapes the line instead of adding one. Line 1 is therefore built in Edit Recipe
+mode, and lines 2+ are copies of it: `Copy Preset P.N.1 At Preset P.N.k /NoConfirmation`, then `Assign Group / Shape /
+MAtricks n At Preset P.N.k` where they differ and `Assign Preset X At Preset P.N.k.1.<step>.1` for the steps. What a
+copied line does not set (speed, phase, curves) is line 1's. A cue calls the preset with one standard line, and every
+line cooks into it at its own speed. A Speed X on that cue line replaces the speed of every line.
+
+**Curves.** `curve` is one of `linear`, `ease_in`, `ease_out`, `ease_in_out`, `swing`, `snap`. It is sent from the
+command line, `Set Preset P.N.L.1.<step>.1 Property "Curve" "<Linear|Ease In|Ease Out|Ease In and Out|Swing|Snap>"`.
+The Lua `set` of CURVE is ignored, and CURVE reads back as an opaque id. With Link Steps (the default), a step's curve
+writes its own DECEL and the next step's ACCEL:
+
+| Curve | Own DECEL | Next step's ACCEL |
+| --- | --- | --- |
+| Linear | 0 | 0 |
+| Ease In | +100 | −100 |
+| Ease Out | −100 | +100 |
+| Ease In and Out | −100 | −100 |
+| Swing | +100 | +100 |
+| Snap | 0 (and TRANS 0) | 0 |
+
+The read-back checks those values in the cooked steps.
 
 1. Checks, nothing sent otherwise: the slot is free; group, shape, step presets and MAtricks exist; the mode is off,
    Part Zero empty, no dialog open (`recipe.editState`); the programmer read completely and empty; RecipeStoreMode
@@ -212,19 +238,20 @@ preset slot** (a cue then calls the preset with a standard line, `gma3_store_rec
 3. `recipe.editBegin` queues `EditRecipe Preset P.N` with CmdIndirect: sent with Cmd() from the plugin thread, the
    dialog would stall the bridge. The server polls `recipe.editState` until the mode reads on. If "Update last
    object?" opens anyway, it is answered **Cancel** (never OK) with `dialog.press` and the call stops.
-4. `Group`, `At Shape` (the line appears in Part Zero, checked), `Step 1`, `At Preset`, `Step 2`, `At Preset`,
+4. Line 1: `Group`, `At Shape` (the line appears in Part Zero, checked), `Step 1`, `At Preset`, `Step 2`, `At Preset`,
    `MAtricks`, one command at a time; Part Zero is checked again (exactly one PhaserRecipe line), then
    `Store Preset P.N /Merge /NoConfirmation` (Part Zero empties).
 5. `recipe.editEnd` queues the `EditRecipe` toggle (only while the mode reads on); the mode is read back off.
 6. `ClearAll`: after the mode is off the programmer still holds the phaser's values, **output on stage from
    `At Shape` until here**. The programmer and Part Zero are read back empty.
-7. Name, then `SPEEDX` / `PHASEFROMX` / `PHASETOX` on `Preset P.N.1` (replies compared as numbers), then
-   `Cook Preset P.N /MergeLowPriority`.
+7. The name; lines 2+ (copy and assigns, the line count checked after each copy); `SPEEDX` / `PHASEFROMX` /
+   `PHASETOX` per line (replies compared as numbers); curves; `Cook Preset P.N /MergeLowPriority`.
 8. Read back:
-   - one PhaserRecipe line with the group and MAtricks, and no failed cook;
-   - every value cooked, each with 2 steps integrating the 2 step presets in order, and nothing uncooked;
-   - the cooked speed of every value is `speed_bpm` / 60 Hz (the phase is spread per fixture by the MAtricks: only
-     its set reply is compared);
+   - the line count, and each line a PhaserRecipe with its group and MAtricks and no failed cook;
+   - every value cooked and integrating, in order, the 2 step presets of one line, each line with at least one value,
+     and nothing uncooked;
+   - the cooked speed of each line's values is its `speed_bpm` / 60 Hz (the phase is spread per fixture by the
+     MAtricks: only its set reply is compared), and each curve's DECEL / ACCEL / TRANS in the cooked steps;
    - the mode off, Part Zero and the programmer empty.
 
 A failure before the store switches the mode off, clears the programmer and deletes the preset the call created (its
@@ -259,13 +286,14 @@ the preset. 60 BPM = 1 Hz.
 - Not covered:
   - the background cook's exact timing (observed: not yet on an immediate read, done after 3 s);
   - phaser recipe lines other than `gma3_edit_phaser_recipe`'s create (editing an existing phaser line, more than 2
-    steps, a cue part as the target);
+    steps, a cue part as the target, steps of different pools in one line);
   - filters and worlds;
   - recipe templates;
   - the Edit Recipe mode outside `gma3_edit_phaser_recipe`.
 - Verified live for `gma3_edit_phaser_recipe` (onPC 2.5.1, bridge 0.52.0, 2026-11-14): a Dimmer phaser (8 fixtures,
   8/8 cooked, 2 Hz) and a colour phaser (4 fixtures, RGBW, 16/16 cooked, 0.5 Hz), built back to back, without a
-  dialog. The tool's Cancel and abort branches ran only against the fake bridge (`test/phaser-recipes.test.ts`).
+  dialog; then a Dimmer line (Snap) and an RGBW line (Ease In) in the All preset 21.9002 (20/20 cooked, 2 Hz and
+  0.5 Hz, curves read back), called by one standard line of a cue (20 cooked values). The tool's Cancel and abort branches ran only against the fake bridge (`test/phaser-recipes.test.ts`).
   The console facts behind them were probed by hand through the same bridge ops and `gma3_dialog`:
   - The bridge stays responsive while "Update last object?" is open, and Cancel leaves the pending preset intact.
   - An aborted build (mode off after `At Shape`, then ClearAll) leaves the target and the programmer empty.
