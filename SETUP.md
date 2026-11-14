@@ -958,6 +958,10 @@ record [su-22-library-add-macos-2.5.1.md](docs/probes/su-22-library-add-macos-2.
 - The isolation check leaves out the default curve's Min and Max points with their default values: `DmxCurve 1`
   lists one of its two points, and a GDTF import flips which one (the next copy flips it back). Other curves' points,
   an edited end point and the curves themselves are still compared.
+- The isolation check leaves out `ORIGINALFILENAME` (bridge 0.38.1, [patch-left-open](docs/probes/patch-left-open-macos-2.5.1.md)).
+  A second case, live 2026-10-21: after a custom GDTF type ("SC390 Truss") was imported and committed, the live type
+  held the file name and the patch copy had it empty, so the first `gma3_patch_add` of that type refused to commit on
+  a bridge older than 0.38.1. Every other property, mode and name of the type is still compared.
 - Slot colours with a slightly negative component (CIE colours outside sRGB) are read; SU-19's reader refused them.
 
 ## Recommended delivery order
