@@ -203,7 +203,7 @@ preset slot** (a cue then calls the preset with a standard line, `gma3_store_rec
 (exactly 2, from one preset pool: the line's family, whose attributes come from the step presets), `matricks?`,
 `speed_bpm?`, `phase?: {from, to}`. The target may be in **any pool**: the preset's pool does not filter its recipe
 lines (verified: a Dimmer + RGBW preset in the Dimmer pool and an RGBW phaser in the Position pool cooked completely).
-`preview: true` runs the checks and returns the plan.
+One family per line is preferred (a cue reads more clearly). A line whose steps come from an All pool (21-25), whose presets may mix families, is allowed with a warning. `preview: true` runs the checks and returns the plan.
 
 **Several lines.** A step holds one value source: a second `At Preset` on the same step replaces the first, and a
 second `At Shape` on the same group re-shapes the line instead of adding one. Line 1 is therefore built in Edit Recipe

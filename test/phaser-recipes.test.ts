@@ -186,6 +186,21 @@ test("create: a phaser preset in another family's pool is allowed (the pool does
   }
 });
 
+test("preview: a line whose steps come from an All pool is allowed, with a one-family-per-line warning", async () => {
+  const { h } = await setup();
+  h.fake.on("preset.read", (args) => {
+    if (String(args.ref) === "Preset 1.9010") throw new BridgeReplyError("no object found for 'Preset 1.9010'");
+    return { ref: args.ref, rows: [], dependencies: [] };
+  });
+  try {
+    const { result } = await h.callJson("gma3_edit_phaser_recipe", { ...ARGS, preset: "1.9010", steps: [{ preset: "21.5" }, { preset: "21.6" }], preview: true, exclusive: undefined });
+    assert.equal(result.outcome, "succeeded", JSON.stringify(result));
+    assert.match(result.warnings.join(" "), /line 1 takes its steps from an All pool \(21\).*one family per line/);
+  } finally {
+    await h.close();
+  }
+});
+
 test("preview: checks only, returns the plan", async () => {
   const { h, cmds } = await setup();
   try {

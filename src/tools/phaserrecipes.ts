@@ -193,6 +193,8 @@ export async function createPhaserRecipe(ctx: ToolContext, raw: CreateArgs): Pro
   const pairs = specs.map(pair);
   if (new Set(pairs).size !== pairs.length) v.fail("two lines have the same 2 step presets: their output could not be told apart in the read-back");
   if (specs[0]?.matricks !== undefined && specs.some((l) => l.matricks === undefined)) v.fail("lines[0] has a MAtricks and another line has none: the other lines are copies of line 1 and keep its MAtricks; give every line one, or put a line without MAtricks first");
+  // Preferred, not required: one family per line (a cue reads more clearly). All-pool step presets may mix families.
+  const advice = specs.flatMap((l, i) => (l.steps.some((s) => s.pool >= 21 && s.pool <= 25) ? [`line ${i + 1} takes its steps from an All pool (${l.steps[0].pool}): its presets may mix families; one family per line (Dimmer, Colour, Position... each its own line) is preferred`] : []));
   const preview = raw.preview === true;
   if (!preview && raw.exclusive !== true) v.fail("exclusive must be true: the build uses the programmer (it is checked empty first, and cleared with ClearAll at the end) and the Edit Recipe mode; nobody else may use them meanwhile");
   const tgt: Record<string, unknown> = { action: raw.action, preset: raw.preset };
@@ -281,7 +283,7 @@ export async function createPhaserRecipe(ctx: ToolContext, raw: CreateArgs): Pro
         return m === "Normal" ? null : `the store preference RecipeStoreMode is ${JSON.stringify(m)}, not Normal`;
       }, "preset.context"));
     if (!ok) return fail(`${op} was not performed; nothing was sent: ${steps_.find((s) => s.status !== "succeeded")?.error ?? "a check failed"}`);
-    if (preview) return fail("Preview only; nothing was sent.", { preview: true });
+    if (preview) return buildResult({ operation: op, target: tgt, steps: steps_, summary: "Preview only; nothing was sent.", ...(advice.length ? { warnings: advice } : {}), extra: { plan, preview: true } });
 
     // ---- Line 1 in Edit Recipe mode.
     let created = false;
@@ -512,7 +514,7 @@ export async function createPhaserRecipe(ctx: ToolContext, raw: CreateArgs): Pro
     } catch (err) {
       steps_.push(asRead(stepFromError("read_back", err, { op: "preset.read" })));
     }
-    const warnings = ["Between At Shape and the final ClearAll line 1 ran in the programmer (it was output on stage).", `${ref} stays the pending Edit Recipe target: a manual EditRecipe on another target opens "${UPDATE_DIALOG}" (answer Cancel, never OK).`];
+    const warnings = [...advice, "Between At Shape and the final ClearAll line 1 ran in the programmer (it was output on stage).", `${ref} stays the pending Edit Recipe target: a manual EditRecipe on another target opens "${UPDATE_DIALOG}" (answer Cancel, never OK).`];
     if (notDone.length) warnings.push(`not done as asked: ${notDone.join(", ")} (the preset and its lines are kept)`);
     return buildResult({ operation: op, target: tgt, steps: steps_, verification, warnings, extra: { plan, lines, linesMade, coverage } });
   };
@@ -539,7 +541,7 @@ export const registerPhaserRecipeTools: RegisterTools = (server, ctx) => {
       title: "Build phaser recipe lines in a preset",
       description:
         "action create: builds PhaserRecipe lines (each: selection group, shape, 2 steps from presets with an optional curve, MAtricks, speed, phase) in a FREE preset slot. One line: give its fields at the top level; several (e.g. Dimmer + Colour in one preset): lines: [{...}, ...] (1-8). " +
-        "The 2 steps of a line come from one preset pool (the line's family). The target preset may be in any pool: the pool does not filter recipe lines (a Dimmer + Colour preset in the Dimmer pool cooks both). " +
+        "The 2 steps of a line come from one preset pool (the line's family); one family per line is preferred (a warning names a line whose steps come from an All pool, which may mix families). The target preset may be in any pool: the pool does not filter recipe lines (a Dimmer + Colour preset in the Dimmer pool cooks both). " +
         "Checked first, nothing sent otherwise: the slot is free, the groups, shapes, presets and MAtricks exist, the Edit Recipe mode is off with an empty Part Zero, no dialog is open, the programmer is empty (read completely), RecipeStoreMode is Normal. " +
         "Line 1: an empty Store of the preset (it clears the pending Edit Recipe target, so \"Update last object?\" does not open), EditRecipe queued without blocking the bridge (if \"Update last object?\" opens anyway it is answered Cancel, never OK, and the call stops), Group / At Shape / Step / At Preset / MAtricks one command at a time with the line checked in Part Zero, Store /Merge, the mode switched off and read back, ClearAll (line 1 runs on stage from At Shape until then). A failure up to here switches the mode off, clears the programmer and deletes the preset this call created. " +
         "Then the name; lines 2+ as copies of line 1 (Copy, then Assign of their group, shape, MAtricks and step presets; what they do not set is line 1's); SPEEDX / PHASEFROMX / PHASETOX per line; curves (Set ... Property \"Curve\"); Cook /MergeLowPriority. " +
