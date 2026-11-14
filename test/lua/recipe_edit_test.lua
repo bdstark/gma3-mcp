@@ -91,7 +91,7 @@ local function request(op, args)
 end
 
 local r = request("ping")
-check("ping reports bridge 0.52.0", r.ok and r.result.bridgeVersion == "0.52.0", J(r))
+check("ping reports bridge 0.52.1", r.ok and r.result.bridgeVersion == "0.52.1", J(r))
 
 r = request("recipe.editState")
 check("editState: mode off, Part Zero empty, no dialog, last command", r.ok and r.result.editing == false and r.result.editingRaw == "No" and #r.result.partZeroLines == 0 and r.result.modal == false and r.result.lastCommand == "OK: ClearAll" and r.result.environment == "Normal", J(r))
@@ -159,6 +159,13 @@ check("editEnd queues the toggle with CmdIndirect while the mode is on, even wit
 PZ.kids = {}
 RE.pv.RECIPEEDITING = "No"
 console.queue = {}
+
+PROG.kids = {}
+r = request("recipe.editState")
+check("a programmer without a Part Zero reads as no recipe line, not an error", r.ok and #r.result.partZeroLines == 0 and r.result.partZero == false, J(r))
+PROG.kids = { PZ }
+r = request("recipe.editState")
+check("editState reports the Part Zero present", r.ok and r.result.partZero == true, J(r))
 
 local savedEnv = CurrentEnvironment
 CurrentEnvironment = function() return obj("UserEnvironment", "Normal", {}, {}) end

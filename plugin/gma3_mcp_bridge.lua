@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.52.0"
+local VERSION      = "0.52.1"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -6791,7 +6791,8 @@ end)()
     for _, c in ipairs(prog:Children() or {}) do
       if tostring(safeProp(c, "name")) == "Part Zero" or tonumber(safeProp(c, "no")) == 0 then return c end
     end
-    raise("[no-part-zero] the programmer has no Part Zero")
+    -- No Part Zero (seen live once, the programmer then held 20 phaser values; cause not established): no recipe line.
+    return nil
   end
   local function editState()
     local env, re = recipeEditor()
@@ -6799,13 +6800,14 @@ end)()
     if not okG or raw == nil then raw = safeProp(re, "RecipeEditing") end
     local pz = partZero()
     local lines = {}
-    for i, c in ipairs(pz:Children() or {}) do lines[#lines + 1] = { index = i, class = safeCall(c, "GetClass"), name = tostring(safeProp(c, "name")) } end
+    for i, c in ipairs(pz and pz:Children() or {}) do lines[#lines + 1] = { index = i, class = safeCall(c, "GetClass"), name = tostring(safeProp(c, "name")) } end
     local md, _, why = topModal()
     return {
       environment = tostring(safeProp(env, "name")),
       editing = truthy(raw),
       editingRaw = raw ~= nil and tostring(raw) or nil,
       partZeroLines = emptyArray(lines),
+      partZero = pz ~= nil,
       modal = md or false,
       modalError = why,
       lastCommand = lastCommand(),

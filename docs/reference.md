@@ -476,9 +476,9 @@ carries `class` (`"Preset"` or `"Part"`), and every row has `cooked` (true when 
 (`asText: false` for their Selection, Values, MAtricks and Filter handles) and `set`. Tools:
 [tools/recipes.md](tools/recipes.md).
 
-### Edit Recipe mode (plugin v0.52.0)
+### Edit Recipe mode (plugin v0.52.0; v0.52.1)
 
-- `recipe.editState` (read-only) → `{environment, editing, editingRaw, partZeroLines: [{index, class, name}], modal, modalError?, lastCommand}`: the current environment's `RecipeEditor.RecipeEditing`, the recipe lines in the programmer's Part Zero, the top dialog.
+- `recipe.editState` (read-only) → `{environment, editing, editingRaw, partZeroLines: [{index, class, name}], partZero, modal, modalError?, lastCommand}`: the current environment's `RecipeEditor.RecipeEditing`, the recipe lines in the programmer's Part Zero, the top dialog. A programmer without a Part Zero (seen live with phaser values in it) reads `partZero: false` and no line; before v0.52.1 it was an error (`no-part-zero`).
 - `recipe.editBegin {target, exclusive: true}` queues `EditRecipe <target>` with `CmdIndirect` (target `Preset P.N` or `Sequence S Cue C Part P` only). Refused (`not-exclusive`, `bad-args`, `modal-unknown`, `modal-open`, `editing-on`, `part-zero-busy`) before anything is queued. Queued, because "Update last object?" opened by a `Cmd()` on the plugin thread stalls the bridge; the server polls `recipe.editState`.
 - `recipe.editEnd {exclusive: true}` queues the `EditRecipe` toggle, only while the mode reads on (`editing-off` otherwise) and no dialog is open.
 
