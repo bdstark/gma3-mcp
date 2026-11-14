@@ -7,7 +7,8 @@ Four tools combine groups, presets and MAtricks into programming that adapts to 
 - `gma3_cook_recipes` cooks a preset, a cue part, a cue or a whole sequence with an explicit option, after listing
   every affected target;
 - `gma3_edit_phaser_recipe` builds phaser recipe lines (one family per line, several families in one preset) in a
-  free preset slot, through the programmer's Edit Recipe mode (bridge **0.52.0**).
+  free preset slot, through the programmer's Edit Recipe mode, and edits an existing phaser preset (a line's
+  settings, add or remove a line) without the programmer (bridge **0.52.1**).
 
 Recipe definitions are read and written with the existing object ops (`children`, `objects`, `set`) and `Assign` /
 `Move` / `Delete` / `Cook` commands. The cooked state of a target comes from `preset.read`, which bridge **0.24.0**
@@ -20,7 +21,7 @@ extends to cue parts (see [the bridge protocol](../reference.md#cue-part-data-pl
 | `gma3_edit_recipe` | one recipe line of a preset or cue part; **the console cooks the edited line at once** | untouched |
 | `gma3_store_recipe_cues` | the recipe lines of up to 100 cue parts of one sequence, their cue names and notes; each written line is cooked at once, as above | untouched |
 | `gma3_cook_recipes` | the cooked (and, with merge or overwrite, the uncooked) data of the affected targets | untouched |
-| `gma3_edit_phaser_recipe` | creates one preset with 1-8 PhaserRecipe lines, cooked | **used**: must be empty first, cleared with ClearAll at the end |
+| `gma3_edit_phaser_recipe` | create: one preset with 1-8 PhaserRecipe lines, cooked; set / add_line / remove_line: one line of an existing phaser preset | create: **used** (must be empty first, cleared with ClearAll at the end); edits: untouched |
 
 ## The things to know first
 
@@ -212,8 +213,9 @@ MAtricks n At Preset P.N.k` where they differ and `Assign Preset X At Preset P.N
 copied line does not set (speed, phase, curves) is line 1's. A cue calls the preset with one standard line, and every
 line cooks into it at its own speed. A Speed X on that cue line replaces the speed of every line.
 
-**Curves.** `curve` is one of `linear`, `ease_in`, `ease_out`, `ease_in_out`, `swing`, `snap`. It is sent from the
-command line, `Set Preset P.N.L.1.<step>.1 Property "Curve" "<Linear|Ease In|Ease Out|Ease In and Out|Swing|Snap>"`.
+**Curves.** `curve` is one of `linear`, `ease_in`, `ease_out`, `ease_in_out`, `swing`, `snap`, or `reset` (back to
+the shape's curve). It is sent from the command line,
+`Set Preset P.N.L.1.<step>.1 Property "Curve" "<Linear|Ease In|Ease Out|Ease In and Out|Swing|Snap|Reset>"`.
 The Lua `set` of CURVE is ignored, and CURVE reads back as an opaque id. With Link Steps (the default), a step's curve
 writes its own DECEL and the next step's ACCEL:
 
@@ -245,7 +247,8 @@ The read-back checks those values in the cooked steps.
 6. `ClearAll`: after the mode is off the programmer still holds the phaser's values, **output on stage from
    `At Shape` until here**. The programmer and Part Zero are read back empty.
 7. The name; lines 2+ (copy and assigns, the line count checked after each copy); `SPEEDX` / `PHASEFROMX` /
-   `PHASETOX` per line (replies compared as numbers); curves; `Cook Preset P.N /MergeLowPriority`.
+   `PHASETOX` per line (replies compared as numbers); the curves of every line, **after all the copies** (a copy
+   keeps line 1's custom curves); `Cook Preset P.N /MergeLowPriority`.
 8. Read back:
    - the line count, and each line a PhaserRecipe with its group and MAtricks and no failed cook;
    - every value cooked and integrating, in order, the 2 step presets of one line, each line with at least one value,
@@ -267,6 +270,42 @@ Two console facts for whoever works next to this tool (verified live):
 Speed: a cue line's Speed X **replaces** the preset's (RELATIVESPEED No); an empty column (`SPEEDFROMX` None) follows
 the preset. 60 BPM = 1 Hz.
 
+### Editing an existing phaser preset: `set`, `add_line`, `remove_line`
+
+No programmer and no Edit Recipe mode (no `exclusive`): every change is an `Assign`, `Set`, `Copy` or `Delete` on the
+preset's lines, then `Cook Preset P.N /MergeLowPriority`.
+
+- `set` changes line `line` (default 1): `selection`, `shape`, `matricks`, `speed_bpm`, `phase`, `name`, and
+  `steps: [{preset?, curve?}, {preset?, curve?}]` (`{}` keeps a step). The line must be a PhaserRecipe of 2 steps,
+  each from a preset.
+- `add_line` appends a copy of line 1 (`Copy Preset P.N.1 At Preset P.N.k`), retargeted with the given fields:
+  `selection` and both step presets are required; shape, MAtricks, speed and phase are line 1's unless given. Every
+  step is reset to the shape's curve, then given its `curve` if any (a copy keeps line 1's custom curves).
+- `remove_line` deletes line `line` (`Delete Preset P.N.L /NoConfirmation`). The later lines move up (3 lines,
+  delete line 2: line 3 becomes line 2). The only line is never removed: delete the preset instead.
+
+Sent in this order: `Assign Group | Shape | MAtricks n At Preset P.N.L` (only what changes),
+`Assign Preset X At Preset P.N.L.1.<step>.1` (the step keeps its curve), the curves (a step given a curve is reset to
+the shape's first, then the named curve, so a Linear over a Snap gets TRANS 100 back), `SPEEDX` / `PHASEFROMX` /
+`PHASETOX`, the name, then the Cook. **A new shape recomputes the curves of the steps that have no custom curve; a
+custom curve stays** (`curve: "reset"` takes it back to the shape's).
+
+Checked first, nothing sent otherwise: the preset and the line exist; the 2 steps come from one preset pool and are
+not the preset itself; no other line has the same 2 step presets; group, shape, MAtricks and step presets exist; no
+dialog is open; the Edit Recipe mode is off.
+
+Read back:
+- every line as expected: group, MAtricks, shape, speed (SPEEDX raw, in Hz), phase, step presets, and each step's
+  ACCEL / DECEL / TRANS where they are known. After a new shape or a reset they are the shape's and are not compared;
+- the edited line's cooked values come from its 2 step presets at its speed, and no value is left from its old step
+  presets;
+- every other cooked value unchanged, and nothing uncooked added. A fixture and attribute that the edited line
+  outputs, before or after, is left out of that comparison: where two lines act on the same attribute of the same
+  fixture, the later line's value wins, so another line's value may rightly appear or go.
+
+**A cue that calls the preset with a standard line follows the change without being re-cooked**: verified live with
+Sequence 9000 Cue 11 on 21.9005 for a speed change, a new family, a step retarget and a removed line.
+
 ## What is and is not verified
 
 - Verified live (onPC 2.5.1, `test/live/recipes.live.ts`, 1/1, 5.4 s):
@@ -285,8 +324,8 @@ the preset. 60 BPM = 1 Hz.
   not known. Cue names on Part 0 and `set` on lines are verified (SU-06, SB-05); the cue's `Note` is not.
 - Not covered:
   - the background cook's exact timing (observed: not yet on an immediate read, done after 3 s);
-  - phaser recipe lines other than `gma3_edit_phaser_recipe`'s create (editing an existing phaser line, more than 2
-    steps, a cue part as the target, steps of different pools in one line);
+  - phaser recipe lines other than `gma3_edit_phaser_recipe`'s (more than 2 steps, a cue part as the target, steps of
+    different pools in one line, steps with absolute values instead of presets);
   - filters and worlds;
   - recipe templates;
   - the Edit Recipe mode outside `gma3_edit_phaser_recipe`.
@@ -297,6 +336,19 @@ the preset. 60 BPM = 1 Hz.
   The console facts behind them were probed by hand through the same bridge ops and `gma3_dialog`:
   - The bridge stays responsive while "Update last object?" is open, and Cancel leaves the pending preset intact.
   - An aborted build (mode off after `At Shape`, then ClearAll) leaves the target and the programmer empty.
+- Verified live for the edit actions (bridge 0.52.1, 2026-11-14, scratch preset 21.9005 called by Sequence 9000
+  Cue 11), each read back matched:
+  - `set` of step presets, Swing and 45 BPM;
+  - a new shape with a reset;
+  - Snap, then Linear (TRANS back to 100);
+  - phase and name;
+  - `add_line` twice (Ease In at 90 BPM, Swing at 30 BPM);
+  - `remove_line` of a middle line;
+  - a duplicate step pair and a missing line, refused.
+
+  The cue's own values followed every change. The new order of `create` (curves after the copies) ran only against
+  the fake bridge. The console fact behind it was verified live: a copy keeps line 1's Snap, and `Assign Preset`
+  keeps it too.
 
 ## Live test
 

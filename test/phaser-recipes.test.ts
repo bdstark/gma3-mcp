@@ -312,6 +312,8 @@ test("create with lines: line 1 in Edit Recipe mode, line 2 copied and retargete
     assert.ok(cmds.includes("Copy Preset 21.9000.1 At Preset 21.9000.2 /NoConfirmation"));
     assert.ok(!cmds.some((x) => /^Assign (Group|MAtricks)/.test(x)), "same group and MAtricks as line 1: nothing to reassign");
     assert.deepEqual(curveSet, [{ line: 1, step: 2, curve: "Snap" }]);
+    // A copy keeps its source's custom curves: line 1's are set after line 2 is copied.
+    assert.ok(cmds.indexOf('Set Preset 21.9000.1.1.2.1 Property "Curve" "Snap"') > cmds.indexOf("Copy Preset 21.9000.1 At Preset 21.9000.2 /NoConfirmation"));
     assert.equal(cmds.at(-1), "Cook Preset 21.9000 /MergeLowPriority");
     const sets = h.fake.requests.filter((r) => r.op === "set").map((r) => `${r.args?.ref} ${r.args?.property}=${r.args?.value}`);
     assert.deepEqual(sets, ["Preset 21.9000 Name=TEST PH DIM COUL", "Preset 21.9000.1 SPEEDX=120", "Preset 21.9000.2 SPEEDX=30", "Preset 21.9000.2 PHASEFROMX=0", "Preset 21.9000.2 PHASETOX=180"]);
@@ -354,5 +356,258 @@ test("create with lines: mixed steps, duplicate lines and both forms are refused
     } finally {
       await h.close();
     }
+  }
+});
+
+// ---- Editing an existing phaser preset (set, add_line, remove_line), against a fake console that models the facts
+// verified live on 21.9005 (2026-11-14): Assign retargets a line or a step (a step keeps its curve), a new shape
+// recomputes the steps without a custom curve, "Reset" restores the shape's, Copy keeps line 1's custom curves,
+// Delete moves the later lines up, and on one fixture and attribute the later line's value wins.
+type FStep = { preset: string; accel: number; decel: number; trans: number; custom: boolean };
+type FLine = { cls?: string; group: number; shape: number; matricks: number | null; speedHz: number; phaseFrom: number; phaseTo: number; steps: FStep[] };
+const SHAPE_CURVE: Record<number, [number, number]> = { 1: [-100, -100], 2: [0, 0] }; // [accel, decel] per step: Sine, Linear
+const NAMED: Record<string, [number, number, number?]> = { Linear: [0, 0], "Ease In": [100, -100], "Ease Out": [-100, 100], "Ease In and Out": [-100, -100], Swing: [100, 100], Snap: [0, 0, 0] };
+const fstep = (preset: string, shape = 1): FStep => ({ preset, accel: SHAPE_CURVE[shape][0], decel: SHAPE_CURVE[shape][1], trans: 100, custom: false });
+const fline = (group: number, a: string, b: string, speedBpm: number): FLine => ({ group, shape: 1, matricks: 9000, speedHz: speedBpm / 60, phaseFrom: 0, phaseTo: 360, steps: [fstep(a), fstep(b)] });
+
+async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boolean } = {}) {
+  const h = await startHarness(registerPhaserRecipeTools);
+  const lines: FLine[] = structuredClone(initial);
+  const cmds: string[] = [];
+  const st = { name: "TEST PH EDIT", ignoreAssignPreset: false, assignGroupToLine1: false };
+  const P = "Preset 21.9005";
+  const addr = (cls: string, n: number, pool?: number) => ({ class: cls, index: n, addr: `14.14.1.${cls === "Preset" ? `5.${pool}` : 6}.${n}` });
+  h.fake.on("recipe.editState", () => ({ environment: "Normal", editing: o.editing === true, partZeroLines: [], partZero: false, modal: o.modal ? UPDATE : false, lastCommand: "OK" }));
+  h.fake.on("objects", (args) => {
+    const known = ["Group 9000", "Group 9001", "Shape 1", "Shape 2", "MAtricks 9000"].includes(String(args.ref));
+    return { total: known ? 1 : 0, items: known ? [{ name: "x" }] : [], offset: 0, count: known ? 1 : 0 };
+  });
+  h.fake.on("children", (args) => {
+    const ref = String(args.ref);
+    let m: RegExpMatchArray | null;
+    const list = (items: unknown[]) => ({ total: items.length, offset: 0, count: items.length, items });
+    if (ref === P)
+      return list(lines.map((l, i) => ({ class: l.cls ?? "PhaserRecipe", index: i + 1, name: `[${l.group}/${l.shape}]`, fields: { Selection: addr("Group", l.group), MAtricks: l.matricks ? { class: "MAtrick", index: l.matricks, addr: `14.14.1.11.${l.matricks}` } : null, SHAPE: { class: "Shape", index: l.shape, addr: `14.14.1.4.${l.shape}` }, SPEEDX: l.speedHz, PHASEFROMX: l.phaseFrom, PHASETOX: l.phaseTo, FailedCookedPart: "None" } })));
+    if ((m = ref.match(/^Preset 21\.9005\.(\d+)\.1$/))) return list(lines[Number(m[1]) - 1].steps.map((_, n) => ({ class: "PhaserRecipeStep", index: n + 1 })));
+    if ((m = ref.match(/^Preset 21\.9005\.(\d+)\.1\.(\d)$/))) {
+      const x = lines[Number(m[1]) - 1].steps[Number(m[2]) - 1];
+      const [pool, no] = x.preset.split(".").map(Number);
+      return list([{ class: "PhaserRecipeValueSource", index: 1, fields: { ACCELX: x.accel, DECELX: x.decel, TRANSX: x.trans, Preset: addr("Preset", no, pool) } }]);
+    }
+    throw new BridgeReplyError(`no object found for '${ref}'`);
+  });
+  h.fake.on("preset.read", (args) => {
+    const ref = String(args.ref);
+    if (/^Preset (1\.901[01]|4\.900[01])$/.test(ref)) return { ref, rows: [], dependencies: [] };
+    if (ref !== P) throw new BridgeReplyError(`no object found for '${ref}'`);
+    const out = new Map<string, unknown>();
+    lines.forEach((l) => {
+      if (l.cls === "StandardRecipe") return;
+      for (const fixture of l.group === 9001 ? ["251", "252"] : ["101"]) {
+        const attribute = l.steps[0].preset.startsWith("4.") ? "ColorRGB_R" : "Dimmer";
+        const steps = l.steps.map((x, n) => ({ step: n + 1, accel: x.accel, decel: x.decel, trans: x.trans, integrated: { valid: true, pool: Number(x.preset.split(".")[0]), no: Number(x.preset.split(".")[1]) } }));
+        out.set(`${fixture}|${attribute}`, { fixture, attribute, cooked: true, stepCount: 2, speed: l.speedHz, steps }); // the later line wins
+      }
+    });
+    return { ref, name: st.name, referencedBy: 1, rows: [...out.values()], dependencies: [] };
+  });
+  h.fake.on("set", (args) => {
+    const m = String(args.ref).match(/^Preset 21\.9005\.(\d+)$/);
+    const v = Number(args.value);
+    if (args.property === "Name") st.name = String(args.value);
+    else if (m && args.property === "SPEEDX") lines[Number(m[1]) - 1].speedHz = v / 60;
+    else if (m && args.property === "PHASEFROMX") lines[Number(m[1]) - 1].phaseFrom = v;
+    else if (m && args.property === "PHASETOX") lines[Number(m[1]) - 1].phaseTo = v;
+    return { value: args.property === "Name" ? st.name : `${v.toFixed(2)}` };
+  });
+  h.fake.onCommand((command) => {
+    cmds.push(command);
+    let m: RegExpMatchArray | null;
+    if ((m = command.match(/^Assign (Group|Shape|MAtricks) (\d+) At Preset 21\.9005\.(\d+)$/))) {
+      const l = lines[(st.assignGroupToLine1 ? 1 : Number(m[3])) - 1];
+      if (m[1] === "Group") l.group = Number(m[2]);
+      if (m[1] === "MAtricks") l.matricks = Number(m[2]);
+      if (m[1] === "Shape") {
+        l.shape = Number(m[2]);
+        for (const x of l.steps) if (!x.custom) [x.accel, x.decel] = SHAPE_CURVE[l.shape];
+      }
+    } else if ((m = command.match(/^Assign Preset (\d+\.\d+) At Preset 21\.9005\.(\d+)\.1\.(\d)\.1$/))) {
+      if (!st.ignoreAssignPreset) lines[Number(m[2]) - 1].steps[Number(m[3]) - 1].preset = m[1];
+    } else if ((m = command.match(/^Set Preset 21\.9005\.(\d+)\.1\.(\d)\.1 Property "Curve" "(.+)"$/))) {
+      const l = lines[Number(m[1]) - 1];
+      const n = Number(m[2]) - 1;
+      const own = l.steps[n];
+      const next = l.steps[(n + 1) % 2];
+      if (m[3] === "Reset") {
+        own.custom = false;
+        [, own.decel] = SHAPE_CURVE[l.shape];
+        own.trans = 100;
+        [next.accel] = SHAPE_CURVE[l.shape];
+      } else {
+        const [d, a, t] = NAMED[m[3]];
+        own.custom = true;
+        own.decel = d;
+        next.accel = a;
+        if (t !== undefined) own.trans = t;
+      }
+    } else if ((m = command.match(/^Copy Preset 21\.9005\.1 At Preset 21\.9005\.(\d+) \/NoConfirmation$/))) lines.push(structuredClone(lines[0]));
+    else if ((m = command.match(/^Delete Preset 21\.9005\.(\d+) \/NoConfirmation$/))) lines.splice(Number(m[1]) - 1, 1);
+    return "OK";
+  });
+  return { h, lines, cmds, st };
+}
+
+const DIM_COUL = [fline(9001, "1.9010", "1.9011", 120), fline(9001, "4.9000", "4.9001", 30)];
+
+test("set: step presets, curve and speed on one line, sent as Assign / Set without the programmer, other line unchanged", async () => {
+  const { h, lines, cmds } = await editSetup(DIM_COUL);
+  try {
+    const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 2, steps: [{ preset: "4.9001" }, { preset: "4.9000", curve: "swing" }], speed_bpm: 45 });
+    assert.equal(isError, false, JSON.stringify(result, null, 1));
+    assert.equal(result.verification.status, "matched");
+    assert.deepEqual(cmds, ["Assign Preset 4.9001 At Preset 21.9005.2.1.1.1", "Assign Preset 4.9000 At Preset 21.9005.2.1.2.1", 'Set Preset 21.9005.2.1.2.1 Property "Curve" "Reset"', 'Set Preset 21.9005.2.1.2.1 Property "Curve" "Swing"', "Cook Preset 21.9005 /MergeLowPriority"]);
+    assert.deepEqual(h.fake.requests.filter((r) => r.op === "set").map((r) => `${r.args?.ref} ${r.args?.property}=${r.args?.value}`), ["Preset 21.9005.2 SPEEDX=45"]);
+    assert.ok(!h.fake.requests.some((r) => /^(programmer|recipe\.edit(Begin|End))$/.test(r.op)), "no programmer, no Edit Recipe mode");
+    assert.equal(lines[1].steps[1].decel, 100);
+    assert.equal(lines[1].steps[0].accel, 100);
+    assert.match(result.notes.join(" "), /cues that call Preset 21\.9005 .* follow the change/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("set: a new shape first, then the curves; a reset goes back to the shape's curve", async () => {
+  const start = structuredClone(DIM_COUL);
+  Object.assign(start[0].steps[0], { custom: true, decel: 0, trans: 0 }); // Snap on line 1 step 1
+  start[0].steps[1].accel = 0;
+  const { h, lines, cmds } = await editSetup(start);
+  try {
+    const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", shape: 2, steps: [{ curve: "reset" }, { curve: "ease_out" }] });
+    assert.equal(isError, false, JSON.stringify(result, null, 1));
+    assert.equal(result.verification.status, "matched");
+    assert.deepEqual(cmds, ["Assign Shape 2 At Preset 21.9005.1", 'Set Preset 21.9005.1.1.1.1 Property "Curve" "Reset"', 'Set Preset 21.9005.1.1.2.1 Property "Curve" "Reset"', 'Set Preset 21.9005.1.1.2.1 Property "Curve" "Ease Out"', "Cook Preset 21.9005 /MergeLowPriority"]);
+    assert.deepEqual(lines[0].steps.map((x) => [x.accel, x.decel, x.trans]), [[100, 0, 100], [0, -100, 100]]);
+    assert.match(result.warnings.join(" "), /new shape recomputes the curves/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("add_line: a copy of line 1 retargeted; steps without a curve are reset (a copy keeps line 1's custom curves)", async () => {
+  const start = [structuredClone(DIM_COUL[0])];
+  Object.assign(start[0].steps[0], { custom: true, decel: 0, trans: 0 });
+  start[0].steps[1].accel = 0;
+  const { h, lines, cmds } = await editSetup(start);
+  try {
+    const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", { action: "add_line", preset: "21.9005", selection: 9000, steps: [{ preset: "4.9000", curve: "ease_in" }, { preset: "4.9001" }], speed_bpm: 30 });
+    assert.equal(isError, false, JSON.stringify(result, null, 1));
+    assert.equal(result.verification.status, "matched");
+    assert.deepEqual(cmds, [
+      "Copy Preset 21.9005.1 At Preset 21.9005.2 /NoConfirmation",
+      "Assign Group 9000 At Preset 21.9005.2",
+      "Assign Preset 4.9000 At Preset 21.9005.2.1.1.1",
+      "Assign Preset 4.9001 At Preset 21.9005.2.1.2.1",
+      'Set Preset 21.9005.2.1.1.1 Property "Curve" "Reset"',
+      'Set Preset 21.9005.2.1.2.1 Property "Curve" "Reset"',
+      'Set Preset 21.9005.2.1.1.1 Property "Curve" "Ease In"',
+      "Cook Preset 21.9005 /MergeLowPriority",
+    ]);
+    assert.equal(lines.length, 2);
+    assert.deepEqual(lines[1].steps.map((x) => x.trans), [100, 100], "line 1's Snap is not inherited");
+    assert.equal(lines[1].speedHz, 0.5);
+    assert.equal(lines[1].matricks, 9000, "MAtricks not given: line 1's");
+  } finally {
+    await h.close();
+  }
+});
+
+test("remove_line: the line is deleted, the later lines move up and are compared under their new number", async () => {
+  const { h, lines, cmds } = await editSetup([...DIM_COUL, fline(9000, "1.9011", "1.9010", 60)]);
+  try {
+    const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", { action: "remove_line", preset: "21.9005", line: 2 });
+    assert.equal(isError, false, JSON.stringify(result, null, 1));
+    assert.equal(result.verification.status, "matched");
+    assert.deepEqual(cmds, ["Delete Preset 21.9005.2 /NoConfirmation", "Cook Preset 21.9005 /MergeLowPriority"]);
+    assert.deepEqual(lines.map((l) => l.group), [9001, 9000]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("edit: a line masked on the same fixtures by the edited line may change; other lines' values are still compared", async () => {
+  // Line 2 (Dimmer on the same fixtures as line 1) masks line 1; retargeting line 2 to colour unmasks line 1's values.
+  const { h } = await editSetup([fline(9001, "1.9010", "1.9011", 120), fline(9001, "1.9011", "1.9010", 60)]);
+  try {
+    const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 2, steps: [{ preset: "4.9000" }, { preset: "4.9001" }] });
+    assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  } finally {
+    await h.close();
+  }
+});
+
+test("edit: a step preset the console did not take, or another line changed, is a mismatch", async () => {
+  {
+    const { h, st } = await editSetup(DIM_COUL);
+    st.ignoreAssignPreset = true;
+    try {
+      const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 2, steps: [{ preset: "4.9001" }, { preset: "4.9000" }] });
+      assert.equal(isError, true);
+      assert.match(result.verification.detail, /line 2 step 1 preset reads 4\.9000, 4\.9001 expected/);
+    } finally {
+      await h.close();
+    }
+  }
+  {
+    const { h, st } = await editSetup(DIM_COUL);
+    st.assignGroupToLine1 = true;
+    try {
+      const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 2, selection: 9000 });
+      assert.equal(isError, true);
+      assert.match(result.verification.detail, /line 1 selection reads Group 9000, Group 9001 expected/);
+      assert.match(result.verification.detail, /value\(s\) of the other lines changed/);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("edit: refused before anything is sent", async () => {
+  const std = [{ ...fline(9001, "1.9010", "1.9011", 60), cls: "StandardRecipe", steps: [] }, DIM_COUL[1]];
+  for (const [start, opts, args, re] of [
+    [DIM_COUL, {}, { action: "set", preset: "21.9006", speed_bpm: 60 }, /Preset 21\.9006 is not in the show/],
+    [DIM_COUL, {}, { action: "set", preset: "21.9005", line: 3, speed_bpm: 60 }, /no line 3/],
+    [[DIM_COUL[0]], {}, { action: "remove_line", preset: "21.9005", line: 1 }, /only line .* delete the preset instead/],
+    [DIM_COUL, {}, { action: "set", preset: "21.9005", line: 2, steps: [{ preset: "1.9010" }, { preset: "1.9011" }] }, /line 1 already has the step presets 1\.9010\/1\.9011/],
+    [DIM_COUL, {}, { action: "set", preset: "21.9005", line: 2, steps: [{ preset: "1.9010" }, {}] }, /one preset pool .* pools 1 and 4/],
+    [DIM_COUL, {}, { action: "add_line", preset: "21.9005", selection: 9001, steps: [{ preset: "1.9010" }, { preset: "1.9011" }] }, /same 2 step presets|already has the step presets/],
+    [std, {}, { action: "set", preset: "21.9005", line: 1, speed_bpm: 60 }, /StandardRecipe, not a PhaserRecipe/],
+    [DIM_COUL, {}, { action: "set", preset: "21.9005" }, /set changes at least one/],
+    [DIM_COUL, {}, { action: "remove_line", preset: "21.9005", line: 2, speed_bpm: 60 }, /remove_line takes preset and line only/],
+    [DIM_COUL, {}, { action: "set", preset: "21.9005", selection: 9999 }, /not in the show: Group 9999/],
+    [DIM_COUL, { editing: true }, { action: "set", preset: "21.9005", speed_bpm: 60 }, /Edit Recipe mode is on/],
+    [DIM_COUL, { modal: true }, { action: "set", preset: "21.9005", speed_bpm: 60 }, /a dialog is open/],
+  ] as const) {
+    const { h, cmds } = await editSetup(start as FLine[], opts);
+    try {
+      const { isError, text } = await h.callJson("gma3_edit_phaser_recipe", args as Record<string, unknown>);
+      assert.equal(isError, true, text);
+      assert.match(text, re as RegExp);
+      assert.deepEqual(cmds, []);
+      assert.ok(!h.fake.requests.some((r) => r.op === "set"));
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("edit preview: checks and the plan, nothing sent", async () => {
+  const { h, cmds } = await editSetup(DIM_COUL);
+  try {
+    const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 2, name: "X", phase: { from: 0, to: 180 }, preview: true });
+    assert.equal(result.preview, true);
+    assert.deepEqual(result.plan, ["set Preset 21.9005.2 PHASEFROMX=0", "set Preset 21.9005.2 PHASETOX=180", "set Preset 21.9005 Name=X", "Cook Preset 21.9005 /MergeLowPriority"]);
+    assert.deepEqual(cmds, []);
+  } finally {
+    await h.close();
   }
 });
