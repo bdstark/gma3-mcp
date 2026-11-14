@@ -581,6 +581,8 @@ test("edit: refused before anything is sent", async () => {
     [DIM_COUL, {}, { action: "set", preset: "21.9005", line: 2, steps: [{ preset: "1.9010" }, {}] }, /one preset pool .* pools 1 and 4/],
     [DIM_COUL, {}, { action: "add_line", preset: "21.9005", selection: 9001, steps: [{ preset: "1.9010" }, { preset: "1.9011" }] }, /same 2 step presets|already has the step presets/],
     [std, {}, { action: "set", preset: "21.9005", line: 1, speed_bpm: 60 }, /StandardRecipe, not a PhaserRecipe/],
+    [[{ ...DIM_COUL[0], steps: [DIM_COUL[0].steps[0]] }, DIM_COUL[1]], {}, { action: "add_line", preset: "21.9005", selection: 9001, steps: [{ preset: "4.9001" }, { preset: "4.9000" }] }, /line 1 of Preset 21\.9005 has 1 step/],
+    [[DIM_COUL[0], { ...DIM_COUL[1], steps: [DIM_COUL[1].steps[0]] }], {}, { action: "remove_line", preset: "21.9005", line: 2 }, /line 2 has 1 step/],
     [DIM_COUL, {}, { action: "set", preset: "21.9005" }, /set changes at least one/],
     [DIM_COUL, {}, { action: "remove_line", preset: "21.9005", line: 2, speed_bpm: 60 }, /remove_line takes preset and line only/],
     [DIM_COUL, {}, { action: "set", preset: "21.9005", selection: 9999 }, /not in the show: Group 9999/],

@@ -758,13 +758,15 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
         if (action === "add_line") {
           if (ls.length >= MAX_LINES) return `${ref} already has ${ls.length} lines (at most ${MAX_LINES})`;
           if (ls[0].class !== "PhaserRecipe") return `line 1 of ${ref} is a ${ls[0].class}: a new line is a copy of line 1, a PhaserRecipe`;
+          if (!stepPair(ls[0])) return `line 1 of ${ref} has ${ls[0].steps.length} step(s)${ls[0].steps.some((s) => !s.preset) ? ", not all from a preset" : ""}: a new line is a copy of line 1, and this release copies lines of 2 steps, each from a preset`;
           k = ls.length + 1;
           return null;
         }
         const line = ls[k - 1];
         if (!line) return `${ref} has ${ls.length} line(s), no line ${k}`;
         if (line.class !== "PhaserRecipe") return `line ${k} of ${ref} is a ${line.class}, not a PhaserRecipe`;
-        if (action === "remove_line") return ls.length === 1 ? `line ${k} is the only line of ${ref}: delete the preset instead` : null;
+        if (action === "remove_line" && ls.length === 1) return `line ${k} is the only line of ${ref}: delete the preset instead`;
+        // Its cooked values are told apart by their 2 step presets: the read-back needs them, removal included.
         if (!stepPair(line)) return `line ${k} has ${line.steps.length} step(s)${line.steps.some((s) => !s.preset) ? ", not all from a preset" : ""}: this release edits lines of 2 steps, each from a preset`;
         return null;
       }, "children")) &&
@@ -953,7 +955,7 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
     const warnings: string[] = [];
     if (notDone.length) warnings.push(`not done as asked: ${notDone.join(", ")} (nothing was undone)`);
     if (want && action === "set" && change.shape !== undefined) warnings.push("a new shape recomputes the curves of steps without a custom curve; a custom curve stays (give curve: reset to go back to the shape's)");
-    const notes = [`cues that call ${ref} with a standard line follow the change without being re-cooked${referencedBy ? ` (${referencedBy} object(s) reference it)` : ""}`];
+    const notes = [`cues that call ${ref} with a standard line follow the change without being re-cooked${referencedBy ? ` (${referencedBy} object(s) reference it)` : ""}; a cue line with its own Speed X keeps that speed`];
     return buildResult({ operation: op, target: tgt, steps: steps_, verification, ...(warnings.length ? { warnings } : {}), extra: { plan, notes, before: action === "add_line" ? null : before[k - 1] ?? null, lines: after } });
   };
   return preview ? body() : ctx.mutations.run(body);
@@ -990,7 +992,7 @@ export const registerPhaserRecipeTools: RegisterTools = (server, ctx) => {
         "add_line appends a copy of line 1 retargeted with the given fields (selection and steps required; shape, MAtricks, speed and phase otherwise line 1's; steps without a curve are reset to the shape's); remove_line deletes line `line` (the later lines move up; never the only line). " +
         "Checked first: the preset and line exist, the line is a PhaserRecipe of 2 steps from presets, the 2 steps from one pool, no other line with the same 2 step presets, the references exist, no dialog, the Edit Recipe mode off. " +
         "Sent: Assign Group / Shape / MAtricks At the line, Assign Preset At each step, the curves after the shape (a new shape recomputes curves that are not custom), SPEEDX / PHASEFROMX / PHASETOX, Cook /MergeLowPriority. " +
-        "Read back: the edited line as asked, every other line (group, MAtricks, shape, speed, phase, step presets and curves) and its cooked values unchanged, the edited line's values cooked at its speed, the old step presets' values gone. Cues calling the preset follow it without a re-cook. " +
+        "Read back: the edited line as asked, every other line (group, MAtricks, shape, speed, phase, step presets and curves) and its cooked values unchanged, the edited line's values cooked at its speed, the old step presets' values gone. Cues calling the preset follow it without a re-cook (a cue line's own Speed X still replaces the speed). " +
         "preview: true runs the checks and returns the plan. Needs bridge 0.52.1.",
       inputSchema: {
         action: z.enum(["create", "set", "add_line", "remove_line"]),

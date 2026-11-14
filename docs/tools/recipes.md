@@ -304,7 +304,10 @@ Read back:
   fixture, the later line's value wins, so another line's value may rightly appear or go.
 
 **A cue that calls the preset with a standard line follows the change without being re-cooked**: verified live with
-Sequence 9000 Cue 11 on 21.9005 for a speed change, a new family, a step retarget and a removed line.
+Sequence 9000 Cue 11 on 21.9005 for a speed change, a new family, a step retarget and a removed line. That cue line
+had no Speed X of its own: a cue line's Speed X replaces the preset's speed, so a `speed_bpm` edit does not show in
+such a cue. `add_line` and `remove_line` also need the line (line 1 for `add_line`) to be 2 steps from presets: the
+read-back tells cooked values apart by their step presets.
 
 ## What is and is not verified
 
