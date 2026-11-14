@@ -126,6 +126,9 @@ export function classifyFeedback(feedback: unknown): FeedbackClass {
 // Step execution
 // ---------------------------------------------------------------------------
 
+/** In the error of a step whose request was dispatched and got no reply (timeout, dropped connection). */
+export const NO_REPLY = "The request reached the bridge but no reply came back";
+
 /** Convert a thrown error from a bridge request into a step status. */
 export function stepFromError(name: string, err: unknown, extra: Partial<StepResult> = {}): StepResult {
   const message = err instanceof Error ? err.message : String(err);
@@ -136,11 +139,16 @@ export function stepFromError(name: string, err: unknown, extra: Partial<StepRes
     return {
       name,
       status: "unknown",
-      error: `${message}. The request reached the bridge but no reply came back; it may have executed. It was not retried.`,
+      error: `${message}. ${NO_REPLY}; it may have executed. It was not retried.`,
       ...extra,
     };
   }
   return { name, status: "failed", error: message, ...extra };
+}
+
+/** A step whose request was dispatched and got no reply: the bridge may still be working on it. */
+export function isNoReply(step: StepResult): boolean {
+  return step.status === "unknown" && (step.error ?? "").includes(NO_REPLY);
 }
 
 /**
@@ -476,10 +484,35 @@ export function compactItems(result: OperationResult, detail: boolean, o: ItemsC
   return out;
 }
 
+/** The first step that failed or got no reply, in short: what a reader of a long result needs first. */
+export function failureOf(steps: StepResult[]): { step: string; status: StepStatus; op?: string; error?: string } | undefined {
+  const s = steps.find((x) => x.status === "failed" || x.status === "unknown");
+  return s ? { step: s.name, status: s.status, ...(s.op ? { op: s.op } : {}), ...(s.error ? { error: s.error } : {}) } : undefined;
+}
+
+/**
+ * The result in the order it is serialised: the answer first, the detail after. MCP clients shorten a long result by
+ * cutting out its middle, and a large gma3_patch_set failure (2026-10-21) could not be read that way.
+ * So the head is operation, outcome, summary, `failure` (the first failed or unanswered step: name, status, op, error),
+ * warnings and validation errors, then every field with a plain value (committed, copyLeftOpen, ...), then target and
+ * verification, the other structured fields, and the steps last. The fields themselves are unchanged.
+ */
+export function readingOrder(result: OperationResult): Record<string, unknown> {
+  const out: Record<string, unknown> = { operation: result.operation, outcome: result.outcome, summary: result.summary };
+  const failure = Array.isArray(result.steps) ? failureOf(result.steps) : undefined;
+  if (failure && result.failure === undefined) out.failure = failure;
+  for (const k of ["warnings", "validationErrors"]) if (result[k] !== undefined) out[k] = result[k];
+  for (const [k, v] of Object.entries(result)) if (!(k in out) && k !== "steps" && (v === null || typeof v !== "object")) out[k] = v;
+  for (const k of ["target", "verification"]) if (!(k in out) && result[k] !== undefined) out[k] = result[k];
+  for (const [k, v] of Object.entries(result)) if (!(k in out) && k !== "steps") out[k] = v;
+  if (result.steps !== undefined) out.steps = result.steps;
+  return out;
+}
+
 export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
 /** Render an OperationResult as an MCP tool result, flagging anything but a verified success. */
 export function toToolResult(result: OperationResult): ToolResult {
-  const text = JSON.stringify(result);
+  const text = JSON.stringify(readingOrder(result));
   return isErrorResult(result) ? { content: [{ type: "text", text }], isError: true } : { content: [{ type: "text", text }] };
 }

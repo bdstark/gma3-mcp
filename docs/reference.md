@@ -194,13 +194,19 @@ whether to continue, inspect console state, or stop:
 ```jsonc
 {
   "operation": "store_cue",
-  "target": { "sequence": 1, "cue": "2.5" },
   "outcome": "succeeded",              // succeeded | failed | partial | unknown
+  "summary": "store_cue succeeded. read-back matched.",
+  "target": { "sequence": 1, "cue": "2.5" },
   "verification": { "status": "matched" },  // matched | mismatched | unavailable | not_requested
-  "steps": [ { "name": "store", "status": "succeeded", "op": "cmd", "command": "Store Sequence 1 Cue 2.5 /NoConfirmation", "feedback": "OK" } ],
-  "summary": "store_cue succeeded. read-back matched."
+  "steps": [ { "name": "store", "status": "succeeded", "op": "cmd", "command": "Store Sequence 1 Cue 2.5 /NoConfirmation", "feedback": "OK" } ]
 }
 ```
+
+* The result is serialised answer first, because MCP clients shorten a long result by cutting out its middle:
+  `operation`, `outcome`, `summary`, then `failure` when a step failed or got no reply (`{step, status, op?, error?}`
+  of the first such step), `warnings` / `validationErrors`, the fields with plain values (`committed`,
+  `copyLeftOpen`, ...), `target`, `verification`, the other structured fields, and `steps` last. The fields are the
+  same as before; only `failure` is new, and it repeats the step's own data.
 
 * Recognised negative command-line feedback (`Syntax Error`, `Illegal Command`, `... does not exist`, ...) is a
   failure. Feedback the server does not recognise makes the step `unknown`; it is never assumed to be success.

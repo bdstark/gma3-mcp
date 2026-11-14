@@ -17,6 +17,9 @@ import {
   validationFailure,
   isErrorResult,
   stepFromError,
+  isNoReply,
+  failureOf,
+  readingOrder,
   type StepResult,
 } from "../src/results.ts";
 import { Gma3Bridge, BridgeError, BridgeUnreachableError } from "../src/bridge.ts";
@@ -251,7 +254,8 @@ test("buildResult / toToolResult: only a verified success is a non-error tool re
 test("toToolResult and json() render compact JSON, with no indentation (#100)", async () => {
   const ok = buildResult({ operation: "store_cue", target: { sequence: 1 }, steps: [{ name: "store", status: "succeeded", detail: { a: [1, 2] } }], verification: { status: "matched" } });
   const text = toToolResult(ok).content[0].text;
-  assert.equal(text, JSON.stringify(ok));
+  assert.equal(text, JSON.stringify(readingOrder(ok)), "compact, in reading order");
+  assert.deepEqual(JSON.parse(text), JSON.parse(JSON.stringify(ok)), "every field kept");
   assert.ok(!text.includes("\n"));
   const { json } = await import("../src/tools/context.ts");
   assert.equal(json({ a: { b: [1] } }).content[0].text, '{"a":{"b":[1]}}');
@@ -286,6 +290,36 @@ test("compactItems: a clean success gets items and loses the dumps; anything els
   const failed = make("matched");
   failed.outcome = "unknown";
   assert.equal(compactItems(failed, false, o), failed);
+});
+
+test("toToolResult puts the answer first: outcome, summary, the first failed step, plain fields; structured fields and steps last", () => {
+  const r = buildResult({
+    operation: "patch_set",
+    target: { edits: [{ fid: 1 }] },
+    steps: [
+      { name: "check", status: "succeeded", detail: { rows: "x".repeat(100) } },
+      { name: "set", status: "failed", op: "patch.set", error: "[set-failed] overlap", detail: { conflicts: [] } },
+      { name: "commit", status: "skipped", error: "not attempted" },
+    ],
+    verification: { status: "not_requested" },
+    summary: "patch_set was not completed",
+    extra: { before: [{ fid: 1, name: "a" }], committed: false, copyLeftOpen: true },
+  });
+  const keys = Object.keys(JSON.parse(toToolResult(r).content[0].text));
+  assert.deepEqual(keys, ["operation", "outcome", "summary", "failure", "committed", "copyLeftOpen", "target", "verification", "before", "steps"]);
+  assert.deepEqual(readingOrder(r).failure, { step: "set", status: "failed", op: "patch.set", error: "[set-failed] overlap" });
+  assert.equal(failureOf([{ name: "a", status: "succeeded" }, { name: "b", status: "skipped" }]), undefined, "a skipped step is not the failure");
+  assert.equal(failureOf([{ name: "a", status: "unknown", error: "x" }])?.step, "a");
+  // Every field is kept, unchanged.
+  assert.deepEqual(JSON.parse(JSON.stringify(readingOrder(r))), JSON.parse(JSON.stringify({ ...r, failure: readingOrder(r).failure })));
+});
+
+test("isNoReply: only a dispatched request without a reply", () => {
+  const timedOut = stepFromError("set", new BridgeError("timeout after 400ms waiting for 'patch.set'", "patch.set", true));
+  assert.equal(timedOut.status, "unknown");
+  assert.equal(isNoReply(timedOut), true);
+  assert.equal(isNoReply({ name: "wait", status: "unknown", error: "the copy did not open within 3 s" }), false);
+  assert.equal(isNoReply(stepFromError("set", new BridgeError("[set-failed] no", "patch.set", false))), false);
 });
 
 test("validationFailure reports every problem and no steps", () => {
