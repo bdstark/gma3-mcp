@@ -92,6 +92,23 @@ class Console {
   running = new Set<number>();
   /** The programmer's current step (Step N). */
   step = 1;
+  /** #144: groups, their members in selection order (fixture ids; a cell is "501.1"). */
+  groups: Record<number, string[]> = {};
+  /** #144: groups whose group.read fails, and groups listing a member without a fixture id. */
+  unreadableGroups = new Set<number>();
+  anonymousMember = new Set<number>();
+
+  /** A (sub)fixture's patch index: a fixture's own id, a cell's one past the fixtures. */
+  sf(fid: string): number {
+    return /^\d+$/.test(fid) ? +fid : 100000 + Object.keys(this.fixtures).indexOf(fid);
+  }
+  /** The ids a `Fixture ...` selection names (each part may repeat the keyword). */
+  ids(expr: string): string[] {
+    return expr.replace(/^Fixture /, "").split("+").map((x) => x.trim().replace(/^Fixture /, "")).flatMap((part) => {
+      const r = part.match(/^(\d+) Thru (\d+)$/);
+      return r ? Object.keys(this.fixtures).filter((f) => /^\d+$/.test(f) && +f >= +r[1] && +f <= +r[2]) : [part];
+    });
+  }
   /** Sequences whose object reply omits hasActivePlayback, and whose listing omits Priority (review round 2). */
   omitPlayback = new Set<number>();
   unreadablePriority = new Set<number>();
@@ -142,10 +159,9 @@ class Console {
     } else if ((m = cmd.match(/^At Speed ([\d.]+)$/))) {
       for (const f of sel) for (const v of this.prog[this.env].get(f)?.values() ?? []) if (v.steps && v.steps.length > 1) v.speed = +m[1] / 60;
     } else if ((m = cmd.match(/^Fixture (.+)$/))) {
-      for (const part of m[1].split("+").map((x) => x.trim())) {
-        const r = part.match(/^(\d+) Thru (\d+)$/);
-        for (const id of r ? Object.keys(this.fixtures).filter((f) => +f >= +r[1] && +f <= +r[2]) : [part]) if (this.fixtures[id]) sel.add(id);
-      }
+      for (const id of this.ids(cmd)) if (this.fixtures[id]) sel.add(id);
+    } else if ((m = cmd.match(/^Group (\d+)$/))) {
+      for (const id of this.groups[+m[1]] ?? []) sel.add(id);
     } else if ((m = cmd.match(/^At ([\d.]+)$/))) {
       for (const f of sel) if (this.fixtures[f].includes("Dimmer")) this.set(f, "Dimmer", { value: +m[1] });
     } else if ((m = cmd.match(/^Attribute "(.+)" At Absolute(?: Percent)? (-?[\d.]+)$/))) {
@@ -214,17 +230,16 @@ class Console {
   programmer(args: Record<string, unknown>) {
     const scope = String(args.scope);
     const p = this.prog[this.env];
-    const expr = (e: string) => e.replace(/^Fixture /, "").split("+").map((x) => x.trim()).flatMap((part) => {
-      const r = part.match(/^(\d+) Thru (\d+)$/);
-      return r ? Object.keys(this.fixtures).filter((f) => +f >= +r[1] && +f <= +r[2]) : [part];
-    });
+    const expr = (e: string) => this.ids(e);
+    // The bridge resolves `fixtures` as objects and expands only fixtures and cells: a group is no fixture (#144).
+    if (scope === "fixtures" && /\bGroup\b/.test(String(args.fixtures))) return { scope, environment: this.env, coverage: { complete: false, scannedFixtures: 0, totalFixtures: 0 }, scannedFixtures: [], fixturesTruncated: false, total: 0, rows: [], limitations: [`no (sub)fixture patch indices could be read for '${args.fixtures}'`] };
     const fids = scope === "selection" ? [...this.selected[this.env]] : scope === "fixtures" ? expr(String(args.fixtures)) : [...new Set([...Object.keys(this.fixtures).filter((f) => p.has(f))])];
     const order = [...this.selected[this.env]];
     const rows = fids.flatMap((fid) =>
       [...(p.get(fid) ?? new Map<string, Value>()).entries()].map(([attribute, v]) => ({
         fixture: `Fx ${fid}`,
         fid,
-        subfixtureIndex: +fid,
+        subfixtureIndex: this.sf(fid),
         attribute,
         ...(v.steps && v.steps.length > 1 ? { steps: v.steps.map((x) => ({ absolute: x })), phaser: { gridPos: order.indexOf(fid), phase: v.phase ?? 0, speed: v.speed ?? 1 } } : { value: v.value }),
         stepCount: v.steps?.length ?? 1,
@@ -241,7 +256,8 @@ class Console {
       scope,
       environment: this.env,
       coverage: { complete: true, scannedFixtures: fids.length, totalFixtures: fids.length, scannedChannels: rows.length },
-      scannedFixtures: fids.map((fid) => ({ subfixtureIndex: +fid, fid, name: `Fx ${fid}`, rootFid: fid, attributes: this.fixtures[fid] })),
+      // A cell has no FID of its own and a name only unique within its fixture.
+      scannedFixtures: fids.map((fid) => (fid.includes(".") ? { subfixtureIndex: this.sf(fid), fid: null, name: fid.split(".")[1], rootFid: null, attributes: this.fixtures[fid] } : { subfixtureIndex: this.sf(fid), fid, name: `Fx ${fid}`, rootFid: fid, attributes: this.fixtures[fid] })),
       fixturesTruncated: false,
       total: rows.length,
       count: Math.min(rows.length, limit),
@@ -282,8 +298,9 @@ class Console {
       const p = this.presets[`${m[1]}.${m[2]}`];
       return p ? { total: 1, items: [{ name: p.name, class: "Preset", addrNative: `ShowData.DataPools.Default.PresetPools.Color.${p.name}`, fields: { Name: p.name } }] } : none;
     }
+    if ((m = ref.match(/^Group (\d+)\b/))) return this.groups[+m[1]] ? { total: 1, items: [{ name: `Group ${m[1]}`, class: "Group" }] } : none;
     if ((m = ref.match(/^Attribute "(.+)"$/))) return Object.values(this.fixtures).some((a) => a.includes(m![1])) ? { total: 1, items: [{ name: m[1], class: "Attribute" }] } : none;
-    const ids = ref.replace(/^Fixture /, "").split("+").map((x) => x.trim()).filter((x) => this.fixtures[x]);
+    const ids = this.ids(ref).filter((x) => this.fixtures[x]);
     return ids.length ? { total: ids.length, items: ids.map((fid) => ({ name: `Fx ${fid}`, class: "Fixture", fields: { FID: fid } })) } : none;
   }
 
@@ -327,10 +344,18 @@ class Console {
       const rows = Object.entries(c.data).flatMap(([fid, attrs]) =>
         Object.entries(attrs).map(([attribute, value]) => {
           const st = c.steps?.[fid]?.[attribute];
-          return { fixture: fid, sfIndex: +fid, attribute, value, stepCount: st?.length ?? 1, ...(st ? { steps: st.map((x) => ({ absolute: x })) } : {}) };
+          return { fixture: fid, sfIndex: this.sf(fid), attribute, value, stepCount: st?.length ?? 1, ...(st ? { steps: st.map((x) => ({ absolute: x })) } : {}) };
         }),
       );
       return { byFixtures: true, rows };
+    });
+    f.on("group.read", (args) => {
+      const n = Number(String(args.ref).replace(/^Group /, ""));
+      if (this.unreadableGroups.has(n)) throw new Error("[unreadable] the SelectionData of Group " + n + " could not be read");
+      const members = this.groups[n];
+      if (!members) throw new Error(`no object found for '${args.ref}'`);
+      const items = members.map((fid, i) => (this.anonymousMember.has(n) && i === 0 ? { sfIndex: this.sf(fid), fixture: null, x: i, y: 0, z: 0 } : { sfIndex: this.sf(fid), fixture: fid, x: i, y: 0, z: 0 }));
+      return { ref: args.ref, count: items.length, truncated: false, unreadable: 0, items };
     });
     f.on("objects", (args) => this.objects(String(args.ref), Array.isArray(args.fields) ? (args.fields as string[]) : []));
     f.on("children", (args) => {
@@ -1088,6 +1113,82 @@ test("SU-14 review 1: a look's phaser on a fixture without its attributes is ref
     const r = await h.callJson("gma3_store_cues", { sequence: 982, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101 + 301", phaser: { steps: [{ values: { ColorRGB_R: 100 } }, { values: { ColorRGB_R: 0 } }] } }] });
     assert.equal(r.isError, true);
     assert.match(errors(r), /fixture\(s\) 301 of Fixture 101 \+ 301 have no ColorRGB_R/);
+    assert.deepEqual(c.commands, [], "nothing was sent");
+  } finally {
+    await h.close();
+  }
+});
+
+/** #144: the Festoon Demo festoons: fixtures 501/502 (virtual Dimmer) with 40 RGB cells each; Group 1 holds the 80 cells. */
+function festoons(c: Console) {
+  const rgb = ["ColorRGB_R", "ColorRGB_G", "ColorRGB_B"];
+  const cells: string[] = [];
+  for (const p of ["501", "502"]) {
+    c.fixtures[p] = ["Dimmer"];
+    for (let n = 1; n <= 40; n++) {
+      c.fixtures[`${p}.${n}`] = rgb;
+      cells.push(`${p}.${n}`);
+    }
+  }
+  c.groups[1] = cells;
+  return cells;
+}
+
+test("#144: a phaser look on a group of cells is checked through the group's members, built, read back and stored", async () => {
+  const { h, c } = await setup();
+  try {
+    const cells = festoons(c);
+    const r = await h.callJson("gma3_store_cues", {
+      sequence: 990,
+      mode: "create",
+      exclusive: true,
+      cues: [{ cue: 1, fixtures: "Group 1", phaser: { steps: [{ values: { ColorRGB_R: 100 } }, { values: { ColorRGB_R: 0 } }], phaser: { phase: { from: 0, to: 180 } } } }],
+    });
+    assert.equal(r.isError, false, JSON.stringify(r.result).slice(0, 3000));
+    assert.equal(r.result.cues[0].verification, "matched", JSON.stringify(r.result.cues[0]));
+    assert.ok(h.fake.requests.some((q) => q.op === "group.read" && q.args.ref === "Group 1"), "the group's members were read");
+    const scans = h.fake.requests.filter((q) => q.op === "programmer" && q.args.scope === "fixtures").map((q) => String(q.args.fixtures));
+    assert.ok(scans.length >= 2 && scans.every((x) => !/Group/.test(x)), `the scans name the members, not the group: ${scans.join(" | ").slice(0, 300)}`);
+    assert.ok(scans.every((x) => x.split("+").length <= 50), "at most 50 members per scan");
+    assert.ok(c.commands.includes("[P] Group 1"), "the look selects the group itself");
+    const stored = c.seqs.get(990)!.cues[0];
+    assert.deepEqual(Object.keys(stored.steps ?? {}).sort(), [...cells].sort(), "every cell holds the phaser");
+  } finally {
+    await h.close();
+  }
+});
+
+test("#144: a group member without the phaser's attributes is named by its fixture id, and nothing is sent", async () => {
+  const { h, c } = await setup();
+  try {
+    festoons(c);
+    c.groups[2] = ["501.1", "501.2", "301"];
+    const r = await h.callJson("gma3_store_cues", { sequence: 991, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "Group 2", phaser: { steps: [{ values: { ColorRGB_R: 100 } }, { values: { ColorRGB_R: 0 } }] } }] });
+    assert.equal(r.isError, true);
+    assert.match(errors(r), /fixture\(s\) 301 of Group 2 have no ColorRGB_R/);
+    assert.deepEqual(c.commands, [], "nothing was sent");
+  } finally {
+    await h.close();
+  }
+});
+
+test("#144: a group that cannot be read exactly still refuses the phaser look, with the reason, before anything is sent", async () => {
+  const { h, c } = await setup();
+  try {
+    festoons(c);
+    const phaser = { steps: [{ values: { ColorRGB_R: 100 } }, { values: { ColorRGB_R: 0 } }] };
+    c.unreadableGroups.add(1);
+    const unreadable = await h.callJson("gma3_store_cues", { sequence: 992, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "Group 1", phaser }] });
+    assert.equal(unreadable.isError, true);
+    assert.match(errors(unreadable), /the fixtures of Group 1 could not all be read \(the members of Group 1 could not be read: .*SelectionData/);
+    c.unreadableGroups.clear();
+    c.anonymousMember.add(1);
+    const anonymous = await h.callJson("gma3_store_cues", { sequence: 992, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "Group 1", phaser }] });
+    assert.match(errors(anonymous), /Group 1 holds a member without a fixture id/);
+    c.anonymousMember.clear();
+    c.groups[3] = ["301"];
+    const minus = await h.callJson("gma3_store_cues", { sequence: 992, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "Group 1 - 501.1", phaser }] });
+    assert.match(errors(minus), /cannot be read exactly/);
     assert.deepEqual(c.commands, [], "nothing was sent");
   } finally {
     await h.close();
