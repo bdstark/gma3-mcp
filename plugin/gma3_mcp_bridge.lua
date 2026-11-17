@@ -2896,13 +2896,28 @@ ops.cmd = function(args, ctx)
   if type(command) ~= "string" or command == "" then error("args.command (string) is required") end
   local g = state.undo
   if g and ctx and g.client == ctx.client then
-    -- An executable Oops (review of #136): quoted text is data ("Label Macro 5 "Oops"" is a label), so it is removed
-    -- first; then any command of the line (separated by ";") whose first word is Oops counts.
-    local bare = command:gsub('"[^"]*"', '""'):lower()
-    local runsOops = false
-    for part in (bare .. ";"):gmatch("([^;]*);") do
-      if part:match("^%s*oops%f[%A]") then runsOops = true; break end
+    -- An executable Oops (review of #136): text in single or double quotes is data (Label Macro 5 "Oops", or
+    -- 'x; Oops'), so the line is scanned with both quote styles skipped, split on ";" outside quotes, and a command
+    -- whose first word is Oops counts. An unterminated quote runs to the end of the line, as in refTokens.
+    local runsOops, quote, part = false, nil, {}
+    local function flush()
+      if table.concat(part):lower():match("^%s*oops%f[%A]") then runsOops = true end
+      part = {}
     end
+    for i = 1, #command do
+      local c = command:sub(i, i)
+      if quote then
+        if c == quote then quote = nil end
+      elseif c == '"' or c == "'" then
+        quote = c
+        part[#part + 1] = "_"
+      elseif c == ";" then
+        flush()
+      else
+        part[#part + 1] = c
+      end
+    end
+    flush()
     if runsOops then
       -- Oops acts on the steps before it, as typed: the group is closed first.
       state.undo = nil
