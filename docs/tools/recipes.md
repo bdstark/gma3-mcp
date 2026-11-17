@@ -134,8 +134,9 @@ and a cook at the end. This tool checks the references once, writes per cue part
 3. `check_references`, once for the whole call: every group, preset and MAtricks a line names is in the show (each read
    once, the missing ones listed with the first line that uses them). An empty group is a warning.
    `compare_existing` (`replace` only, #145): a cue part whose lines already read as asked (group, values, MAtricks or
-   none, Enabled, the name and selection mode when given, no X / Y / Z column the line does not set, the given columns)
-   and whose cue name and note match is **already done**: its item says so, is `matched`, and nothing is sent for it.
+   none, Enabled, the name and selection mode when given, the given columns, and every column the request leaves out
+   as a new line has it: the MAtricks settings None, X / Y / Z None, the other MAtricks properties at their reset
+   values) and whose cue name and note match is **already done**: its item says so, is `matched`, and nothing is sent for it.
    Sending the same call again after a lost answer (a client timeout while the console finished) therefore rewrites
    only what differs. `append` always writes (a repeat cannot be told from a wanted second copy). A `cook` still cooks
    every part.

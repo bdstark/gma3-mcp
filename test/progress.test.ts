@@ -121,3 +121,26 @@ test("a failing notification never fails the call", async () => {
   });
   assert.equal(r, "done");
 });
+
+test("a beat after the last unit never passes the advertised total: a one-unit build whose clean-up waits > 5 s", async () => {
+  mock.timers.enable({ apis: ["Date", "setInterval"] });
+  try {
+    const { sent, extra } = recorder();
+    await withProgress(extra, async () => {
+      const p = progressSteps(1);
+      mock.timers.tick(BEAT_MIN_MS);
+      p.step("preset 1 of 1");
+      // Still inside the counter: a beat beyond the total carries no total.
+      mock.timers.tick(BEAT_MIN_MS);
+      progressBeat("leaving Preview");
+      p.end();
+      const stop = beatWhilePending(() => "waiting for the console (Preview Off)");
+      mock.timers.tick(PENDING_BEAT_MS);
+      stop();
+    });
+    assert.deepEqual(sent.map((s) => [s.progress, s.total]), [[1, 1], [1.5, undefined], [2 - 1 / 3, undefined]]);
+    assert.ok(sent.every((s) => s.total === undefined || s.progress <= s.total));
+  } finally {
+    mock.timers.reset();
+  }
+});

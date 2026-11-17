@@ -843,6 +843,37 @@ test("already done (#145): replace sent again after a lost answer writes nothing
   assert.match(preview.result.summary, /1 cue part\(s\) already read as asked and would not be written again/);
 });
 
+test("already done (#145 review): a column the replace leaves out must read as on a new line, or the line is written again", async () => {
+  con.cue(9060, 1);
+  // x: {wings: 2}, then the same line without x: XWings=2 would survive a skip, so the line is rewritten.
+  await store({ mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4", { x: { wings: 2 } })] }] });
+  assert.equal(con.part(9060, 1).lines[0].props?.XWings, "2");
+  con.commands = [];
+  const dropped = await store({ mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4")] }] });
+  assert.equal(dropped.result.verification.status, "matched", JSON.stringify(dropped.result));
+  assert.doesNotMatch(dropped.result.items[0].summary, /already done/);
+  assert.deepEqual(con.commands, ["Delete Sequence 9060 Cue 1 Part 0.1 /NoConfirmation", "Assign Group 908 At Sequence 9060 Cue 1 Part 0.1", "Assign Preset 4.4 At Sequence 9060 Cue 1 Part 0.1"]);
+  assert.equal(con.part(9060, 1).lines[0].props?.XWings, undefined, "the new line has no wings");
+  // x: {select: 1, fade: 4..4}, then x: {select: 1}: the fade would survive a skip, so the line is rewritten.
+  await store({ mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4", { x: { select: 1, fade: { from: 4, to: 4 } } })] }] });
+  con.commands = [];
+  const fade = await store({ mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4", { x: { select: 1 } })] }] });
+  assert.doesNotMatch(fade.result.items[0].summary, /already done/);
+  assert.equal(con.commands[0], "Delete Sequence 9060 Cue 1 Part 0.1 /NoConfirmation");
+  assert.equal(con.part(9060, 1).lines[0].props?.FadeFromX, undefined);
+  assert.equal(con.part(9060, 1).lines[0].props?.X, "1");
+  // The same request once more is already done: every column reads as asked or as on a new line.
+  con.commands = [];
+  const same = await store({ mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4", { x: { select: 1 } })] }] });
+  assert.match(same.result.items[0].summary, /already done/);
+  assert.deepEqual(con.commands, []);
+  // Another MAtricks property set on the console (an invert) is not what a new line has: rewritten.
+  con.part(9060, 1).lines[0].props = { ...con.part(9060, 1).lines[0].props, XInv: "Yes" };
+  con.commands = [];
+  await store({ mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4", { x: { select: 1 } })] }] });
+  assert.equal(con.commands[0], "Delete Sequence 9060 Cue 1 Part 0.1 /NoConfirmation");
+});
+
 test("progress (#145): one unit per written cue part, then one per cooked cue part; none without a token", async () => {
   for (const c of [1, 2, 3]) con.cue(9060, c);
   const seen: Array<{ progress: number; total?: number; message?: string }> = [];

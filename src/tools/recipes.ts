@@ -40,7 +40,7 @@ import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
 import { presetId, type PresetRead, type PresetRow } from "./presets.js";
 import { cueRef, readObjects } from "./common.js";
-import { axisSettingsShape, matricksValue, matricksWanted } from "./groups.js";
+import { MATRICKS_OTHER_DEFAULTS, allMatricksProps, axisSettingsShape, matricksValue, matricksWanted } from "./groups.js";
 import { MAX_BATCH_ITEMS, batchOptionShape, duplicates, hasUncertainStep, itemOk, runBatch } from "../batch.js";
 import { HeldLock } from "../mutations.js";
 import { progressSteps } from "../progress.js";
@@ -872,8 +872,8 @@ const nearValue = (a: number | null | undefined, b: number | null) => (a === nul
 /**
  * How a cue part's lines on the console differ from what gma3_store_recipe_cues would write in replace mode, by line:
  * the group, the values preset, the MAtricks (none when the request gives none), Enabled (Yes unless the request says
- * false), the name and selection mode when the request gives them, and no X / Y / Z column the request does not set.
- * Empty when they are the same, so the cue part is already done (#145).
+ * false), and the name and selection mode when the request gives them. The per-line columns are compared by
+ * columnDifferences. Empty when they are the same.
  */
 function lineDifferences(spec: RecipeCueSpec, lines: Line[], presetAddr: Map<string, string>): string[] {
   const out: string[] = [];
@@ -883,8 +883,45 @@ function lineDifferences(spec: RecipeCueSpec, lines: Line[], presetAddr: Map<str
     if (!got) return void out.push(`line ${n} is missing`);
     out.push(...checkLineFields(got, n, { selection: l.selection, valuesAddr: presetAddr.get(presetKey(l.values)) ?? "?", matricks: l.matricks, enabled: l.enabled ?? true, name: l.name, selectionMode: l.selectionMode }));
     if (l.matricks === undefined && got.matricks) out.push(`line ${n} has MAtricks ${got.matricks.no ?? "?"}`);
-    const selects = new Set(l.columns.filter((c) => c.key.endsWith(".select")).map((c) => c.property));
-    for (const a of got.axisSelect?.split(", ") ?? []) if (!selects.has(a.split(" ")[0])) out.push(`line ${n} selects ${a}`);
+  });
+  return out;
+}
+
+/** Integer columns (XWings, XBlock, ...): 0 means None, as gma3_configure_matricks writes it. */
+const INT_COLUMNS = new Set(allMatricksProps().filter((p) => !/(From|To)[XYZ]$/.test(p)));
+/**
+ * Every per-line column a recipe line carries and what it reads on a new line: the modelled MAtricks settings (None)
+ * and the other MAtricks properties at their reset values (MATRICKS_OTHER_DEFAULTS: X / Y / Z None, the inverts No,
+ * ...). Not verified on a console for recipe lines: a property a line does not have reads as absent or None.
+ */
+const LINE_COLUMN_DEFAULTS: ReadonlyMap<string, string> = new Map([...allMatricksProps().map((p) => [p, "None"] as [string, string]), ...Object.entries(MATRICKS_OTHER_DEFAULTS)]);
+const LINE_COLUMN_PROPS = [...LINE_COLUMN_DEFAULTS.keys()];
+
+/** Does a column the request leaves out read as a new line's would? */
+function columnUnset(property: string, got: unknown, inheritsMatricks: boolean): boolean {
+  if (got === undefined || got === null) return true;
+  const s = String(got).trim();
+  // A column inherited from the line's MAtricks reads "<2>": a new line with the same MAtricks inherits it too.
+  if (/^<.*>$/.test(s)) return inheritsMatricks;
+  if (s === "" || /^none$/i.test(s)) return true;
+  if (INT_COLUMNS.has(property) && /^0+$/.test(s)) return true;
+  const d = LINE_COLUMN_DEFAULTS.get(property);
+  return d !== undefined && d !== "None" && s.toLowerCase() === d.toLowerCase();
+}
+
+/**
+ * How a cue part's per-line columns differ from what replace would leave: each column the request sets reads its value,
+ * and every other one reads as on a new line (#145 review: x: {wings: 2} replaced without x, or a fade dropped from
+ * x: {select: 1, fade: ...}, must be written again).
+ */
+function columnDifferences(spec: RecipeCueSpec, columns: Map<number, Record<string, unknown>>): string[] {
+  const out: string[] = [];
+  spec.lines.forEach((l, i) => {
+    const n = i + 1;
+    const got = columns.get(n) ?? {};
+    const asked = new Map(l.columns.map((c) => [c.property, c]));
+    for (const c of l.columns) if (!nearValue(matricksValue(c.kind, got[c.property]), c.value)) out.push(`line ${n} ${c.property} reads ${JSON.stringify(got[c.property] ?? null)}`);
+    for (const p of LINE_COLUMN_PROPS) if (!asked.has(p) && !columnUnset(p, got[p], l.matricks !== undefined)) out.push(`line ${n} ${p} reads ${JSON.stringify(got[p])}, which the request does not set`);
   });
   return out;
 }
@@ -1110,11 +1147,10 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
                 const b = before.get(label(c.target)) ?? [];
                 if (b.length !== c.lines.length || b.some((l) => l.class !== "StandardRecipe")) continue;
                 if (lineDifferences(c, b, presetAddr).length) continue;
-                const props = [...new Set(c.lines.flatMap((l) => l.columns.map((col) => col.property)))];
-                if (props.length) {
-                  const columns = await readColumns(bridge, c.target, props, t);
-                  if (c.lines.some((l, i) => l.columns.some((col) => !nearValue(matricksValue(col.kind, columns.get(i + 1)?.[col.property]), col.value)))) continue;
-                }
+                // Every per-line column, not only the ones the request sets: replace recreates the line, so a column the
+                // request leaves out must read as a new line's would (a dropped wings or fade is not already done).
+                const columns = await readColumns(bridge, c.target, LINE_COLUMN_PROPS, t);
+                if (columnDifferences(c, columns).length) continue;
                 if (c.name !== undefined || c.note !== undefined) {
                   const res = await readObjects(bridge, cueRef(sequence, c.target.cue), ["Name", "Note"], 1);
                   const f = res?.items?.[0]?.fields ?? {};

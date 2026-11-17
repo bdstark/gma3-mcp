@@ -63,7 +63,8 @@ function send(s: Scope, value: number, message: string | undefined, force: boole
   s.last = value;
   s.lastSentAt = now;
   const params: Record<string, unknown> = { progressToken: s.token, progress: value };
-  if (s.total !== undefined && s.units <= s.total) params.total = s.total;
+  // The total goes only with a value that does not pass it: a beat after the last unit (a clean-up request) has none.
+  if (s.total !== undefined && value <= s.total) params.total = s.total;
   if (message) params.message = message;
   s.send({ method: "notifications/progress", params }).catch(() => undefined);
 }
@@ -101,6 +102,8 @@ export function progressSteps(total?: number): ProgressSteps {
       if (ended) return;
       ended = true;
       s.owned = false;
+      // The counter's total is over: what follows (read-backs, clean-up) is reported without one.
+      s.total = undefined;
     },
   };
 }
