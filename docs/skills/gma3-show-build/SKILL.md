@@ -59,6 +59,8 @@ The Halloween Creative build (2026-10-25) used `gma3_lua` or `gma3_command` for 
 | A recipe line's properties, a preset's recipe lines | `gma3_recipes` (`{sequence, cue}` or `{preset}`) |
 | A preset's mode, content and phaser layers | `gma3_preset` |
 | Which numbers a pool or a page already uses, a free block | `gma3_pool_usage` |
+| Which cues and executors use a preset before you change or delete it; invalid preset references in cue data (a deleted preset leaves plain values, not a reference) | `gma3_preset_usage` (`{preset: "4.12"}`, `{dangling: true}`) |
+| What two cues store differently; values that keep tracking where they should not | `gma3_cue_diff`, `gma3_tracking_leaks` |
 | A pool's presets by number | `gma3_list_children` on `Preset P`, or `gma3_objects` `Preset P.1 Thru P.40` (bridge 0.46.0; older: `Preset P.1 Thru 40`) |
 | Stages: create, rename | `gma3_patch_stages` |
 | Recipe lines, their MAtricks and fade columns, cue notes for many cues | `gma3_store_recipe_cues`, `gma3_store_cues` `note` |

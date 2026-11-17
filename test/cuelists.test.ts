@@ -32,6 +32,8 @@ interface Value {
   steps?: number[];
   phase?: number;
   speed?: number;
+  /** A Store deactivated it (live 2026-11-14: the stored values read activeValue 0 afterwards). */
+  inactive?: boolean;
 }
 interface Cue {
   no: number;
@@ -43,6 +45,8 @@ interface Cue {
   part0: Record<string, string>;
   /** fid -> attribute -> value, what was stored. */
   data: Record<string, Record<string, number>>;
+  /** fid -> attribute -> a stored phaser's step values. */
+  steps?: Record<string, Record<string, number[]>>;
 }
 interface Seq {
   name: string;
@@ -93,6 +97,10 @@ class Console {
   /** #102: the pool listings (children of DataPool.Sequences) read, in order, and whether they fail. */
   listed: string[] = [];
   failPoolList = false;
+  /** Store preferences as preset.context reads them; a Store takes what ChannelFilter selects (live 2026-11-14). */
+  prefs: Record<string, string> = { ChannelFilter: "Active", StoreSource: "Programmer" };
+  /** "fid|attribute" keys a Store leaves out (a console that did not store them). */
+  storeDrops = new Set<string>();
 
   set(fid: string, attr: string, v: Value) {
     const p = this.prog[this.env];
@@ -153,9 +161,22 @@ class Console {
       if (p) for (const f of sel) for (const [a, v] of Object.entries(p.values)) if (this.fixtures[f].includes(a)) this.set(f, a, { value: v, preset: key });
     } else if ((m = cmd.match(/^Store Sequence (\d+) Cue ([\d.]+)(?: \/(Merge|Overwrite))? \/NoConfirmation$/))) {
       const data: Cue["data"] = {};
+      const steps: NonNullable<Cue["steps"]> = {};
       let preset: string | undefined;
-      for (const [f, attrs] of this.prog[this.env]) for (const [a, v] of attrs) ((data[f] ??= {})[a] = v.value), (preset ??= v.preset);
+      const filter = this.prefs.ChannelFilter.toLowerCase();
+      for (const [f, attrs] of this.prog[this.env]) {
+        if (filter.includes("selected") && !sel.has(f)) continue;
+        for (const [a, v] of attrs) {
+          if (!filter.startsWith("all") && v.inactive) continue;
+          v.inactive = true;
+          if (this.storeDrops.has(`${f}|${a}`)) continue;
+          (data[f] ??= {})[a] = v.value;
+          if (v.steps && v.steps.length > 1) (steps[f] ??= {})[a] = [...v.steps];
+          preset ??= v.preset;
+        }
+      }
       const c = this.addCue(+m[1], +m[2], data);
+      if (Object.keys(steps).length) c.steps = steps;
       c.name = preset ? `[${preset}]` : `Cue ${m[2]}`;
       if (this.normalChangesOnStore) this.prog.Normal.set("301", new Map([["Dimmer", { value: 1 }]]));
     } else if ((m = cmd.match(/^Delete Sequence (\d+) Cue ([\d.]+)( Thru)? \/NoConfirmation$/))) {
@@ -204,6 +225,7 @@ class Console {
         attribute,
         ...(v.steps && v.steps.length > 1 ? { steps: v.steps.map((x) => ({ absolute: x })), phaser: { gridPos: order.indexOf(fid), phase: v.phase ?? 0, speed: v.speed ?? 1 } } : { value: v.value }),
         stepCount: v.steps?.length ?? 1,
+        masks: { activeValue: v.inactive ? 0 : 2, activePhaser: !v.inactive && v.steps && v.steps.length > 1 ? 2 : 0, individual: 1 },
         physicalFrom: 0,
         physicalTo: 1,
         readout: "Percent",
@@ -294,6 +316,19 @@ class Console {
     f.reset();
     f.onCommand((cmd) => this.apply(cmd));
     f.on("programmer", (args) => this.programmer(args));
+    f.on("preset.context", () => ({ preferences: { ...this.prefs }, preferencesReadable: true }));
+    f.on("preset.read", (args) => {
+      const m = String(args.ref).match(/^Sequence (\d+) Cue ([\d.]+) Part 0$/);
+      const c = m ? this.cue(+m[1], +m[2]) : undefined;
+      if (!c) throw new Error(`[not-preset] ${args.ref} does not exist`);
+      const rows = Object.entries(c.data).flatMap(([fid, attrs]) =>
+        Object.entries(attrs).map(([attribute, value]) => {
+          const st = c.steps?.[fid]?.[attribute];
+          return { fixture: fid, sfIndex: +fid, attribute, value, stepCount: st?.length ?? 1, ...(st ? { steps: st.map((x) => ({ absolute: x })) } : {}) };
+        }),
+      );
+      return { byFixtures: true, rows };
+    });
     f.on("objects", (args) => this.objects(String(args.ref), Array.isArray(args.fields) ? (args.fields as string[]) : []));
     f.on("children", (args) => {
       if (args.ref === "ShowData.Masters.Speed") return { items: [] };
@@ -1368,4 +1403,150 @@ test("store_cues: a trigger the console accepts but does not apply is reported a
   } finally {
     await h.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Stored values after the store (storeverify.ts, live 2026-11-14)
+// ---------------------------------------------------------------------------
+
+const twoCues = (sequence: number) => ({
+  sequence,
+  mode: "create",
+  fixtures: "101 + 102",
+  exclusive: true,
+  cues: [
+    { cue: 1, presets: [{ pool: 4, preset: 1 }], intensity: 100 },
+    { cue: 2, looks: [{ fixtures: "101", presets: [{ pool: 4, preset: 2 }] }, { fixtures: "102", intensity: 50, values: [{ attribute: "ColorRGB_B", value: 80, unit: "percent" }] }] },
+  ],
+});
+
+test("store_cues: each cue's Part 0 is read back after its store and compared with what ChannelFilter took from the Preview programmer", async () => {
+  const { h, c } = await setup();
+  try {
+    const { result, isError } = await h.callJson("gma3_store_cues", twoCues(951));
+    assert.equal(isError, false, JSON.stringify(result, null, 2));
+    assert.equal(result.verification.status, "matched");
+    assert.deepEqual(result.storedValues, { channelFilter: "Active", cues: 2, expected: 13, compared: 13, missing: 0, different: 0 }, "cue 1: 2 fixtures x 4; cue 2: 101's colour and 102's Dimmer and Blue");
+    assert.deepEqual(h.fake.requests.filter((r) => r.op === "preset.read").map((r) => r.args.ref), ["Sequence 951 Cue 1 Part 0", "Sequence 951 Cue 2 Part 0"]);
+    assert.match(result.valueCheck, /read back \(GetPresetData\)/);
+    const detailed = await h.callJson("gma3_store_cues", { ...twoCues(952), detail: true });
+    assert.deepEqual(
+      detailed.result.cues.map((x: any) => [x.cue, x.storedValues.expected, x.storedValues.compared]),
+      [["1", 8, 8], ["2", 5, 5]],
+    );
+    // A phaser look: its steps are compared too.
+    const ph = await h.callJson("gma3_store_cues", { sequence: 953, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101 + 102", phaser: { steps: [{ values: { ColorRGB_R: 100 } }, { values: { ColorRGB_R: 0 } }] } }] });
+    assert.equal(ph.result.verification.status, "matched", JSON.stringify(ph.result).slice(0, 2000));
+    assert.deepEqual([ph.result.storedValues.compared, ph.result.storedValues.different], [2, 0]);
+    normalUntouched(c);
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues: a value the cue did not store, or stored differently, is a mismatch on that cue; nothing is stored again", async () => {
+  const { h, c } = await setup();
+  try {
+    c.storeDrops.add("102|ColorRGB_B");
+    const { result, isError } = await h.callJson("gma3_store_cues", twoCues(954));
+    assert.equal(isError, true);
+    assert.equal(result.verification.status, "mismatched");
+    assert.deepEqual(result.cues.map((x: any) => [x.cue, x.verification]), [["1", "mismatched"], ["2", "mismatched"]]);
+    assert.match(result.cues[1].detail, /1 expected value\(s\) are not stored \(102 ColorRGB_B\)/);
+    assert.equal(result.cues[1].storedValues.missing, 1);
+    assert.equal(c.commands.filter((x) => /Store Sequence 954 Cue 2 /.test(x)).length, 1, "the store is not retried");
+    // A console that stores another value.
+    c.storeDrops.clear();
+    const read = h.fake.handlerFor("preset.read")!;
+    h.fake.on("preset.read", async (args, req) => {
+      const res = (await read(args, req)) as { rows: Array<{ fixture: string; attribute: string; value: number }> };
+      for (const r of res.rows) if (r.fixture === "101" && r.attribute === "Dimmer") r.value = 90;
+      return res;
+    });
+    const diff = await h.callJson("gma3_store_cues", { sequence: 955, mode: "create", fixtures: "101", exclusive: true, cues: [{ cue: 1, intensity: 40 }] });
+    assert.equal(diff.result.verification.status, "mismatched");
+    assert.match(diff.result.verification.detail, /101 Dimmer: 40 in the programmer, 90 stored/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues: with Active For Selected only the last look's selection is stored; the other looks' values are reported missing", async () => {
+  const { h, c } = await setup();
+  try {
+    c.prefs.ChannelFilter = "Active For Selected";
+    const { result, isError } = await h.callJson("gma3_store_cues", twoCues(956));
+    assert.equal(isError, true);
+    assert.deepEqual(result.cues.map((x: any) => [x.cue, x.verification]), [["1", "matched"], ["2", "mismatched"]], "one look on both fixtures stores everything");
+    assert.match(result.cues[1].detail, /ChannelFilter "Active For Selected" stored only the selected fixtures \(the last look's selection\): 3 value\(s\) of the cue's other looks are not in it \(101 ColorRGB_R, 101 ColorRGB_G, 101 ColorRGB_B\)/);
+    assert.deepEqual([result.cues[1].storedValues.expected, result.cues[1].storedValues.compared, result.cues[1].storedValues.leftOutByFilter], [2, 2, 3]);
+    assert.equal(result.storedValues.leftOutByFilter, 3);
+    assert.deepEqual(
+      result.warnings.filter((w: string) => /ChannelFilter/.test(w)),
+      ['Store preference ChannelFilter is "Active For Selected": a store takes only the selected fixtures\' values, so a cue with several looks keeps only its last look. The plugin\'s cue tools expect "Active" (set it in the user profile\'s store preferences).'],
+      "once per call, not per cue",
+    );
+    assert.deepEqual(Object.keys(c.cue(956, 2)!.data), ["102"], "the fake console stored what the preference takes");
+    assert.ok(h.fake.requests.some((r) => r.op === "programmer" && r.args.scope === "selection"));
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues: an unmodelled ChannelFilter compares what it finds but does not judge completeness; verify false reads nothing more", async () => {
+  const { h, c } = await setup();
+  try {
+    c.prefs.ChannelFilter = "Selective";
+    const { result, isError } = await h.callJson("gma3_store_cues", { sequence: 957, mode: "create", fixtures: "101", exclusive: true, cues: [{ cue: 1, intensity: 40 }] });
+    assert.equal(isError, false);
+    assert.equal(result.verification.status, "unavailable");
+    assert.match(result.verification.detail, /1 value\(s\) compared and matched, completeness not judged: ChannelFilter "Selective" with StoreSource "Programmer" is not modelled/);
+    assert.match(result.warnings.join(" "), /ChannelFilter is "Selective": the plugin does not model what a store then takes/);
+    h.fake.requests.length = 0;
+    c.prefs.ChannelFilter = "Active";
+    const off = await h.callJson("gma3_store_cues", { sequence: 958, mode: "create", fixtures: "101", exclusive: true, verify: false, cues: [{ cue: 1, intensity: 40 }, { cue: 2, intensity: 50 }] });
+    assert.equal(off.isError, false);
+    assert.deepEqual(h.fake.requests.filter((r) => r.op === "preset.context" || r.op === "preset.read").map((r) => r.op), ["preset.context", "preset.context"], "verify false: only the preference, before each store");
+    assert.equal(off.result.warnings, undefined);
+  } finally {
+    await h.close();
+  }
+});
+
+// Review of #129: every stored layer the programmer holds is compared, and an expected value that could not be
+// compared is never "matched".
+test("stored values: relative values, phaser step layers and missing step absolutes are compared; uncompared cells are unavailable", async () => {
+  const { verifyStoredValues } = await import("../src/tools/storeverify.ts");
+  const bridgeWith = (rows: unknown[]) => ({ request: async () => ({ rows, byFixtures: true }) }) as never;
+  const exp = (rows: unknown[]) => ({ channelFilter: "Active", storeSource: "Programmer", model: "active" as const, rows: rows as never, complete: true });
+  const check = (prog: unknown[], stored: unknown[]) => verifyStoredValues(bridgeWith(stored), "Sequence 1 Cue 1 Part 0", exp(prog), 1000);
+  const pan = { fid: "101", subfixtureIndex: 1, attribute: "Pan", value: 50 };
+
+  // A changed or lost relative value.
+  let v = await check([{ ...pan, relative: 20 }], [{ fixture: "101", attribute: "Pan", value: 50, relative: 0 }]);
+  assert.equal(v.status, "mismatched");
+  assert.match(v.detail!, /101 Pan: relative 20 in the programmer, 0 stored/);
+  v = await check([{ ...pan, relative: 20 }], [{ fixture: "101", attribute: "Pan", value: 50 }]);
+  assert.match(v.detail!, /relative 20 in the programmer, no relative value stored/);
+  v = await check([{ fid: "101", subfixtureIndex: 1, attribute: "Pan", value: null, relative: 20 }], [{ fixture: "101", attribute: "Pan", relative: 20 }]);
+  assert.equal(v.status, "matched", "a relative-only value that matches");
+
+  // Phaser steps: a missing stored absolute, a different relative or timing layer; absent stored timing is its default.
+  const prog = (steps: unknown[]) => [{ fid: "101", subfixtureIndex: 1, attribute: "Dimmer", stepCount: 2, steps }];
+  const stored = (steps: unknown[]) => [{ fixture: "101", attribute: "Dimmer", stepCount: 2, steps }];
+  v = await check(prog([{ absolute: 100 }, { absolute: 0 }]), stored([{ step: 1, absolute: 100 }, { step: 2 }]));
+  assert.equal(v.status, "mismatched");
+  assert.match(v.detail!, /step 2 absolute: 0 in the programmer, none stored/);
+  v = await check(prog([{ absolute: 100, relative: 10 }, { absolute: 0 }]), stored([{ step: 1, absolute: 100, relative: 0 }, { step: 2, absolute: 0 }]));
+  assert.match(v.detail!, /step 1 relative: 10 in the programmer, 0 stored/);
+  v = await check(prog([{ absolute: 100, width: 50 }, { absolute: 0, trans: 0 }]), stored([{ step: 1, absolute: 100, width: 50 }, { step: 2, absolute: 0 }]));
+  assert.match(v.detail!, /step 2 transition: 0 in the programmer, 100 stored/);
+  v = await check(prog([{ absolute: 100, width: 100, accel: 0 }, { absolute: 0 }]), stored([{ step: 1, absolute: 100 }, { step: 2, absolute: 0 }]));
+  assert.equal(v.status, "matched", "a timing layer at its default is left out of the stored step");
+
+  // A cell without its own FID whose stored row is not found: not compared, so unavailable, with the counts kept.
+  v = await check([{ fid: null, subfixtureIndex: 9, attribute: "Dimmer", value: 80 }], []);
+  assert.equal(v.status, "unavailable");
+  assert.match(v.detail!, /1 expected value\(s\) could not be compared/);
+  assert.deepEqual([v.storedValues!.expected, v.storedValues!.compared, v.storedValues!.notCompared], [1, 0, 1]);
 });
