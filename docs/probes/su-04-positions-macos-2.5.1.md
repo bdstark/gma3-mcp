@@ -65,7 +65,8 @@ A sub-fixture (cell, class `SubFixture`) has none of these properties: cells can
 
 ## Not established
 
-- Fixtures inside a grouping fixture: whether their position is relative to the parent.
+- Fixtures inside a grouping fixture: whether their position is relative to the parent. Until it is,
+  `gma3_place_fixtures` places one only while every grouping fixture above it is at the origin with no rotation.
 - More than one stage: whether positions are relative to the stage.
 - What `MESHMIRRORX` changes in the 3D view (the flag sticks; the effect was not looked at).
 

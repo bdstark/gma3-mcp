@@ -222,8 +222,9 @@ which properties are writable and how rotation reads back.
 `ROTDIRECT` quaternion, because the console renormalizes the angles between separate writes, and verified by
 quaternion. Mirroring is the fixture's `MESHMIRRORX` flag (the console ignores scale); mirror pairs across the stage
 centre line, lines and arcs expand into a previewable plan. Refused while the patch copy is open: its commit overwrites
-positions. No undo, so the result carries a restore list. Fixtures inside grouping fixtures are refused (not
-established).
+positions. No undo, so the result carries a restore list. Whether a fixture inside a grouping fixture is positioned
+relative to it is not established: such a fixture is placed only while every grouping fixture above it is at the
+origin with no rotation (both readings then agree), and refused otherwise, naming the grouping fixture.
 
 **Evidence:** six `gma3_lua` calls wrote `POSX/POSY/POSZ/ROTX/ROTY/ROTZ` with hand conversion from feet. Mirroring by
 `SCALEX = -1` was accepted and silently read back as `1`; the agent mirrored with `ROTY = 180`, which read back as
@@ -957,6 +958,10 @@ record [su-22-library-add-macos-2.5.1.md](docs/probes/su-22-library-add-macos-2.
 - The isolation check leaves out the default curve's Min and Max points with their default values: `DmxCurve 1`
   lists one of its two points, and a GDTF import flips which one (the next copy flips it back). Other curves' points,
   an edited end point and the curves themselves are still compared.
+- The isolation check leaves out `ORIGINALFILENAME` (bridge 0.38.1, [patch-left-open](docs/probes/patch-left-open-macos-2.5.1.md)).
+  A second case, live 2026-10-21: after a custom GDTF type ("SC390 Truss") was imported and committed, the live type
+  held the file name and the patch copy had it empty, so the first `gma3_patch_add` of that type refused to commit on
+  a bridge older than 0.38.1. Every other property, mode and name of the type is still compared.
 - Slot colours with a slightly negative component (CIE colours outside sRGB) are read; SU-19's reader refused them.
 
 ## Recommended delivery order

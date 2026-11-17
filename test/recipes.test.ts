@@ -822,15 +822,18 @@ test("the call is validated as a whole before anything is read", async () => {
 
 test("values: a number or a quoted string is refused with the plain string form it should be", async () => {
   con.part(9060, 1);
+  // gma3_edit_recipe declares values as a string, so a client never coerces "4.2" into a number; a number is a schema error.
   const num = await edit({ action: "add", selection: 908, values: 4.2 });
-  assert.match(num.result.validationErrors.join(), /values must be the plain string "4\.2" \("<pool>\.<number>"\), not a number: as numbers 4\.20 and 4\.2 are the same/);
-  const int = await edit({ action: "add", selection: 908, values: 4 });
-  assert.match(int.result.validationErrors.join(), /values must be the plain string "<pool>\.<number>" such as "4\.2", not a number/);
+  assert.equal(num.isError, true);
+  assert.match(num.text, /input validation failed[\s\S]*values/);
   const quoted = await edit({ action: "add", selection: 908, values: '"4.2"' });
   assert.match(quoted.result.validationErrors.join(), /values must be the plain string "4\.2", without quotes inside it \(got "\\"4\.2\\""\)/);
   const inBatch = await store({ mode: "append", cues: [{ cue: 1, lines: [{ selection: 908, values: 4.2 }] }] });
   assert.match(inBatch.result.validationErrors.join(), /cues\[0\]\.lines\[0\]\.values must be the plain string "4\.2"/);
   assert.equal(h.fake.requests.length, 0);
+  // The string form passes validation (the preview then reads the show).
+  const str = await edit({ action: "add", selection: 908, values: "4.2", preview: true });
+  assert.ok(!/plain string|input validation failed/.test(str.text), str.text);
 });
 
 test("a line whose X column selects one block is not predicted, so the cook is not a false mismatch; an ordinary line still is", async () => {

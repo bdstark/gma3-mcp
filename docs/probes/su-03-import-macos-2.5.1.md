@@ -48,10 +48,11 @@ Evidence for [SU-03 in SETUP.md](../../SETUP.md#su-03--find-and-import-fixture-t
 
 - A combined `ChangeDestination "ShowData"."Patch"."FixtureTypes"` lands elsewhere, and an import there answers
   "Object not found" (the standalone crash reproduction, 2026-10-14). One level per `ChangeDestination`.
-- An imported type does not record its file: `ORIGINALFILENAME` is empty. Its `Name` and `Manufacturer` match the
+- A type imported from a grandMA2 `.pxml` does not record its file: `ORIGINALFILENAME` is empty. Its `Name` and `Manufacturer` match the
   `.pxml` file name's model and manufacturer apart from case (`generic@dimmer` is "Dimmer" by "Generic",
   `oppsk@36pcs 4in1 led wall washer` is "36PCS 4in1 LED Wall Washer" by "Oppsk"), so a duplicate can be detected
-  before importing by manufacturer and name.
+  before importing by manufacturer and name. (A GDTF type does record its file in the live patch, and the patch copy
+  drops it; the isolation check leaves it out since bridge 0.38.1.)
 - `USED` and `REALUSED` on a type are 0 while no fixture uses it.
 
 ### What an import changes in the copy

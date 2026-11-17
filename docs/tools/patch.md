@@ -27,8 +27,24 @@ for its ~10 seconds.
 **Isolation check: best-effort detection.** Before committing, the tool fingerprints the copy and the live patch:
 every object and property of every patch collection, leaving out the FIDs the call touches and the data the console
 derives itself (listed in the KB-25 and KB-26 records; bridge 0.25.1 adds what a fresh fixture-type import leaves
-different; bridge 0.38.0 leaves out the default curve's Min and Max points with their default values, one of which a GDTF import swaps for the other; bridge 0.38.1 leaves out a fixture type's `ORIGINALFILENAME`, which the live type keeps after an import and every copy has empty). It compares the two, one collection per request. Anything else that
+different; bridge 0.38.0 leaves out the default curve's Min and Max points with their default values, one of which a GDTF import swaps for the other; bridge 0.38.1 leaves out a fixture type's `ORIGINALFILENAME`, which the live type keeps after an import and every copy has empty). It compares the two, one collection at a time (in parts, below). Anything else that
 differs means someone changed the show during the session: nothing is committed and the copy is left open.
+
+`ORIGINALFILENAME` is import metadata with no effect on a type's modes, channels or output: a custom GDTF type
+("SC390 Truss", 2026-10-21) held its file name in the live patch and had it empty in the copy, so the first
+`gma3_patch_add` of that type refused to commit with a FixtureTypes mismatch. It is left out on fixture types only
+(the same property on any other object is still compared), together with `USED` and `REALUSED`, the type's use counts,
+which were already left out. Nothing else on a type is: its name, manufacturer, short name, source, GUID, modes and
+geometry are all compared, and a type that differs in any of them still fails the check.
+
+Since bridge 0.51.0 a collection is read in parts: the bridge hashes for about 2 s per request and answers
+`done: false` with a `resume` point (the child index at each depth of the next object, the hash and the object count
+so far); the next request passes it back and continues exactly there, so the parts give the hash of one uninterrupted
+walk. Before, one request hashed a whole collection: on a large show (61 fixture types with geometry, 2026-10-21) the
+FixtureTypes request presumably outlived the 15 s request timeout, and the bridge, which cannot be interrupted,
+answered nothing for minutes. A part's reply timeout is the request timeout plus 2 s; an older bridge, which ignores
+the budget, gets the same timeout for a whole collection. `isolation_check`'s detail has `requests` per collection
+that needed more than one part per side.
 
 Fixture types are compared by identity, not by number (bridge 0.26.0): deleting a type renumbers the ones after it,
 and every display text naming a type carries its number. An import session leaves out what an import appends: the
@@ -50,7 +66,7 @@ required rather than implied.
 | `check_add` / `check_edits` / `check_fixtures` | read | `patch.check` | The tool's pre-flight (below) |
 | `enter` | mutation | `patch.enter` | Queues the two `ChangeDestination` commands into the copy and its stage's Fixtures |
 | `wait_copy` | read | `patch.state` | Polls (100 ms, up to 3 s) until the copy is open at that destination. From bridge 0.45.0 the stage is compared by the destination object's address (`patch.enter`'s `stageIndex` against `patch.state`'s `destinationStage`), not its text: the console shows a named stage's Fixtures as `Stage 1 'Main Floor'.Fixtures` and only an unnamed one as `Stage 1.Fixtures` (#98). An older bridge is still compared by its exact `expectDestination`, which only an unnamed stage matches. A copy open at another destination fails the step with "the command line destination is X, expected Y" |
-| `add` / `set` / `remove` | mutation | `patch.add` / `patch.set` / `patch.remove` | The change, in the copy only |
+| `add` / `set` / `remove` | mutation | `patch.add` / `patch.set` / `patch.remove` | The change, in the copy only. Its reply timeout grows with the console calls it makes (below) |
 | `isolation_check` | read | `patch.collections`, `patch.fingerprint` | Fingerprints of copy and live per collection, touched FIDs left out |
 | `commit` | mutation | `patch.commit` | Queues `ChangeDestination Root` |
 | `wait_commit` | read | `patch.state` | Polls until the destination is Root and the copy is closed |
@@ -68,13 +84,35 @@ commits without a question, like the tools' own commit. No way to discard the co
 its "Discard and Exit" only appears when the copy was opened through the menu (KB-25). When the Patch menu itself is
 open on a display (someone is patching there), close it there with **Save and Exit** or **Discard and Exit**.
 
+**Slow edits.** Each `Set` in the copy can be slow on a large show. A `gma3_patch_set` of 22 readdresses failed on
+2026-10-21 with the copy left open, probably because the edit outlived the 15 s request timeout (not established:
+the outcome was `failed`, not `unknown`, which also fits a refused edit whose close check could not prove the copy
+unchanged, or a close check that timed out like the import's isolation check above). So the change step's reply
+timeout is the request timeout plus 500 ms per console call it may make: `patch.set` 2 × (per readdress 1 + its
+patched breaks, per name 1), doubled for the restore; `patch.add` 3 per fixture; `patch.remove` 1 per fixture. And
+`patch.set` sends only the `Set`s it needs (below).
+
+**A request without a reply** is never resent. The bridge runs one request at a time and cannot interrupt it, so the
+console may still be working on it. After a change step, a settle step, the enter or a fingerprint request that got
+no reply, the tool pings the bridge (step `wait_bridge`, pings of 1, 2, 4, 8 and 15 s) for up to four request
+timeouts, or the edit's own timeout if longer. On one connection the bridge answers in order, so an answered ping
+proves the request is over. Then:
+- after a change step: `inspect_copy` reads the touched fixtures in the copy (`patch.list` `side: "copy"`) and the
+  summary says which are as requested, as before the call, or neither; then the copy is closed only if it provably
+  holds no change. Closed unchanged, the outcome is `failed` (the call provably changed nothing; not for an import,
+  which lands a frame later); left open, `unknown`;
+- after an isolation check: nothing is committed and the check is not repeated; `failed`, `copyLeftOpen: true`;
+- if the bridge does not answer within the wait: nothing more is sent, the outcome is `unknown` with
+  `copyLeftOpen: true` (or `"unknown"` when the copy may not have opened), and the summary says to resolve the copy
+  once `gma3_status` answers again.
+
 **Outcome.** The outcome is decided per session, not by counting steps:
 
 | Outcome | When |
 | --- | --- |
 | `succeeded` | The change was committed and the copy closed. `committed: true`; `verification` reports the read-back |
-| `failed` | Nothing was committed (`committed: false`): a refusal before anything was sent, a refused change with the copy closed again, or a failed isolation check (`copyLeftOpen: true`) |
-| `unknown` | A step after `enter` got no reply, the copy never opened (a copy open at the wrong destination is `failed`), or the commit was not confirmed; `committed` / `copyLeftOpen` say what is known |
+| `failed` | Nothing was committed (`committed: false`): a refusal before anything was sent, a refused change (the copy closed again, or left open when it could not be proven unchanged), a change without a reply whose copy was verified unchanged and closed, or a failed isolation check (`copyLeftOpen: true`) |
+| `unknown` | A step after `enter` got no reply (and the copy was not verified unchanged), the bridge did not answer again, the copy never opened (a copy open at the wrong destination is `failed`), or the commit was not confirmed; `committed` / `copyLeftOpen` say what is known |
 
 **Result size (#100).** On a clean success (`succeeded`, read-back `matched` or `not_requested`), `gma3_patch_set`,
 `gma3_patch_add` with `count` above 1, `gma3_patch_move` and `gma3_patch_retype` return `items`, one entry per fixture
@@ -84,14 +122,33 @@ details) are left out. Anything else is returned whole, and `detail: true` retur
 A clean rename of 88 fixtures returned 171 KB before (79 KB of it without the indentation), more than the client takes
 in one result; the compact form is about 6 KB.
 
+**Reading a result.** The result is serialised answer first: `operation`, `outcome`, `summary`, `failure` (the first
+failed or unanswered step: `step`, `status`, `op`, `error`), then plain fields (`committed`, `copyLeftOpen`, ...),
+`target`, `verification`, the other fields, and `steps` last, so a client that shortens a long result by cutting its
+middle keeps the answer. In the full result fixture rows appear once: `before` / `after` (`gma3_patch_set`), `fixtures`
+(`gma3_patch_add`), `removed` (`gma3_patch_remove`); the steps and `verification.actual` carry compact
+`{fid, patch, name}` values.
+
 **Bridge-side safety net.** Each mutating op re-checks in the console:
 - `patch.add`: the copy, the destination (the Fixtures of the named stage, by address from bridge 0.45.0), a free FID range, a free DMX range inside one universe, a single-break
   mode. It calls `AddFixtures` once per fixture (amount 1, the fixture's own FID and address; bridge 0.25.2), stops
   at the first call that fails, checks that exactly the requested fixtures exist where requested, and deletes them
   again on any problem. A single call for a whole block crashed onPC 2.5.1 for a mode with cells (see
   [SETUP.md](../../SETUP.md) SU-02).
-- `patch.set`: unpatches every fixture it readdresses first and then applies the new addresses, so swaps work. It
-  checks the new ranges against every other fixture and restores every change of the call on any problem.
+- `patch.set` (bridge 0.51.0) sends only the `Set`s it needs. A readdressed fixture whose current range a new range
+  of the call overlaps (its own new range included, so swaps and moves across its own range work) is unpatched first;
+  any other readdress is one `Set("Patch", new)` (KB-25: a patched fixture can be readdressed directly). A fixture
+  whose range cannot be read is unpatched first. Before 0.51.0 every readdressed fixture was unpatched first, two
+  `Set`s each. It checks the new ranges against every other fixture and, on any problem, restores every change of
+  the call and reads it back; the error says whether that restore was verified ("every change of this call was
+  restored in the copy") or not ("THE RESTORE COULD NOT BE VERIFIED", with `unrestored` FIDs). The reply has, per
+  edit, `before` (`{patch, name}`) and `after`, plus `sets` (the `Set`s made), `unpatchedFirst` and `ms`.
+- **Multi-break fixtures** (bridge 0.51.0): `Set("Patch", "")` leaves a multi-break fixture's breaks patched (live
+  2026-10-21), so `patch.set` unpatches one break by break, the highest first (`Set("Break2", "")`, then
+  `Set("Break1", "")`), restores one the same way, and reads back that no break is left. An unpatched multi-break
+  fixture displays its Patch as `","` (both breaks raw -1); the bridge reports it as `""`, like any unpatched fixture,
+  everywhere (rows, read-backs, range checks), and the tools read an older bridge's `","` the same way. A partly
+  patched one keeps its text (`"3.202,"`). Readdressing a multi-break fixture is refused.
 - **Unreadable occupancy is never free space.** A patched fixture whose range cannot be established makes every
   range check report it as `occupancyUnknown`, and an add or readdress is refused, both in the pre-flight and in the
   copy. Such a fixture has an unreadable break, a break that is not an address, a DMX mode that cannot be read, or a
@@ -162,7 +219,8 @@ i × footprint), name (when given) and mode.
 
 Pre-flight (`patch.check` `edits`), nothing sent on failure:
 - every FID exists;
-- readdressed fixtures use single-break modes;
+- readdressed fixtures use single-break modes (a multi-break fixture can be unpatched, every break, and renamed;
+  bridge 0.51.0);
 - the new ranges overlap no other patched fixture. The moving fixtures' own current ranges are ignored, so swaps and
   moves across a fixture's own range pass.
 

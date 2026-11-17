@@ -90,7 +90,7 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_patch_types` | Read-only: the show's fixture types and DMX modes with footprint and breaks |
 | `gma3_patch_list` | Read-only: fixtures of the live patch (all stages, sub-fixtures) with FID, CID, type, mode, address, breaks, stage; FID range filter |
 | `gma3_patch_add` | Add fixtures of one type/mode at consecutive FIDs, patched from an address or the first free block; pre-checked, committed, read back; a stage with a Name (any session on one) needs bridge 0.45.0 |
-| `gma3_patch_set` | Readdress (swaps and moves across a fixture's own range work), unpatch or rename fixtures |
+| `gma3_patch_set` | Readdress (swaps and moves across a fixture's own range work), unpatch (a multi-break fixture break by break, bridge 0.51.0) or rename fixtures |
 | `gma3_patch_remove` | Delete fixtures (not ones with sub-fixtures) |
 | `gma3_patch_move` | Move fixtures under a top-level grouping fixture (the MA Show Start's FID 1-8) or back to the top level: Cut, ChangeDestination, Paste and the console's Move Fixtures dialog (absolute or relative 3D placement) answered by the bridge; read back against the state before: parent, address, groups, 3D pose (bridge 0.42.0) |
 | `gma3_patch_stages` | List the stages (position, name, fixtures, spaces), or create, rename or remove (only empty ones after the first) stages in one patch session; names unique ignoring case, also after a removal; read back from the live patch (bridge 0.48.0; 0.49.0 for the bridge-side removal checks) |
@@ -104,7 +104,7 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_apply_preset` | `At Preset` on a target (by number or name); refused for a missing preset or an empty target; read back by the programmer's preset link (bridge 0.27.0) |
 | `gma3_release_attributes` | `Off Attribute` (`Off Attribute Thru` for every value) on an established target; read back by comparing the whole programmer, collateral included |
 | `gma3_fixture_positions` | Read-only: position, rotation (with its quaternion) and mesh mirroring of fixtures, in m, cm, mm, ft or in, with the axes' meaning |
-| `gma3_place_fixtures` | Place fixtures in 3D: positions, rotations (written as one quaternion), mesh mirroring; line, arc and mirror-pair layouts; preview; read back by quaternion; returns a restore list (no undo) |
+| `gma3_place_fixtures` | Place fixtures in 3D: positions, rotations (written as one quaternion), mesh mirroring; line, arc and mirror-pair layouts; preview; read back by quaternion; returns a restore list (no undo). A fixture inside a grouping fixture only while every grouping fixture above it is at the origin with no rotation |
 | `gma3_layout_cells` | Lay out a fixture's cells (string lights, pixel strands) along a line, square wave, zigzag or points, in explicit units: shared (the type's layout; `affects` must name every fixture that moves) or own (a copy of the type for some fixtures); read back per cell; returns the previous positions (bridge 0.29.0) |
 | `gma3_assign_cell_layout` | Move fixtures to another layout type of their fixture (a copy, or back to the original) in an isolated patch session (bridge 0.29.0) |
 | `gma3_dialog` | Read the console's top dialog (title, message, buttons) or press one button by its text, only while the dialog still shows what was read; reports whether it closed (bridge 0.42.0) |
@@ -194,13 +194,19 @@ whether to continue, inspect console state, or stop:
 ```jsonc
 {
   "operation": "store_cue",
-  "target": { "sequence": 1, "cue": "2.5" },
   "outcome": "succeeded",              // succeeded | failed | partial | unknown
+  "summary": "store_cue succeeded. read-back matched.",
+  "target": { "sequence": 1, "cue": "2.5" },
   "verification": { "status": "matched" },  // matched | mismatched | unavailable | not_requested
-  "steps": [ { "name": "store", "status": "succeeded", "op": "cmd", "command": "Store Sequence 1 Cue 2.5 /NoConfirmation", "feedback": "OK" } ],
-  "summary": "store_cue succeeded. read-back matched."
+  "steps": [ { "name": "store", "status": "succeeded", "op": "cmd", "command": "Store Sequence 1 Cue 2.5 /NoConfirmation", "feedback": "OK" } ]
 }
 ```
+
+* The result is serialised answer first, because MCP clients shorten a long result by cutting out its middle:
+  `operation`, `outcome`, `summary`, then `failure` when a step failed or got no reply (`{step, status, op?, error?}`
+  of the first such step), `warnings` / `validationErrors`, the fields with plain values (`committed`,
+  `copyLeftOpen`, ...), `target`, `verification`, the other structured fields, and `steps` last. The fields are the
+  same as before; only `failure` is new, and it repeats the step's own data.
 
 * Recognised negative command-line feedback (`Syntax Error`, `Illegal Command`, `... does not exist`, ...) is a
   failure. Feedback the server does not recognise makes the step `unknown`; it is never assumed to be success.

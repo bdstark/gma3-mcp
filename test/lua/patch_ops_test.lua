@@ -70,6 +70,9 @@ CurrentUser = function() return nil end
 -- The mock console
 -------------------------------------------------------------------------------
 
+-- Every Set on a fixture, in order ("<fid>:<PROPERTY>=<value>"): patch.set sends only the Sets it needs (bridge 0.51.0).
+local fixtureSets = {}
+
 local Obj = {}
 -- A child is reachable by name (p.AttributeDefinitions, LivePatch[collection]), as on the console.
 Obj.__index = function(t, k)
@@ -105,6 +108,23 @@ function Obj:Get(k, role)
 end
 function Obj:Set(k, v)
   k = k:upper()
+  if self.class == "Fixture" then fixtureSets[#fixtureSets + 1] = tostring(rawget(self, "FID")) .. ":" .. k .. "=" .. tostring(v) end
+  local nb = rawget(self, "breakCount")
+  if nb then
+    -- A multi-break fixture as on onPC 2.5.1 (live 2026-10-21): Set("Patch", ...) changes nothing, each break is set on
+    -- its own, and Patch displays the breaks joined by "," ("," with none patched). refuseBreakAddress: a break write
+    -- with an address is ignored (an unverified restore).
+    if k == "PATCH" then return end
+    if k:match("^BREAK%d$") then
+      if v ~= "" and rawget(self, "refuseBreakAddress") then return end
+      if self.pv[k] == nil then self.pn[#self.pn + 1] = k end
+      self.pv[k] = v
+      local t = {}
+      for i = 1, nb do t[i] = self.pv["BREAK" .. i] or "" end
+      self.pv.PATCH = table.concat(t, ",")
+      return
+    end
+  end
   if k == "PATCH" or k == "BREAK1" then self.pv.PATCH = v; self.pv.BREAK1 = v; return end
   -- #97: a stage's Name. The console drops characters it does not take in a name (MockStageNameFilter stands in);
   -- an empty Name reads as the default "Stage <no>" (#98).
@@ -159,13 +179,20 @@ local MODE8 = mode(3, "Ch08", 8)
 local MODE1 = mode(1, "Mode 0", 1)
 local MODE2B = mode(1, "Two Breaks", 4, "0,1,0,1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1")
 local GROUPMODE = mode(1, "Default", 0, "-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1")
-local function ftype(no, name, modes, manufacturer) local t = obj("FixtureType", name, no, { { "MANUFACTURER", manufacturer or "Test" }, { "SHORTNAME", name:sub(1, 6) }, { "REALUSED", 0 }, { "GUID", "G-" .. name .. "-" .. no }, { "ORIGINALFILENAME", "" } }, { obj("DMXModes", "DMXModes", 1, {}, modes) }); t.DMXModes = t.kids[1]; return t end
+local function ftype(no, name, modes, manufacturer) local t = obj("FixtureType", name, no, { { "MANUFACTURER", manufacturer or "Test" }, { "SHORTNAME", name:sub(1, 6) }, { "ORIGINALFILENAME", "" }, { "USED", 0 }, { "REALUSED", 0 }, { "GUID", "G-" .. name .. "-" .. no } }, { obj("DMXModes", "DMXModes", 1, {}, modes) }); t.DMXModes = t.kids[1]; return t end
 -- A console-derived subfixture list (on the console it sits in each DMX mode; the mock's modes are shared
 -- between live and copy, so it hangs off the type here). The copy renumbers its geometry references.
 local function overview() return obj("SubfixtureOverview", "SubfixtureOverview", 2, {}, { obj("FTSubfixture", "Instance2", 1, { { "INDEX", 2 } }) }) end
 
 local function fixture(name, fid, m, patch, kids)
   return obj("Fixture", name, fid, { { "FID", fid }, { "CID", "None" }, { "IDTYPE", "IDs 1 'Fixture'" }, { "FIXTURETYPE", "x" }, { "MODEDIRECT", "x" }, { "MODE", m.name }, { "PATCH", patch }, { "BREAK1", patch }, { "SUBFIXTUREINDEX", fid } }, kids, { FID = fid, ModeDirect = m })
+end
+-- A fixture of the two-break mode, patched like the ADB Warp of the live report: Patch "3.202,3.116", Break1 "3.202",
+-- Break2 "3.116".
+local function twoBreakFixture(name, fid, b1, b2)
+  local f = fixture(name, fid, MODE2B, b1 .. "," .. b2)
+  f.pv.BREAK1 = b1; f.pn[#f.pn + 1] = "BREAK2"; f.pv.BREAK2 = b2; f.breakCount = 2
+  return f
 end
 
 local function buildLive()
@@ -398,7 +425,9 @@ local function occupied(p)
   local r = {}
   for _, f in ipairs(allFixtures(p)) do
     local fp = f.ModeDirect and tonumber(f.ModeDirect.pv.TOTALFOOTPRINT) or 0
-    if f.pv.PATCH ~= "" and fp > 0 then local s = parse(f.pv.PATCH); r[#r + 1] = { s, s + fp - 1 } end
+    if rawget(f, "breakCount") then
+      for b = 1, f.breakCount do local a = f.pv["BREAK" .. b]; if a and a ~= "" then local s = parse(a); r[#r + 1] = { s, s + 1 } end end
+    elseif f.pv.PATCH ~= "" and fp > 0 then local s = parse(f.pv.PATCH); r[#r + 1] = { s, s + fp - 1 } end
   end
   return r
 end
@@ -485,7 +514,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.50.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.51.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -559,6 +588,28 @@ check("a real change to an attribute still changes the fingerprint", fpOf("copy"
 copyAttr:Set("PRETTY", "PixelMask")
 check("(the attribute change is undone again)", fpOf("copy") == fpOf("live"))
 
+-- A fixture type imported from a GDTF file and committed (live 2026-10-21, "SC390 Truss", the first
+-- gma3_patch_add of ten fixtures refused to commit): the live type records the file (ORIGINALFILENAME) and its use
+-- (USED, REALUSED); the copy drops the file name and counts no use. That is import metadata, not a foreign change. (ORIGINALFILENAME is
+-- in PATCH_FP_PROP_SKIP since 0.38.1, on every object; USED and REALUSED were already left out.)
+local liveType, copyType = console.live.FixtureTypes.kids[3], console.copy.FixtureTypes.kids[3]
+liveType:Set("ORIGINALFILENAME", "ma@sc390_truss.gdtf"); liveType:Set("USED", 10); liveType:Set("REALUSED", 10)
+check("a type that differs only in ORIGINALFILENAME, USED and REALUSED leaves the fingerprint equal", fpOf("copy") == fpOf("live"), fpOf("copy") .. " | " .. fpOf("live"))
+check("(the fixture type collection is fingerprinted completely)", request("patch.fingerprint", { side = "copy", collection = "FixtureTypes" }).result.complete == true)
+-- ... but any other difference on that same type is still caught, whatever the file name says.
+copyType:Set("NAME", "Mega Hex Par 2")
+check("a renamed type still changes the fingerprint", fpOf("copy") ~= fpOf("live"))
+copyType:Set("NAME", "Mega Hex Par")
+check("(the rename is undone again)", fpOf("copy") == fpOf("live"))
+local extraMode = mode(5, "Extra", 2)
+table.insert(copyType.DMXModes.kids, extraMode)
+check("a mode added to the type still changes the fingerprint", fpOf("copy") ~= fpOf("live"))
+table.remove(copyType.DMXModes.kids)
+check("(the added mode is removed again)", fpOf("copy") == fpOf("live"))
+copyType:Set("MANUFACTURER", "Other")
+check("another metadata property of the type (Manufacturer) still changes the fingerprint", fpOf("copy") ~= fpOf("live"))
+copyType:Set("MANUFACTURER", "Test")
+check("(the manufacturer is restored)", fpOf("copy") == fpOf("live"))
 local atFixtures = console.destObj
 console.dest = "ShowData.Patch"; console.destObj = console.copy
 r = request("patch.add", with({ stage = "Stage 1", type = 6, mode = 3, fid = 901, count = 2, address = "2.001" }))
@@ -661,6 +712,123 @@ check("with every mode readable again the occupancy is complete", r.ok and #r.re
 
 r = request("patch.fingerprint", { side = "copy", collection = "Stages" })
 check("patch.fingerprint of the copy outside a session is refused", r.ok == false and r.code == "copy-closed", J(r))
+
+-------------------------------------------------------------------------------
+-- Bridge 0.51.0: patch.set sends only the Sets it needs (22 unpatch-then-set readdresses outlived the request timeout,
+-- live 2026-10-21), and unpatches a multi-break fixture break by break (Set("Patch", "") left its breaks)
+-------------------------------------------------------------------------------
+
+reset()
+local function copyFx(fid) for _, f in ipairs(allFixtures(console.copy)) do if f.FID == fid then return f end end end
+local function addWarp(p) local w = twoBreakFixture("Warp", 601, "3.202", "3.116"); w.TypeRef = p.FixtureTypes.kids[5]; local fx = p.Stages.kids[1].Fixtures; fx.kids[#fx.kids + 1] = w; return w end
+addWarp(console.live)
+r = request("patch.list", { fromFid = 601, toFid = 601 })
+check("a patched two-break fixture lists its patch and both breaks", r.ok and r.result.fixtures[1].patch == "3.202,3.116" and #r.result.fixtures[1].breaks == 2 and r.result.fixtures[1].breaks[2].address == "3.116", J(r))
+local probeWarp = twoBreakFixture("Probe", 699, "3.300", "3.310")
+probeWarp:Set("Patch", "")
+check("(the mock, as live: Set(\"Patch\", \"\") leaves a two-break fixture's breaks as they were)", probeWarp.pv.BREAK1 == "3.300" and probeWarp.pv.PATCH == "3.300,3.310")
+enter()
+fixtureSets = {}
+r = request("patch.set", with({ edits = { { fid = 401, address = "2.101" }, { fid = 402, address = "2.109" }, { fid = 403, address = "2.117" } } }))
+check("readdresses into free space are one Set each, nothing unpatched first", r.ok and r.result.sets == 3 and #r.result.unpatchedFirst == 0 and #fixtureSets == 3 and fixtureSets[1] == "401:PATCH=2.101" and type(r.result.ms) == "number", J(r) .. " " .. table.concat(fixtureSets, ","))
+fixtureSets = {}
+r = request("patch.set", with({ edits = { { fid = 401, address = "2.109" }, { fid = 402, address = "2.125" } } }))
+check("a chain (401 onto 402's range, 402 elsewhere) unpatches only the fixture in the way first",
+  r.ok and r.result.sets == 3 and #r.result.unpatchedFirst == 1 and r.result.unpatchedFirst[1] == 402 and table.concat(fixtureSets, ",") == "402:PATCH=,401:PATCH=2.109,402:PATCH=2.125", J(r) .. " " .. table.concat(fixtureSets, ","))
+fixtureSets = {}
+r = request("patch.set", with({ edits = { { fid = 401, address = "2.117" }, { fid = 403, address = "2.109" } } }))
+check("a swap unpatches both first (4 Sets)", r.ok and r.result.sets == 4 and #r.result.unpatchedFirst == 2 and copyFx(401).pv.PATCH == "2.117" and copyFx(403).pv.PATCH == "2.109", J(r))
+fixtureSets = {}
+r = request("patch.set", with({ edits = { { fid = 403, address = "2.105" } } }))
+check("a move across the fixture's own range unpatches it first", r.ok and r.result.sets == 2 and r.result.unpatchedFirst[1] == 403 and r.result.edits[1].after.patch == "2.105", J(r))
+r = request("patch.set", with({ edits = { { fid = 601, address = "4.001" } } }))
+check("readdressing a multi-break fixture is still refused", r.ok == false and r.code == "multi-break", J(r))
+fixtureSets = {}
+r = request("patch.set", with({ edits = { { fid = 601, address = "" } } }))
+local cw = copyFx(601)
+check("a multi-break fixture is unpatched break by break, the highest first", r.ok and table.concat(fixtureSets, ",") == "601:BREAK2=,601:BREAK1=" and cw.pv.BREAK1 == "" and cw.pv.BREAK2 == "", J(r) .. " " .. table.concat(fixtureSets, ","))
+check("its patch, which the console displays as \",\", is reported as unpatched, with no breaks", r.ok and cw.pv.PATCH == "," and r.result.edits[1].after.patch == "" and #r.result.edits[1].after.breaks == 0 and r.result.edits[1].before.patch == "3.202,3.116", J(r))
+r = request("patch.list", { side = "copy", fromFid = 601, toFid = 601 })
+check("patch.list of the copy reports it unpatched", r.ok and r.result.fixtures[1].patch == "" and #r.result.fixtures[1].breaks == 0, J(r))
+request("patch.commit", X); frame()
+r = request("patch.check", { add = { type = 6, mode = 3, fid = 905, count = 2, address = "3.113" } })
+check("after the commit its former ranges are free space, not unknown occupancy", r.ok and r.result.dmxFree == true and #r.result.conflicts == 0 and #r.result.occupancyUnknown == 0, J(r))
+r = request("patch.check", { edits = { { fid = 501, address = "3.202" } } })
+check("a readdress onto them is no conflict", r.ok and #r.result.conflicts == 0 and #r.result.occupancyUnknown == 0, J(r))
+
+-- The restore puts a multi-break fixture back break by break, and reads it back.
+reset()
+addWarp(console.live)
+enter()
+fixtureSets = {}
+r = request("patch.set", with({ edits = { { fid = 601, address = "" }, { fid = 401, address = "1.009" } } }))
+cw = copyFx(601)
+check("a failing call restores the multi-break fixture's breaks and says the restore was verified",
+  r.ok == false and r.code == "set-failed" and r.detail.restored == true and r.error:find("every change of this call was restored") and cw.pv.BREAK1 == "3.202" and cw.pv.BREAK2 == "3.116" and cw.pv.PATCH == "3.202,3.116", J(r))
+local putBack = table.concat(fixtureSets, ",")
+check("(the breaks were put back one by one; Set(\"Patch\") was not relied on)", putBack:find("601:BREAK1=3.202", 1, true) and putBack:find("601:BREAK2=3.116", 1, true), putBack)
+check("after the verified restore the copy equals the live patch", fpOf("copy") == fpOf("live"))
+cw.refuseBreakAddress = true
+r = request("patch.set", with({ edits = { { fid = 601, address = "" }, { fid = 401, address = "1.009" } } }))
+check("a restore that does not read back says so: the copy may still hold part of the change",
+  r.ok == false and r.code == "set-failed" and r.detail.restored == false and r.error:find("THE RESTORE COULD NOT BE VERIFIED") and r.detail.unrestored[1]:find("FID 601"), J(r))
+check("(and the copy differs from the live patch, so the client cannot close it as unchanged)", fpOf("copy") ~= fpOf("live"))
+
+-------------------------------------------------------------------------------
+-- Bridge 0.51.0: a collection fingerprinted in bounded parts gives the hash of one uninterrupted walk
+-------------------------------------------------------------------------------
+
+reset()
+enter()
+local function fpWhole(side, c, extra)
+  local a = { side = side, collection = c, excludeFids = { 402 } }
+  for k, v in pairs(extra or {}) do a[k] = v end
+  return request("patch.fingerprint", a)
+end
+local function fpParts(side, c, maxObjects, extra)
+  local resume, parts, res = nil, 0, nil
+  repeat
+    local a = { side = side, collection = c, excludeFids = { 402 }, maxObjects = maxObjects, resume = resume }
+    for k, v in pairs(extra or {}) do a[k] = v end
+    res = request("patch.fingerprint", a)
+    parts = parts + 1
+    resume = res.ok and res.result.resume or nil
+  until not res.ok or res.result.done ~= false or parts > 500
+  return res, parts
+end
+local cols = request("patch.collections", {}).result
+local allEqual, split, failures2 = true, 0, {}
+for _, side in ipairs({ "live", "copy" }) do
+  for _, c in ipairs(cols[side]) do
+    local whole = fpWhole(side, c)
+    for _, m in ipairs({ 1, 2, 5 }) do
+      local part, parts = fpParts(side, c, m)
+      local same = whole.ok and part.ok and whole.result.done == true and part.result.objects == whole.result.objects and part.result.hash == whole.result.hash and part.result.complete == whole.result.complete
+      if not same then allEqual = false; failures2[#failures2 + 1] = side .. "/" .. c .. "/" .. m .. ": " .. J(whole) .. " vs " .. J(part) end
+      if parts > 1 then split = split + 1 end
+    end
+  end
+end
+check("every collection, both sides, in parts of 1, 2 and 5 objects: the same objects and hash as in one request", allEqual and split > 0, table.concat(failures2, " | "))
+local first = request("patch.fingerprint", { side = "live", collection = "FixtureTypes", maxObjects = 3 })
+check("a part reports done = false and a resume object with the hash as hex text", first.ok and first.result.done == false and type(first.result.resume.hash) == "string" and first.result.resume.hash:match("^%x+$") and #first.result.resume.cursor >= 1 and first.result.resume.objects == 3, J(first))
+check("a whole walk reports done = true and no resume object", fpWhole("live", "FixtureTypes").result.done == true and fpWhole("live", "FixtureTypes").result.resume == nil)
+r = request("patch.fingerprint", { side = "live", collection = "FixtureTypes", resume = { cursor = {}, hash = "zz", objects = 1 } })
+check("a malformed resume object is refused", r.ok == false and r.code == "bad-args", J(r))
+local sock = require("socket")
+local realClock, tick = sock.gettime, 0
+sock.gettime = function() tick = tick + 0.001; return tick end -- every reading of the clock advances 1 ms
+r = request("patch.fingerprint", { side = "live", collection = "FixtureTypes", budgetMs = 4 })
+sock.gettime = realClock
+check("budgetMs stops the walk after that much time and hands back where to go on", r.ok and r.result.done == false and r.result.objects >= 1 and r.result.resume ~= nil, J(r))
+request("patch.commit", X); frame()
+-- The import guide (prefixOfLive) gives the same hash in parts too.
+request("patch.enter", { exclusive = true, target = "fixturetypes" }); frame()
+r = request("patch.import", with({ file = "generic@dimmer.pxml" })); frame()
+local guided = fpWhole("copy", "FixtureTypes", { prefixOfLive = true })
+local guidedParts, gp = fpParts("copy", "FixtureTypes", 2, { prefixOfLive = true })
+check("an import's copy guided by the live patch: the same hash in parts", guided.ok and guidedParts.ok and gp > 1 and guidedParts.result.hash == guided.result.hash and guidedParts.result.objects == guided.result.objects and guided.result.hash == fpWhole("live", "FixtureTypes").result.hash, J(guided) .. " vs " .. J(guidedParts))
+request("patch.commit", X); frame()
 
 -------------------------------------------------------------------------------
 -- SU-03: library search, import, removal

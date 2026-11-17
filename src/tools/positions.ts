@@ -14,6 +14,8 @@
  *     ((30, 100, 20) became (-150, 80, 20), live). A rotation is written as one ROTDIRECT quaternion instead.
  *   - SCALEX/Y/Z ignore writes (no error): not offered. MESHMIRRORX takes the text "1" / "0" only.
  *   - An open patch copy overwrites position writes when it is committed: refused while the copy is open.
+ *   - Whether a fixture inside a grouping fixture is positioned relative to it is not established: such a fixture is
+ *     placed only while every grouping fixture above it is at the origin with no rotation (both readings then agree).
  *   - No undo (Oops fails): the result carries every fixture's previous values for a manual restore.
  */
 import { z } from "zod";
@@ -21,7 +23,7 @@ import type { Gma3Bridge } from "../bridge.js";
 import { asRead, buildResult, compactItems, notRequested, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { Validator, ValidationError, describe, finiteNumber } from "../validate.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
-import { COPY_OPEN_HELP, listFids } from "./patch.js";
+import { COPY_OPEN_HELP, listFids, type FixtureRow } from "./patch.js";
 
 // ---------------------------------------------------------------------------
 // Units, rotations, layouts (pure)
@@ -353,6 +355,9 @@ function poseOut(p: FixturePose, unit: Unit) {
 
 const POS_TOL_M = 0.0001; // read raw: full precision
 const FRAME_WAIT_MS = 150; // the console renormalizes rotations a frame later
+const IDENTITY: Quat = [0, 0, 0, 1];
+/** Grouping levels read above a fixture before giving up (a deeper chain is refused). */
+const MAX_GROUP_DEPTH = 16;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface Final {
@@ -399,19 +404,47 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
       return done(`${op} was not performed; the patch state could not be read.`, notRequested());
     }
     let before: Map<number, FixturePose>;
+    // Grouping fixtures above each fixture of the call, nearest first (empty for a top-level fixture).
+    const chains = new Map<number, number[]>();
+    const rows = new Map<number, FixtureRow>();
     try {
-      const rows = await listFids(bridge, allFids, t);
+      for (const [fid, r] of await listFids(bridge, allFids, t)) rows.set(fid, r);
       const problems: string[] = [];
-      for (const fid of allFids) {
-        const r = rows.get(fid);
-        if (!r) problems.push(`no fixture with FID ${fid}`);
-        else if (typeof r.depth === "number" && r.depth > 0) problems.push(`FID ${fid} is inside a grouping fixture (FID ${r.parentFid}): whether its position is relative to the parent is not established`);
+      for (const fid of allFids) if (!rows.has(fid)) problems.push(`no fixture with FID ${fid}`);
+      // A fixture inside a grouping fixture: read the grouping fixtures above it, level by level.
+      const tried = new Set<number>(allFids);
+      for (let level = 0; level < MAX_GROUP_DEPTH; level++) {
+        const parents = [...new Set([...rows.values()].filter((r) => (r.depth ?? 0) > 0 && typeof r.parentFid === "number" && !tried.has(r.parentFid)).map((r) => r.parentFid as number))];
+        if (!parents.length) break;
+        for (const f of parents) tried.add(f);
+        for (const [fid, r] of await listFids(bridge, parents, t)) rows.set(fid, r);
       }
-      before = await readPoses(bridge, allFids, t);
       for (const fid of allFids) {
+        let r = rows.get(fid);
+        if (!r || (r.depth ?? 0) === 0) continue;
+        const chain: number[] = [];
+        while (r && (r.depth ?? 0) > 0) {
+          const parent = r.parentFid;
+          if (typeof parent !== "number" || !Number.isInteger(parent)) {
+            problems.push(`FID ${fid} is inside a grouping fixture without a numeric FID (${JSON.stringify(parent ?? null)}), whose position cannot be read`);
+            break;
+          }
+          if (chain.includes(parent) || chain.length >= MAX_GROUP_DEPTH) {
+            problems.push(`FID ${fid}: the grouping fixtures above it could not be followed (${[...chain, parent].join(" > ")})`);
+            break;
+          }
+          chain.push(parent);
+          r = rows.get(parent);
+          if (!r) problems.push(`FID ${fid} is inside grouping fixture FID ${parent}, which the patch listing did not return`);
+        }
+        chains.set(fid, chain);
+      }
+      const ancestors = [...new Set([...chains.values()].flat())].filter((f) => !allFids.includes(f));
+      before = await readPoses(bridge, [...allFids, ...ancestors], t);
+      for (const fid of [...allFids, ...ancestors]) {
         const b = before.get(fid);
         if (rows.has(fid) && !b) problems.push(`the position of FID ${fid} could not be read`);
-        // The current pose is needed for axes not given, mirror sources and the restore list.
+        // The current pose is needed for axes not given, mirror sources, the restore list and the grouping check.
         const bad = b?.unreadable.filter((k) => k !== "ROTDIRECT" && k !== "MESHMIRRORX") ?? [];
         if (bad.length) problems.push(`FID ${fid}: ${bad.join(", ")} could not be read as numbers`);
       }
@@ -448,6 +481,33 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
     for (const p of plan) finalFor(p.fid);
     const ordered = plan.map((p) => finals.get(p.fid) as Final);
     const s = UNITS[unit];
+
+    // A fixture inside a grouping fixture: whether its position is relative to the grouping fixture is not
+    // established (SU-04), so it is placed (or mirrored from) only when every grouping fixture above it is, once
+    // this call is done, at the origin with no rotation: then both readings give the same place.
+    const grouping: string[] = [];
+    for (const [fid, chain] of chains) {
+      for (const a of chain) {
+        const f = planned.has(a) ? finals.get(a) : undefined;
+        const b = before.get(a) as FixturePose;
+        const position = f?.position ?? b.position;
+        const quat = f?.writeRotation ? quatFromEuler(f.writeRotation) : (b.quaternion ?? quatFromEuler(f?.rotation ?? b.rotation));
+        const rotation = f?.writeRotation ?? b.rotation;
+        const atOrigin = (["x", "y", "z"] as const).every((k) => Math.abs(position[k]) <= POS_TOL_M);
+        if (atOrigin && quatEquivalent(quat, IDENTITY)) continue;
+        const pos = `${round(position.x / s, 4)}, ${round(position.y / s, 4)}, ${round(position.z / s, 4)} ${unit}`;
+        const rot = `${round(rotation.x, 3)}, ${round(rotation.y, 3)}, ${round(rotation.z, 3)}°`;
+        grouping.push(
+          `FID ${fid} is inside grouping fixture FID ${a}, which ${f ? "this call places" : "is"} at ${pos} with rotation ${rot}: a fixture inside a grouping fixture is placed only while every grouping fixture above it is at the origin with no rotation (whether its position is relative to the grouping fixture is not established). Place FID ${a} at 0, 0, 0 with rotation 0, 0, 0 first, or in the same call`,
+        );
+        break;
+      }
+    }
+    if (grouping.length) {
+      steps.push(asRead({ name: "check_grouping", status: "failed", op: "objects", error: grouping.join("; ") }));
+      return done(`${op} was not performed; nothing was sent: ${grouping.join("; ")}.`, notRequested());
+    }
+    if (chains.size) steps.push(asRead({ name: "check_grouping", status: "succeeded", op: "objects", detail: { grouped: Object.fromEntries(chains), note: "every grouping fixture above these fixtures is (after this call) at the origin with no rotation" } }));
     const planOut = ordered.map((f) => ({
       fid: f.fid,
       name: before.get(f.fid)?.name,
@@ -464,7 +524,9 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
     if (preview) return done(`Preview only; nothing was sent (${ordered.length} fixture(s)).`, notRequested(), { preview: true, plan: planOut });
 
     // Writes: one step per property, so a fixture changed only in part is reported as such; stop at the first failure.
-    const writes = ordered.map((f) => {
+    // Outer fixtures first: a grouping fixture placed at the origin in this call is there before the fixtures inside it.
+    const depth = (fid: number) => rows.get(fid)?.depth ?? 0;
+    const writes = [...ordered].sort((a, b) => depth(a.fid) - depth(b.fid)).map((f) => {
       const sets: Array<[string, number | string]> = [];
       for (const k of ["x", "y", "z"] as const) if (f.writePosition[k] !== undefined) sets.push([`POS${k.toUpperCase()}`, round(f.writePosition[k] as number, 5)]);
       // One write: per-axis writes are renormalized between requests (see the header).
@@ -476,7 +538,36 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
     // A write whose reply was lost may have executed: its fixture's state is unknown, never "not changed".
     const uncertain = new Map<number, string>();
     let stopped: string | undefined;
+    // Grouping fixtures this call moved and that were read back at the origin with no rotation. The console may
+    // acknowledge a write it ignores, so a fixture inside one is written only after that read, with or without verify.
+    const confirmedOrigin = new Set<number>();
     for (const { f, sets } of writes) {
+      const pending = (chains.get(f.fid) ?? []).filter((a) => planned.has(a) && !confirmedOrigin.has(a));
+      if (pending.length && !stopped) {
+        const name = `${f.fid}.check_grouping_origin`;
+        try {
+          await sleep(FRAME_WAIT_MS);
+          const now = await readPoses(bridge, pending, t);
+          const off: string[] = [];
+          for (const a of pending) {
+            const p = now.get(a);
+            const atOrigin = p && (["x", "y", "z"] as const).every((k) => Number.isFinite(p.position[k]) && Math.abs(p.position[k]) <= POS_TOL_M);
+            const unrotated = p?.quaternion ? quatEquivalent(p.quaternion, IDENTITY) : false;
+            if (!p) off.push(`FID ${a} could not be read back`);
+            else if (!atOrigin || !unrotated) off.push(`grouping fixture FID ${a} reads ${round(p.position.x / s, 4)}, ${round(p.position.y / s, 4)}, ${round(p.position.z / s, 4)} ${unit} with rotation ${p.quaternion ? `${round(p.rotation.x, 3)}, ${round(p.rotation.y, 3)}, ${round(p.rotation.z, 3)}°` : "unreadable"}, not the origin with no rotation`);
+            else confirmedOrigin.add(a);
+          }
+          if (off.length) {
+            steps.push(asRead({ name, status: "failed", op: "objects", error: `FID ${f.fid} was not written: ${off.join("; ")}` }));
+            stopped = `${name} failed`;
+          } else {
+            steps.push(asRead({ name, status: "succeeded", op: "objects", detail: { grouping: pending, note: "read back at the origin with no rotation before writing the fixture inside" } }));
+          }
+        } catch (err) {
+          steps.push(asRead(stepFromError(name, err, { op: "objects" })));
+          stopped = `${name} could not be read`;
+        }
+      }
       for (const [property, value] of sets) {
         const name = `${f.fid}.${property}`;
         if (stopped) {
@@ -656,6 +747,7 @@ export const registerPositionTools: RegisterTools = (server, ctx) => {
         "arc {kind: 'arc', fids, center, radius, start_deg, end_deg, rotation?, follow?} spaces them on a horizontal arc (0° = stage left of the centre, 90° = upstage; follow adds the arc angle to rotation z); " +
         "mirror {kind: 'mirror', pairs: [[source_fid, target_fid]]} puts each target at its source's final pose mirrored across the stage centre line (x negated, rotation y and z negated). " +
         "preview: true returns the expanded plan with every fixture's current values and sends nothing. Refused while the patch copy is open (committing it would overwrite the positions). " +
+        "A fixture inside a grouping fixture is placed only while every grouping fixture above it is at the origin (0, 0, 0) with no rotation, after this call: whether its position is relative to the grouping fixture is not established. Otherwise the call is refused, naming the grouping fixture and its pose; place that one at the origin first, or in the same call (written first). " +
         "Scale is not offered: the console ignores scale writes. mirror_mesh is the fixture's MeshMirrorX flag (its 3D model mirrored). Read back a frame later: positions within 0.1 mm, rotations by quaternion. " +
         "NO UNDO (Oops does not revert positions): the result's restore list holds every fixture's previous values in the same format. " +
         "A clean success (all written, read-back matched or not requested) lists each fixture as {fid, position, rotation, mirror_mesh?} in items, the pose it now has, with the writes as one step; detail: true returns every write step and each fixture's pose before and read back.",
@@ -664,7 +756,7 @@ export const registerPositionTools: RegisterTools = (server, ctx) => {
         placements: z
           .array(
             z.object({
-              fid: z.number().describe("Fixture ID (a top-level fixture; cells have no position of their own)."),
+              fid: z.number().describe("Fixture ID (cells have no position of their own; a fixture inside a grouping fixture only while every grouping fixture above it is at the origin with no rotation)."),
               position: vec3Partial.optional().describe("Position in unit; axes not given stay."),
               rotation: vec3("Rotation in degrees, all three angles.").optional(),
               mirror_mesh: z.boolean().optional().describe("Mirror the fixture's 3D model (MeshMirrorX)."),

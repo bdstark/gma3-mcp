@@ -16,9 +16,9 @@
  *                              the stage is compared by the destination object's address, not its text: #98)
  *   5. mut.   add|set|remove   the edit, in the copy only (the bridge re-checks and undoes its own change
  *                              on any problem)
- *   6. read   isolation_check  fingerprints of the copy and the live patch, one collection per request,
- *                              leaving out the FIDs this call touches: anything else that differs means
- *                              someone else changed the show, and nothing is committed
+ *   6. read   isolation_check  fingerprints of the copy and the live patch, per collection (in parts of about
+ *                              2 s since bridge 0.51.0), leaving out the FIDs this call touches: anything
+ *                              else that differs means someone else changed the show, and nothing is committed
  *   7. mut.   commit           patch.commit queues ChangeDestination Root, which commits the copy
  *   8. read   wait_commit      poll patch.state until the destination is Root and the copy closed
  *   then read-back (patch.list) of the touched FIDs.
@@ -28,6 +28,8 @@
  * nobody else uses the console while it runs. When a session cannot be finished, it is closed again only
  * when the copy provably holds no change (fingerprints equal with nothing left out); otherwise the copy is
  * left open, the result says so (copyLeftOpen), and the operator decides at the console (LEFT_OPEN_HELP).
+ * A request without a reply is never resent: the session waits (bounded) until the bridge answers again, reads what
+ * the copy holds, and only then decides and reports.
  */
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
@@ -35,6 +37,7 @@ import {
   asRead,
   buildResult,
   compactItems,
+  isNoReply,
   notRequested,
   stepFromError,
   unavailable,
@@ -86,6 +89,15 @@ interface Fingerprint {
   hash: number | string;
   complete: boolean;
   reason?: string;
+}
+
+/**
+ * A row's patch text. A multi-break fixture with no break patched displays "," (onPC 2.5.1, live 2026-10-21); bridge
+ * 0.51.0 reports it as "", and an older bridge's "," is read the same way here.
+ */
+export function patchText(row: { patch?: string } | undefined): string {
+  const p = row?.patch ?? "";
+  return /^[\s,]*$/.test(p) ? "" : p;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +167,55 @@ export const COPY_OPEN_HELP =
 const POLL_TRIES = 30;
 const POLL_MS = 100;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Reply budget of an edit per console call it may make (a Set, an AddFixtures, a Delete), on top of the request
+ * timeout. A patch_set of 22 readdresses on a large show (44 Sets with bridge 0.38.0, which unpatched every
+ * readdressed fixture first) failed on 2026-10-21, probably because the edit outlived the 15 s request timeout
+ * (not established: the per-Set time was not measured).
+ */
+export const EDIT_MS_PER_CALL = 500;
+
+/** Ping timeouts while waiting for a busy bridge: short first, so a bridge that is back is seen quickly. */
+const WAIT_PING_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+
+/** How long to wait for the bridge after a request got no reply: four request timeouts, or the request's own budget. */
+export const bridgeWaitMs = (t: number, requestMs = 0) => Math.max(4 * t, requestMs);
+
+/**
+ * After a request got no reply: wait, at most budgetMs, until the bridge answers a ping again. The bridge runs one request
+ * at a time and cannot be interrupted, so while it answers nothing the console may still be working on that request.
+ * Once a ping is answered nothing of this call is running any more: on one connection the bridge answers in order, and
+ * a new connection is served only between requests. Pings are reads; nothing is resent.
+ */
+export async function waitForBridge(bridge: Gma3Bridge, budgetMs: number): Promise<StepResult> {
+  const started = Date.now();
+  let pings = 0;
+  let last = "";
+  for (;;) {
+    const left = budgetMs - (Date.now() - started);
+    if (left <= 0) break;
+    const wait = Math.min(WAIT_PING_MS[Math.min(pings, WAIT_PING_MS.length - 1)], left);
+    pings += 1;
+    const sent = Date.now();
+    try {
+      await bridge.request("ping", {}, wait);
+      return asRead({ name: "wait_bridge", status: "succeeded", op: "ping", detail: { answeredAfterMs: Date.now() - started, pings } });
+    } catch (err) {
+      last = err instanceof Error ? err.message : String(err);
+      // Refused or dropped at once (no ping is waiting in the bridge): pause before the next one.
+      const spent = Date.now() - sent;
+      if (spent < wait) await sleep(Math.min(wait - spent, Math.max(0, budgetMs - (Date.now() - started))));
+    }
+  }
+  return asRead({
+    name: "wait_bridge",
+    status: "unknown",
+    op: "ping",
+    error: `the bridge did not answer for ${Math.round(budgetMs / 1000)} s (last: ${last}); it may still be working on the request that got no reply (a bridge request cannot be interrupted)`,
+    detail: { waitedMs: Date.now() - started, pings },
+  });
+}
 
 async function readState(bridge: Gma3Bridge, t: number): Promise<PatchState> {
   return (await bridge.request("patch.state", {}, t)) as PatchState;
@@ -241,14 +302,42 @@ interface IsolationSpec {
 /** Collections an import appends to (the bridge applies prefixOfLive only there either way). */
 const PREFIX_COLLECTIONS = new Set(["FixtureTypes", "AttributeDefinitions"]);
 
+/** Hashing time per fingerprint request on the console (bridge 0.51.0); the next request continues where it stopped. */
+export const FP_PART_MS = 2_000;
+/** Requests per collection and side before the check gives up as incomplete (about 30 min of hashing). */
+const FP_MAX_PARTS = 900;
+/** Reply timeout of one fingerprint part: the request timeout plus the part's hashing time. */
+const fpPartTimeout = (t: number) => t + FP_PART_MS;
+
+/**
+ * One side of one collection. Since bridge 0.51.0 the bridge hashes for about FP_PART_MS per request and answers
+ * done: false with a resume object until the collection is finished, so no request outlives the timeout on a large
+ * show (an import's isolation check timed out after 15 s, presumably on FixtureTypes with 61 types, and the bridge
+ * then did not answer for minutes, live 2026-10-21). An older bridge ignores budgetMs and answers in one request,
+ * without `done`.
+ */
+async function fingerprintSide(bridge: Gma3Bridge, args: Record<string, unknown>, t: number): Promise<Fingerprint & { parts: number }> {
+  let resume: unknown;
+  for (let part = 1; part <= FP_MAX_PARTS; part++) {
+    const res = (await bridge.request("patch.fingerprint", { ...args, budgetMs: FP_PART_MS, ...(resume !== undefined ? { resume } : {}) }, t)) as Fingerprint & { done?: boolean; resume?: unknown };
+    if (res.done !== false) return { objects: res.objects, hash: res.hash, complete: res.complete, ...(res.reason ? { reason: res.reason } : {}), parts: part };
+    if (res.resume === undefined || res.resume === null) return { objects: res.objects, hash: res.hash, complete: false, reason: "a part ended without a point to resume from", parts: part };
+    resume = res.resume;
+  }
+  return { objects: 0, hash: 0, complete: false, reason: `not finished after ${FP_MAX_PARTS} requests`, parts: FP_MAX_PARTS };
+}
+
 async function fingerprints(bridge: Gma3Bridge, iso: IsolationSpec, t: number): Promise<{ equal: boolean; complete: boolean; mismatched: string[]; detail: Record<string, unknown> }> {
   const { excludeFids } = iso;
   const cols = (await bridge.request("patch.collections", {}, t)) as { copyOpen: boolean; live: string[]; copy: string[] | false };
   if (!cols.copyOpen || !Array.isArray(cols.copy)) return { equal: false, complete: false, mismatched: ["the copy is not open"], detail: { collections: cols } };
-  const ft = Math.max(t, 15_000);
+  // A part hashes for about FP_PART_MS. An older bridge hashes a whole collection in one request and gets the same
+  // timeout: on a large show it needs bridge 0.51.0.
+  const ft = fpPartTimeout(t);
   const mismatched: string[] = [];
   let complete = true;
   const reasons: string[] = [];
+  const parts: Record<string, number> = {};
   if (JSON.stringify(cols.live) !== JSON.stringify(cols.copy)) mismatched.push(`collections differ: live ${cols.live.join(", ")} / copy ${cols.copy.join(", ")}`);
   const st = iso.stages;
   const stageArgs = (exclude: number[] | undefined, bare: number[] | undefined) => ({ ...(exclude?.length ? { excludeStages: exclude } : {}), ...(bare?.length ? { bareStages: bare } : {}) });
@@ -256,16 +345,18 @@ async function fingerprints(bridge: Gma3Bridge, iso: IsolationSpec, t: number): 
     const positions = iso.fixturePositions === false ? { fixturePositions: false } : {};
     const stagesLive = st && collection === "Stages" ? stageArgs(st.excludeLive, st.bareLive) : {};
     const stagesCopy = st && collection === "Stages" ? stageArgs(st.excludeCopy, st.bareCopy) : {};
-    const live = (await bridge.request("patch.fingerprint", { side: "live", collection, excludeFids, ...positions, ...stagesLive, ...(iso.excludeGuidsLive?.length ? { excludeGuids: iso.excludeGuidsLive } : {}), ...(iso.excludeTypesLive?.length ? { excludeTypes: iso.excludeTypesLive } : {}) }, ft)) as Fingerprint;
+    // Every part of a side resends the same arguments (fingerprintSide adds only budgetMs and resume).
+    const live = await fingerprintSide(bridge, { side: "live", collection, excludeFids, ...positions, ...stagesLive, ...(iso.excludeGuidsLive?.length ? { excludeGuids: iso.excludeGuidsLive } : {}), ...(iso.excludeTypesLive?.length ? { excludeTypes: iso.excludeTypesLive } : {}) }, ft);
     const prefix = iso.prefixOfLive && PREFIX_COLLECTIONS.has(collection);
-    const copy = (await bridge.request("patch.fingerprint", { side: "copy", collection, excludeFids, ...positions, ...stagesCopy, ...(prefix ? { prefixOfLive: true } : {}) }, ft)) as Fingerprint;
+    const copy = await fingerprintSide(bridge, { side: "copy", collection, excludeFids, ...positions, ...stagesCopy, ...(prefix ? { prefixOfLive: true } : {}) }, ft);
+    if (live.parts + copy.parts > 2) parts[collection] = live.parts + copy.parts;
     if (!live.complete || !copy.complete) {
       complete = false;
       reasons.push(`${collection}: ${live.reason ?? copy.reason ?? "incomplete"}`);
     } else if (live.objects !== copy.objects || live.hash !== copy.hash) mismatched.push(collection);
   }
   const leftOut = { ...(st ? { stages: st } : {}), ...(iso.prefixOfLive ? { prefixOfLive: true } : {}), ...(iso.excludeGuidsLive?.length ? { excludeGuidsLive: iso.excludeGuidsLive } : {}), ...(iso.excludeTypesLive?.length ? { excludeTypesLive: iso.excludeTypesLive } : {}), ...(iso.fixturePositions === false ? { fixturePositions: false } : {}) };
-  return { equal: complete && mismatched.length === 0, complete, mismatched, detail: { collections: cols.live, excludeFids, ...leftOut, ...(reasons.length ? { incomplete: reasons } : {}) } };
+  return { equal: complete && mismatched.length === 0, complete, mismatched, detail: { collections: cols.live, excludeFids, ...leftOut, ...(Object.keys(parts).length ? { requests: parts } : {}), ...(reasons.length ? { incomplete: reasons } : {}) } };
 }
 
 async function isolationStep(bridge: Gma3Bridge, iso: IsolationSpec, t: number): Promise<StepResult> {
@@ -285,14 +376,23 @@ async function isolationStep(bridge: Gma3Bridge, iso: IsolationSpec, t: number):
  * After a session could not be finished: commit (leave) only when the copy provably equals the live patch
  * with nothing left out, i.e. holds no change at all. Otherwise leave it open for the operator.
  */
-async function closeSession(bridge: Gma3Bridge, t: number): Promise<{ steps: StepResult[]; closed: boolean; leftOpen: boolean }> {
+async function closeSession(bridge: Gma3Bridge, t: number): Promise<{ steps: StepResult[]; closed: boolean; leftOpen: boolean; verifiedUnchanged?: boolean; bridgeBusy?: boolean }> {
   const steps: StepResult[] = [];
+  // A check that got no reply: wait until the bridge answers again, so the report says whether it is still busy.
+  const waitIfNoReply = async (s: StepResult, requestMs: number): Promise<boolean> => {
+    if (!isNoReply(s)) return true;
+    const w = await waitForBridge(bridge, bridgeWaitMs(t, requestMs));
+    steps.push(w);
+    return w.status === "succeeded";
+  };
   let state: PatchState;
   try {
     state = await readState(bridge, t);
   } catch (err) {
-    steps.push(asRead(stepFromError("close_check", err, { op: "patch.state" })));
-    return { steps, closed: false, leftOpen: true };
+    const s = asRead(stepFromError("close_check", err, { op: "patch.state" }));
+    steps.push(s);
+    const answered = await waitIfNoReply(s, t);
+    return { steps, closed: false, leftOpen: true, ...(answered ? {} : { bridgeBusy: true }) };
   }
   if (!state.copyOpen) {
     steps.push(asRead({ name: "close_check", status: "succeeded", op: "patch.state", detail: "the copy is not open; nothing to close" }));
@@ -304,7 +404,9 @@ async function closeSession(bridge: Gma3Bridge, t: number): Promise<{ steps: Ste
     unchanged = f.equal;
     steps.push(asRead({ name: "close_check", status: unchanged ? "succeeded" : "failed", op: "patch.fingerprint", ...(unchanged ? {} : { error: "the copy holds changes (or could not be fingerprinted completely); it is left open for the operator" }), detail: { ...f.detail, mismatched: f.mismatched } }));
   } catch (err) {
-    steps.push(asRead(stepFromError("close_check", err, { op: "patch.fingerprint" })));
+    const s = asRead(stepFromError("close_check", err, { op: "patch.fingerprint" }));
+    steps.push(s);
+    if (!(await waitIfNoReply(s, fpPartTimeout(t)))) return { steps, closed: false, leftOpen: true, bridgeBusy: true };
   }
   if (!unchanged) return { steps, closed: false, leftOpen: true };
   try {
@@ -316,7 +418,7 @@ async function closeSession(bridge: Gma3Bridge, t: number): Promise<{ steps: Ste
   }
   const w = await waitStep(bridge, "wait_close", t, (s) => s.atRoot, "closing the copy");
   steps.push(w);
-  return { steps, closed: w.status === "succeeded", leftOpen: w.status !== "succeeded" };
+  return { steps, closed: w.status === "succeeded", leftOpen: w.status !== "succeeded", verifiedUnchanged: true };
 }
 
 export interface SessionSpec {
@@ -337,14 +439,25 @@ export interface SessionSpec {
   onEdit?: (editDetail: unknown) => void;
   /** Isolation options beyond the touched FIDs, read after the edit (and settle) succeeded. */
   isolation?: () => Omit<IsolationSpec, "excludeFids">;
-  /** The edit inside the copy (patch.add / patch.set / patch.remove), built once the copy is open; `stage` is the stage patch.enter entered. */
-  edit?: (stage: string | undefined) => { op: string; args: Record<string, unknown> };
+  /**
+   * The edit inside the copy (patch.add / patch.set / patch.remove), built once the copy is open; `stage` is the stage
+   * patch.enter entered. timeoutMs: how long to wait for its reply (default the request timeout); scale it with the
+   * console calls the edit makes (EDIT_MS_PER_CALL).
+   */
+  edit?: (stage: string | undefined) => { op: string; args: Record<string, unknown>; timeoutMs?: number };
   /**
    * An edit of several steps instead of `edit` (gma3_patch_move: queued commands and a dialog, each step polled). Its
    * steps are reported in order; the first one that did not succeed stops the session, which then closes the copy only
    * when it provably holds no change. It cleans up its own leftovers (an open dialog) before returning.
    */
   runEdit?: (stage: string | undefined) => Promise<{ steps: StepResult[]; detail?: unknown; leaveOpen?: string }>;
+  /** The edit step's detail as reported (the full reply still goes to onEdit and settle): leave out what the result repeats. */
+  editDetail?: (detail: unknown) => unknown;
+  /**
+   * After an edit that got no reply, once the bridge answers again: read the copy (read-only) and say what it holds,
+   * so the result tells the operator what is left in it. Never resends the edit.
+   */
+  inspectCopy?: () => Promise<{ step: StepResult; note?: string }>;
   /** Read-back after a commit. */
   readBack?: () => Promise<{ steps: StepResult[]; verification: Verification; extra?: Record<string, unknown> }>;
   verify: boolean;
@@ -414,62 +527,113 @@ export async function runSessionLocked(ctx: ToolContext, spec: SessionSpec): Pro
       : asRead({ name: "wait_copy", status: "unknown", op: "patch.state", error: "the enter request got no reply" } as StepResult);
     steps.push(wc);
 
-    // Abort path: close the copy only if it provably holds no change.
-    const abort = async (outcome: ExecutionOutcome, reason: string, remaining: string[]): Promise<OperationResult> => {
+    const notCommitted = () => (spec.verify ? unavailable("nothing was committed") : notRequested());
+
+    // A request that got no reply: the bridge runs one request at a time and cannot interrupt it, so the console may
+    // still be working on it. Wait (bounded) until the bridge answers again before deciding or reporting anything.
+    const waitAfterNoReply = async (step: StepResult, requestMs: number): Promise<StepResult | undefined> => {
+      if (!isNoReply(step)) return undefined;
+      const w = await waitForBridge(bridge, bridgeWaitMs(t, requestMs));
+      steps.push(w);
+      return w;
+    };
+    const answeredAfter = (w: StepResult | undefined) =>
+      w?.status === "succeeded" ? `; the bridge answered again after ${Math.round(((w.detail as { answeredAfterMs: number }).answeredAfterMs ?? 0) / 1000)} s` : "";
+    // The bridge did not answer again: nothing more is sent (the copy cannot be checked or closed).
+    const stillBusy = (what: string, remaining: string[], copyOpen: true | "unknown"): OperationResult => {
+      steps.push(...skippedSteps(remaining, "the bridge did not answer again"));
+      const copy = copyOpen === true ? "THE PATCH COPY IS STILL OPEN and may hold part of this call's change" : "The patch copy may be open";
+      return finish("unknown", `${spec.operation} was not completed: ${what} got no reply and the bridge has not answered since (it runs one request at a time and cannot be interrupted, so the console is probably still working on it). Nothing was committed. ${copy}. Once gma3_status answers again, check the patch state; if the copy is open: ${LEFT_OPEN_HELP}.`, notCommitted(), { committed: false, copyLeftOpen: copyOpen });
+    };
+
+    // Abort path: close the copy only if it provably holds no change. unchangedIsFailure: the outcome is "failed"
+    // when the copy was verified unchanged and closed (the call provably changed nothing).
+    const abort = async (outcome: ExecutionOutcome, reason: string, remaining: string[], unchangedIsFailure = false): Promise<OperationResult> => {
       steps.push(...skippedSteps(remaining, reason));
       const c = await closeSession(bridge, t);
       steps.push(...c.steps);
-      const state = c.closed ? "the patch copy was closed again without changes; the show is unchanged" : `THE PATCH COPY WAS LEFT OPEN (it may hold this call's change): ${LEFT_OPEN_HELP}`;
-      return finish(outcome, `${spec.operation} was not completed: ${reason}. ${state}.`, spec.verify ? unavailable("nothing was committed") : notRequested(), { committed: false, copyLeftOpen: c.leftOpen });
+      const state = c.closed
+        ? "the patch copy was closed again without changes; the show is unchanged"
+        : c.bridgeBusy
+          ? `the bridge stopped answering while the copy was checked, so THE PATCH COPY WAS LEFT OPEN (it may hold this call's change). Once gma3_status answers again: ${LEFT_OPEN_HELP}`
+          : `THE PATCH COPY WAS LEFT OPEN (it may hold this call's change): ${LEFT_OPEN_HELP}`;
+      const out = unchangedIsFailure && c.closed && c.verifiedUnchanged ? "failed" : outcome;
+      return finish(out, `${spec.operation} was not completed: ${reason}. ${state}.`, notCommitted(), { committed: false, copyLeftOpen: c.leftOpen });
     };
 
-    if (wc.status !== "succeeded") return abort(wc.status === "failed" ? "failed" : "unknown", wc.status === "failed" ? `${wc.error}` : `the patch copy did not open as expected (${wc.error ?? wc.status})`, planned(2));
+    if (wc.status !== "succeeded") {
+      if (wc.status === "failed") return abort("failed", `${wc.error}`, planned(2));
+      const w = await waitAfterNoReply(enter.status === "unknown" ? enter : wc, t);
+      if (w && w.status !== "succeeded") return stillBusy(enter.status === "unknown" ? "entering the patch copy" : "reading the patch state", planned(2), "unknown");
+      return abort("unknown", `the patch copy did not open as expected (${wc.error ?? wc.status})${answeredAfter(w)}`, planned(2));
+    }
 
-    let editSteps: StepResult[];
-    let editDetail: unknown;
-    let leaveOpen: string | undefined;
+    let editReply: unknown;
     if (spec.runEdit) {
       const r = await spec.runEdit(entered?.stage);
-      editSteps = r.steps;
-      editDetail = r.detail;
-      leaveOpen = r.leaveOpen;
+      steps.push(...r.steps);
+      editReply = r.detail;
+      const badEdit = r.steps.find((s) => s.status !== "succeeded");
+      if (r.leaveOpen) {
+        // The edit says the copy must not be closed (a dialog may still be open): leave it, and say so.
+        steps.push(...skippedSteps(planned(3), r.leaveOpen));
+        return finish("unknown", `${spec.operation} was not completed: ${r.leaveOpen}. THE PATCH COPY WAS LEFT OPEN: ${LEFT_OPEN_HELP}.`, notCommitted(), { committed: false, copyLeftOpen: true });
+      }
+      if (badEdit || r.steps.length === 0) {
+        const status = badEdit?.status ?? "failed";
+        return abort(status === "unknown" ? "unknown" : "failed", `the ${badEdit?.name ?? spec.editName} step ${status === "unknown" ? "got no reply or did not finish" : status === "skipped" ? "was not attempted" : "was refused"}: ${badEdit?.error ?? "no step ran"}`, planned(3));
+      }
     } else {
       if (!spec.edit) throw new Error(`${spec.operation}: a session needs edit or runEdit`);
       const edit = spec.edit(entered?.stage);
+      const editMs = edit.timeoutMs ?? t;
       let editStep: StepResult;
       try {
-        const res = await bridge.request(edit.op, { exclusive: true, ...edit.args }, t);
+        const res = await bridge.request(edit.op, { exclusive: true, ...edit.args }, editMs);
         editStep = { name: spec.editName, status: "succeeded", op: edit.op, detail: res };
       } catch (err) {
         editStep = stepFromError(spec.editName, err, { op: edit.op });
         if (err instanceof BridgeError && err.detail !== undefined) editStep.detail = err.detail;
       }
-      editSteps = [editStep];
-      editDetail = editStep.detail;
+      editReply = editStep.detail;
+      if (spec.editDetail && editStep.status === "succeeded") editStep.detail = spec.editDetail(editReply);
+      steps.push(editStep);
+      if (editStep.status !== "succeeded") {
+        if (editStep.status !== "unknown") return abort("failed", `the ${spec.editName} step was refused: ${editStep.error}`, planned(3));
+        const w = await waitAfterNoReply(editStep, editMs);
+        if (w && w.status !== "succeeded") return stillBusy(`the ${spec.editName} step (allowed ${Math.round(editMs / 1000)} s)`, planned(3), true);
+        let note = "";
+        if (w && spec.inspectCopy) {
+          const ins = await spec.inspectCopy();
+          steps.push(ins.step);
+          if (ins.note) note = `. ${ins.note}`;
+        }
+        // Without a settle step the edit is synchronous: once the bridge answers it is over, and an unchanged copy
+        // proves it changed nothing. An import lands a frame later, so its copy is not proof.
+        return abort("unknown", `the ${spec.editName} step got no reply within ${Math.round(editMs / 1000)} s (it was not resent)${answeredAfter(w)}${note}`, planned(3), w !== undefined && !spec.settle);
+      }
     }
-    steps.push(...editSteps);
-    const badEdit = editSteps.find((s) => s.status !== "succeeded");
-    if (leaveOpen) {
-      // The edit says the copy must not be closed (a dialog may still be open): leave it, and say so.
-      steps.push(...skippedSteps(planned(3), leaveOpen));
-      return finish("unknown", `${spec.operation} was not completed: ${leaveOpen}. THE PATCH COPY WAS LEFT OPEN: ${LEFT_OPEN_HELP}.`, spec.verify ? unavailable("nothing was committed") : notRequested(), { committed: false, copyLeftOpen: true });
-    }
-    if (badEdit || editSteps.length === 0) {
-      const status = badEdit?.status ?? "failed";
-      return abort(status === "unknown" ? "unknown" : "failed", `the ${badEdit?.name ?? spec.editName} step ${status === "unknown" ? "got no reply or did not finish" : status === "skipped" ? "was not attempted" : "was refused"}: ${badEdit?.error ?? "no step ran"}`, planned(3));
-    }
-    spec.onEdit?.(editDetail);
+    spec.onEdit?.(editReply);
     if (spec.settle) {
-      const st = await spec.settle.run(editDetail);
+      const st = await spec.settle.run(editReply);
       steps.push(st);
-      if (st.status !== "succeeded") return abort(st.status === "unknown" ? "unknown" : "failed", `the ${spec.settle.name} step ${st.status}: ${st.error ?? ""}`, planned(4));
+      if (st.status !== "succeeded") {
+        const w = await waitAfterNoReply(st, t);
+        if (w && w.status !== "succeeded") return stillBusy(`the ${spec.settle.name} step`, planned(4), true);
+        return abort(st.status === "unknown" ? "unknown" : "failed", `the ${spec.settle.name} step ${st.status}: ${st.error ?? ""}${answeredAfter(w)}`, planned(4));
+      }
     }
 
     const iso = await isolationStep(bridge, { excludeFids: spec.touchedFids, ...(spec.isolation?.() ?? {}) }, t);
     steps.push(iso);
     if (iso.status !== "succeeded") {
+      // A fingerprint request is a read: its edit is done. Wait for the bridge only so the report is accurate and
+      // nothing more is queued behind a busy console; the check is not repeated and nothing is committed.
+      const w = await waitAfterNoReply(iso, fpPartTimeout(t));
       steps.push(...skippedSteps(["commit", "wait_commit"], "the isolation check did not pass"));
-      return finish("failed", `${spec.operation} was not committed: ${iso.error}. THE PATCH COPY WAS LEFT OPEN with this call's change in it: ${LEFT_OPEN_HELP}.`, spec.verify ? unavailable("nothing was committed") : notRequested(), { committed: false, copyLeftOpen: true });
+      const busy = w && w.status !== "succeeded" ? "; the bridge has not answered since (the console is probably still reading the patch; once gma3_status answers again, resolve the copy)" : answeredAfter(w);
+      const what = isNoReply(iso) ? `the isolation check got no reply (${iso.error})${busy}; nothing was committed` : iso.error;
+      return finish("failed", `${spec.operation} was not committed: ${what}. THE PATCH COPY WAS LEFT OPEN with this call's change in it: ${LEFT_OPEN_HELP}.`, notCommitted(), { committed: false, copyLeftOpen: true });
     }
 
     let commit: StepResult;
@@ -509,7 +673,7 @@ export async function runSessionLocked(ctx: ToolContext, spec: SessionSpec): Pro
  * The rows of the requested FIDs, reading every page of patch.list over their FID range. Throws when the
  * listing ends before its reported total, so a fixture is never reported absent from an incomplete read.
  */
-export async function listFids(bridge: Gma3Bridge, fids: number[], t: number): Promise<Map<number, FixtureRow>> {
+export async function listFids(bridge: Gma3Bridge, fids: number[], t: number, side?: "copy"): Promise<Map<number, FixtureRow>> {
   const want = new Set(fids);
   const found = new Map<number, FixtureRow>();
   const from = Math.min(...fids);
@@ -517,7 +681,7 @@ export async function listFids(bridge: Gma3Bridge, fids: number[], t: number): P
   let offset = 0;
   let total = Number.POSITIVE_INFINITY;
   while (offset < total) {
-    const res = (await bridge.request("patch.list", { fromFid: from, toFid: to, limit: 2000, offset }, t)) as { total?: number; fixtures?: FixtureRow[] };
+    const res = (await bridge.request("patch.list", { fromFid: from, toFid: to, limit: 2000, offset, ...(side ? { side } : {}) }, t)) as { total?: number; fixtures?: FixtureRow[] };
     const rows = res.fixtures ?? [];
     if (typeof res.total !== "number") throw new Error("patch.list answered without a total; the read-back cannot tell a missing fixture from an incomplete listing");
     total = res.total;
@@ -623,13 +787,26 @@ export async function patchAdd(ctx: ToolContext, raw: AddArgs): Promise<Operatio
       }
     },
     editName: "add",
-    edit: (entered) => ({ op: "patch.add", args: { stage: entered ?? stage, type, mode, fid, count, ...(name ? { name } : {}), ...(resolvedAddress ? { address: resolvedAddress } : {}) } }),
+    // AddFixtures, then a check and possibly a Delete per fixture.
+    edit: (entered) => ({ op: "patch.add", args: { stage: entered ?? stage, type, mode, fid, count, ...(name ? { name } : {}), ...(resolvedAddress ? { address: resolvedAddress } : {}) }, timeoutMs: t + EDIT_MS_PER_CALL * 3 * count }),
+    inspectCopy: async () => {
+      try {
+        const rows = await listFids(ctx.bridge, fids, t, "copy");
+        const present = fids.filter((f) => rows.has(f));
+        const note = present.length === 0 ? "Read in the copy afterwards: none of the fixtures is in it" : `Read in the copy afterwards: ${present.length} of ${count} fixture(s) are in it (FIDs ${present.join(", ")})`;
+        return { step: asRead({ name: "inspect_copy", status: "succeeded", op: "patch.list", detail: { side: "copy", present } }), note };
+      } catch (err) {
+        return { step: asRead(stepFromError("inspect_copy", err, { op: "patch.list" })) };
+      }
+    },
     extra: () => ({ address: resolvedAddress ?? null, footprint, check: checkDetail }),
     readBack: async () => {
       try {
         const byFid = await listFids(ctx.bridge, fids, t);
         const rows = fids.map((f) => byFid.get(f)).filter((r): r is FixtureRow => r !== undefined);
-        const step: StepResult = asRead({ name: "read_back", status: "succeeded", op: "patch.list", detail: rows });
+        // The rows are in the result once (fixtures); the step and the verification carry what was compared.
+        const step: StepResult = asRead({ name: "read_back", status: "succeeded", op: "patch.list", detail: { found: rows.length } });
+        const actual = rows.map((r) => ({ fid: r.fid, patch: patchText(r), name: r.name, mode: r.mode }));
         const mismatches: string[] = [];
         const expected = fids.map((f, i) => ({ fid: f, patch: resolvedAddress ? blockAddress(resolvedAddress, footprint, i) : "", ...(name ? { name } : {}) }));
         for (const e of expected) {
@@ -638,14 +815,14 @@ export async function patchAdd(ctx: ToolContext, raw: AddArgs): Promise<Operatio
             mismatches.push(`FID ${e.fid} is not in the patch`);
             continue;
           }
-          if ((r.patch ?? "") !== e.patch) mismatches.push(`FID ${e.fid}: patch ${JSON.stringify(r.patch ?? "")}, expected ${JSON.stringify(e.patch)}`);
+          if (patchText(r) !== e.patch) mismatches.push(`FID ${e.fid}: patch ${JSON.stringify(patchText(r))}, expected ${JSON.stringify(e.patch)}`);
           if (e.name !== undefined && r.name !== e.name) mismatches.push(`FID ${e.fid}: name ${JSON.stringify(r.name)}, expected ${JSON.stringify(e.name)}`);
           if (modeName && r.mode && !String(r.mode).endsWith(modeName)) mismatches.push(`FID ${e.fid}: mode ${JSON.stringify(r.mode)}, expected ${JSON.stringify(modeName)}`);
         }
         const checked = `FIDs ${fid}..${fid + count - 1}: present, patch addresses${name ? ", names" : ""} and mode`;
         return {
           steps: [step],
-          verification: mismatches.length ? { status: "mismatched", checked, expected, actual: rows, detail: mismatches.join("; ") } : { status: "matched", checked, expected, actual: rows },
+          verification: mismatches.length ? { status: "mismatched", checked, expected, actual, detail: mismatches.join("; ") } : { status: "matched", checked, expected, actual },
           extra: { fixtures: rows },
         };
       } catch (err) {
@@ -729,7 +906,8 @@ export async function patchSet(ctx: ToolContext, raw: SetArgs): Promise<Operatio
   const target: Record<string, unknown> = { edits: raw.edits };
   if (!v.ok) return validationFailure(op, target, v.errors);
   const t = ctx.requestTimeoutMs;
-  let before: unknown;
+  let before: FixtureRow[] | Array<{ fid: number; exists: false }> | undefined;
+  const breaksOf = new Map<number, number>();
 
   const result = await runSession(ctx, {
     operation: op,
@@ -739,43 +917,85 @@ export async function patchSet(ctx: ToolContext, raw: SetArgs): Promise<Operatio
     preflight: async () => {
       try {
         const c = (await ctx.bridge.request("patch.check", { edits }, t)) as { edits: Array<{ fid: number; exists: boolean; singleBreak?: boolean; current?: FixtureRow }>; conflicts: unknown[]; occupancyUnknown?: Array<{ fid: number | string; reason: string }> };
-        before = c.edits.map((e) => e.current ?? { fid: e.fid, exists: false });
+        before = c.edits.map((e) => e.current ?? { fid: e.fid, exists: false as const }) as typeof before;
+        for (const e of c.edits) breaksOf.set(e.fid, e.current?.breaks?.length ?? 1);
         const problems: string[] = [];
         for (const e of c.edits) {
           if (!e.exists) problems.push(`no fixture with FID ${e.fid}`);
-          else if (e.singleBreak === false) problems.push(`FID ${e.fid} uses a multi-break mode; readdressing it is not supported`);
+          // singleBreak is reported for a new address only: unpatching and renaming a multi-break fixture are supported.
+          else if (e.singleBreak === false) problems.push(`FID ${e.fid} uses a multi-break mode; readdressing it is not supported (unpatch: true and name are)`);
         }
         if (c.conflicts.length) problems.push(`the new addresses overlap patched fixtures: ${JSON.stringify(c.conflicts)}`);
         if (edits.some((e) => e.address !== undefined && e.address !== "") && c.occupancyUnknown?.length) problems.push(occupancyMessage(c.occupancyUnknown));
-        if (problems.length) return asRead({ name: "check_edits", status: "failed", op: "patch.check", error: problems.join("; "), detail: c });
-        return asRead({ name: "check_edits", status: "succeeded", op: "patch.check", detail: c });
+        // The current rows are in the result once, as `before`.
+        const detail = { ...c, edits: c.edits.map(({ current: _current, ...rest }) => rest) };
+        if (problems.length) return asRead({ name: "check_edits", status: "failed", op: "patch.check", error: problems.join("; "), detail });
+        return asRead({ name: "check_edits", status: "succeeded", op: "patch.check", detail });
       } catch (err) {
         return asRead(stepFromError("check_edits", err, { op: "patch.check" }));
       }
     },
     editName: "set",
-    edit: () => ({ op: "patch.set", args: { edits } }),
+    // Per edit: unpatching (one Set per patched break) and patching; one Set for a name. Doubled: on a problem the
+    // bridge restores every change of the call.
+    edit: () => {
+      const calls = edits.reduce((n, e) => n + (e.address !== undefined ? 1 + Math.max(1, breaksOf.get(e.fid) ?? 1) : 0) + (e.name !== undefined ? 1 : 0), 0);
+      return { op: "patch.set", args: { edits }, timeoutMs: t + EDIT_MS_PER_CALL * 2 * calls };
+    },
+    editDetail: (detail) => {
+      const d = detail as { edits?: Array<{ fid: number; before?: unknown; after?: FixtureRow }> } | undefined;
+      if (!d || !Array.isArray(d.edits)) return detail;
+      return { ...d, edits: d.edits.map((e) => ({ fid: e.fid, before: e.before, after: e.after ? { patch: patchText(e.after), name: e.after.name } : undefined })) };
+    },
+    inspectCopy: async () => {
+      try {
+        const rows = await listFids(ctx.bridge, edits.map((e) => e.fid), t, "copy");
+        const prev = new Map(((before ?? []) as FixtureRow[]).map((r) => [r.fid, r]));
+        const done: number[] = [];
+        const previous: number[] = [];
+        const other: Array<{ fid: number; patch?: string; name?: string }> = [];
+        for (const e of edits) {
+          const r = rows.get(e.fid);
+          const p = prev.get(e.fid);
+          const is = (x: FixtureRow | undefined) => x !== undefined && (e.address === undefined || patchText(x) === e.address) && (e.name === undefined || x.name === e.name);
+          const was = r !== undefined && p !== undefined && patchText(r) === patchText(p) && r.name === p.name;
+          if (is(r)) done.push(e.fid);
+          else if (was) previous.push(e.fid);
+          else other.push({ fid: e.fid, ...(r ? { patch: patchText(r), name: r.name } : {}) });
+        }
+        const parts = [
+          done.length ? `as requested: FID ${done.join(", ")}` : "",
+          previous.length ? `as before the call: FID ${previous.join(", ")}` : "",
+          other.length ? `neither: ${other.map((o) => `FID ${o.fid}${o.patch !== undefined ? ` at ${JSON.stringify(o.patch)}` : " missing"}`).join(", ")}` : "",
+        ].filter(Boolean);
+        return { step: asRead({ name: "inspect_copy", status: "succeeded", op: "patch.list", detail: { side: "copy", requested: done, previous, other } }), note: `Read in the copy afterwards: ${parts.join("; ")}` };
+      } catch (err) {
+        return { step: asRead(stepFromError("inspect_copy", err, { op: "patch.list" })) };
+      }
+    },
     extra: () => ({ before }),
     readBack: async () => {
       try {
         const byFid = await listFids(ctx.bridge, edits.map((e) => e.fid), t);
         const mismatches: string[] = [];
-        const actual: FixtureRow[] = [];
+        const after: FixtureRow[] = [];
         for (const e of edits) {
           const r = byFid.get(e.fid);
           if (!r) {
             mismatches.push(`FID ${e.fid} is not in the patch`);
             continue;
           }
-          actual.push(r);
-          if (e.address !== undefined && (r.patch ?? "") !== e.address) mismatches.push(`FID ${e.fid}: patch ${JSON.stringify(r.patch ?? "")}, expected ${JSON.stringify(e.address)}`);
+          after.push(r);
+          if (e.address !== undefined && patchText(r) !== e.address) mismatches.push(`FID ${e.fid}: patch ${JSON.stringify(patchText(r))}, expected ${JSON.stringify(e.address)}`);
           if (e.name !== undefined && r.name !== e.name) mismatches.push(`FID ${e.fid}: name ${JSON.stringify(r.name)}, expected ${JSON.stringify(e.name)}`);
         }
         const checked = "each edited fixture's patch address and/or name";
+        // The full rows are in the result once (after); the verification carries what was compared.
+        const actual = after.map((r) => ({ fid: r.fid, patch: patchText(r), name: r.name }));
         return {
-          steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.list", detail: actual })],
+          steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.list", detail: { found: after.length } })],
           verification: mismatches.length ? { status: "mismatched", checked, expected: edits, actual, detail: mismatches.join("; ") } : { status: "matched", checked, expected: edits, actual },
-          extra: { after: actual },
+          extra: { after },
         };
       } catch (err) {
         return { steps: [asRead(stepFromError("read_back", err, { op: "patch.list" }))], verification: unavailable("the patch could not be read back") };
@@ -844,21 +1064,34 @@ export async function patchRemove(ctx: ToolContext, raw: RemoveArgs): Promise<Op
           if (!f.exists) problems.push(`no fixture with FID ${f.fid}`);
           else if ((f.current?.subfixtures ?? 0) > 0) problems.push(`FID ${f.fid} has ${f.current?.subfixtures} sub-fixture(s); removing it is not supported`);
         }
-        if (problems.length) return asRead({ name: "check_fixtures", status: "failed", op: "patch.check", error: problems.join("; "), detail: c });
-        return asRead({ name: "check_fixtures", status: "succeeded", op: "patch.check", detail: c });
+        // The current rows are in the result once, as `removed`.
+        const detail = { fixtures: c.fixtures.map((f) => ({ fid: f.fid, exists: f.exists })) };
+        if (problems.length) return asRead({ name: "check_fixtures", status: "failed", op: "patch.check", error: problems.join("; "), detail });
+        return asRead({ name: "check_fixtures", status: "succeeded", op: "patch.check", detail });
       } catch (err) {
         return asRead(stepFromError("check_fixtures", err, { op: "patch.check" }));
       }
     },
     editName: "remove",
-    edit: () => ({ op: "patch.remove", args: { fids } }),
+    // One Delete per fixture.
+    edit: () => ({ op: "patch.remove", args: { fids }, timeoutMs: t + EDIT_MS_PER_CALL * fids.length }),
+    inspectCopy: async () => {
+      try {
+        const rows = await listFids(ctx.bridge, fids, t, "copy");
+        const still = fids.filter((f) => rows.has(f));
+        const note = still.length === 0 ? "Read in the copy afterwards: every fixture is gone from it" : `Read in the copy afterwards: FID ${still.join(", ")} still in it`;
+        return { step: asRead({ name: "inspect_copy", status: "succeeded", op: "patch.list", detail: { side: "copy", stillPresent: still } }), note };
+      } catch (err) {
+        return { step: asRead(stepFromError("inspect_copy", err, { op: "patch.list" })) };
+      }
+    },
     extra: () => ({ removed }),
     readBack: async () => {
       try {
         const still = [...(await listFids(ctx.bridge, fids, t)).values()];
         const checked = "the removed FIDs are absent from the patch";
         return {
-          steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.list", detail: still })],
+          steps: [asRead({ name: "read_back", status: "succeeded", op: "patch.list", detail: { stillPresent: still.map((r) => r.fid) } })],
           verification: still.length ? { status: "mismatched", checked, expected: [], actual: still, detail: `still present: ${still.map((r) => r.fid).join(", ")}` } : { status: "matched", checked, expected: [], actual: [] },
         };
       } catch (err) {
@@ -1202,8 +1435,9 @@ export async function patchRemoveType(ctx: ToolContext, raw: RemoveTypeArgs): Pr
 export const SESSION_DESC =
   "Runs one patch session through the patch edit copy, never a dialog: read-only pre-checks (command line at Root, the copy closed, so nobody is in the Patch menu, no modal open, plus the tool's own checks), then enter the copy, apply the change there, an isolation check, commit, and read back. " +
   "Requires exclusive: true. Patch changes need exclusive use of the console: the isolation check compares fingerprints of the copy and the live patch, left out the touched FIDs, over several seconds. It is best-effort detection of someone else's changes, not a guarantee, and on a mismatch nothing is committed and the copy is left open for the operator. " +
-  "A committed patch change has NO UNDO (Oops does not revert it). Takes about 10 s (mostly the isolation check). " +
-  "When a session cannot be finished, the copy is closed again only if it provably holds no change; otherwise the result says copyLeftOpen: true and the command line stays inside the edit patch with no Patch window open: the operator keeps the copy by typing ChangeDestination Root at the console (no way to discard it without the Patch menu is known). Needs bridge 0.19.0; a session in a stage with a Name needs bridge 0.45.0.";
+  "A committed patch change has NO UNDO (Oops does not revert it). Takes about 10 s (mostly the isolation check; longer on a large show, where bridge 0.51.0 reads it in parts of about 2 s). " +
+  "When a session cannot be finished, the copy is closed again only if it provably holds no change; otherwise the result says copyLeftOpen: true and the command line stays inside the edit patch with no Patch window open: the operator keeps the copy by typing ChangeDestination Root at the console (no way to discard it without the Patch menu is known). " +
+  "A request that gets no reply is never resent: the call waits until the bridge answers again (step wait_bridge), reads what the copy holds, and only then reports. Needs bridge 0.19.0; a session in a stage with a Name needs bridge 0.45.0.";
 export const EXCLUSIVE_DESC = "Required, must be true: confirms nobody else uses the console while this runs (see the description). Without it the call is refused and nothing is sent.";
 export const VERIFY_DESC = "Read the patch back after the commit and compare (default true).";
 export const DETAIL_DESC =
@@ -1278,7 +1512,7 @@ export const registerPatchTools: RegisterTools = (server, ctx) => {
       title: "Readdress, unpatch or rename fixtures",
       description:
         "Change existing fixtures: per edit, a new DMX address (address), unpatch: true, and/or a new name. Addresses are applied together, so fixtures can swap addresses or move across their own current range. " +
-        "Pre-checks (nothing sent on failure): every FID exists, single-break modes only, and the new ranges overlap no other patched fixture. In the copy the bridge re-checks and restores every change of the call on any problem. " +
+        "Pre-checks (nothing sent on failure): every FID exists, a new address only for single-break modes (a multi-break fixture can be unpatched, every break, and renamed since bridge 0.51.0), and the new ranges overlap no other patched fixture. In the copy the bridge re-checks and restores every change of the call on any problem. " +
         SESSION_DESC +
         " verify reads each edited fixture back (address and/or name). A clean success lists per edit {fid, address?: [before, after], name?: [before, after]} in items (detail: true for the full rows).",
       inputSchema: {
