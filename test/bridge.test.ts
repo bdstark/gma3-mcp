@@ -189,3 +189,28 @@ test("an error reply keeps the bridge's code and structured detail; a bracketed 
     await fake.close();
   }
 });
+
+test("a closed socket's late close event does not drop the connection that replaced it", async () => {
+  // The reply comes a little later, so the first socket's "close" (emitted a tick after destroy()) arrives while the
+  // request on the second connection is still waiting.
+  const fake = await fakeBridge((req, sock) => setTimeout(() => reply(sock, { id: req.id, ok: true, result: { op: req.op } }), 30));
+  const bridge = new Gma3Bridge({ host: "127.0.0.1", port: fake.port });
+  try {
+    await bridge.request("ping", {});
+    assert.equal(bridge.connectionCount, 1);
+    const old = (bridge as unknown as { socket: net.Socket }).socket;
+    bridge.close();
+    const pending = bridge.request("ping", {});
+    // Wait until the second connection is up and its request is on the wire, then deliver the old socket's close.
+    while ((bridge as unknown as { socket: net.Socket | null }).socket === null) await new Promise((r) => setTimeout(r, 1));
+    old.emit("close", false);
+    const res = await pending;
+    assert.deepEqual(res, { op: "ping" });
+    assert.equal(bridge.connected, true, "the new connection is still up");
+    assert.equal(bridge.connectionCount, 2);
+    assert.equal(bridge.lastErrorMessage, null);
+  } finally {
+    bridge.close();
+    await fake.close();
+  }
+});

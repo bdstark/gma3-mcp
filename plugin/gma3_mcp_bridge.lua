@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.52.1"
+local VERSION      = "0.53.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -2540,8 +2540,16 @@ ops.ping = function(args)
   pcall(function() showfile = Root().MANetSocket:Get("ShowFile") end)
   local hostname
   pcall(function() hostname = Root().maNetSocket.hostname end)
+  -- The show file's state (0.53.0, from silly82): unsaved changes and the file status (ShowLoaded, ShowSaving, ...).
+  local show = {}
+  local okN, need = pcall(NeedShowSave)
+  if okN and need ~= nil then show.saveNeeded = need == true end
+  local okS, st = pcall(GetShowFileStatus)
+  if okS and st ~= nil then show.fileStatus = tostring(st) end
   return {
     bridgeVersion = VERSION,
+    instance      = state.instance,
+    show          = next(show) ~= nil and show or nil,
     host          = state.host,
     port          = state.port,
     luaVersion    = _VERSION,
@@ -4412,6 +4420,19 @@ local function patchFingerprint(p, only, exclude, opts)
     if not (okP and isHandle(t)) then return nil end
     return guidOf(t) .. "/" .. tostring(safeProp(m, "name"))
   end
+  -- onPC 2.5.1.1 (RoyX4, 2026-10-30): a Fixture's raw FIXTURE handle is the fixture itself, while its Display text can
+  -- name the next sibling (empty on the last one), so adding a fixture changes that text on an untouched neighbour.
+  -- Only a proven raw self-reference (same address and a non-empty GUID) is compared as self#GUID; anything else keeps
+  -- the Display comparison, and a changed GUID still shows.
+  local function fixtureSelfIdentity(h)
+    local ok, f = pcall(function() return h:Get("FIXTURE") end)
+    if not (ok and (isHandle(f) or (type(f) == "table" and type(f.Get) == "function"))) then return nil end
+    local address = safeCall(h, "Addr")
+    if address == nil or address == "" or safeCall(f, "Addr") ~= address then return nil end
+    local g = guidOf(h)
+    if g == "" or guidOf(f) ~= g then return nil end
+    return "self#" .. g
+  end
   local function add(h, depth, renumbered, isType, bare)
     if r.objects >= PATCH_FP_LIMIT then r.complete = false; r.reason = "more than " .. PATCH_FP_LIMIT .. " objects"; return false end
     local okc, n = pcall(function() return h:PropertyCount() end)
@@ -4428,7 +4449,8 @@ local function patchFingerprint(p, only, exclude, opts)
     local parts = { tostring(depth), class, unnumbered and "" or tostring(safeProp(h, "no")) }
     for _, k in ipairs(pn) do
       if not PATCH_FP_PROP_SKIP[k] and not (unnumbered and k == "INDEX") and not (bare and k == "NAME") then
-        local v = (k == "FIXTURETYPE" and typeIdentity(h)) or (k == "MODEDIRECT" and modeIdentity(h)) or ((isType and k == "NAME") and tostring(safeProp(h, "name"))) or nil
+        local v = (k == "FIXTURETYPE" and typeIdentity(h)) or (k == "MODEDIRECT" and modeIdentity(h))
+          or (k == "FIXTURE" and class == "Fixture" and fixtureSelfIdentity(h)) or ((isType and k == "NAME") and tostring(safeProp(h, "name"))) or nil
         if v == nil then
           local okv, dv = pcall(function() return h:Get(k, Enums.Roles.Display) end)
           if not okv then r.complete = false; r.reason = "property " .. tostring(k) .. " of " .. tostring(safeProp(h, "name")) .. " could not be read"; return false end
@@ -8288,6 +8310,9 @@ local function MainImpl(display_handle, argument)
   -- Continuous control (KB-18) is an explicit per-start decision as well; only unresolved releases carry over.
   state.control = { enabled = false, backend = nil, unresolved = state.control.unresolved or {}, spec = nil }
   state.running = true
+  -- 0.53.0 (from silly82): an identity per start, so a client can tell a restarted bridge from the one that was running
+  -- (the state table lives in _G and survives a show load).
+  state.instance = string.format("%d-%d", os.time(), math.random(1, 1073741823))
   state.stopRequested = false
   state.clients = {}
   loadModules()
