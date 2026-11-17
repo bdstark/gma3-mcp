@@ -1569,7 +1569,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.55.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.56.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1682,7 +1682,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.55.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.56.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -2801,6 +2801,80 @@ do
   check("a closed connection's group is closed with it", state.undo == nil and undoLog[#undoLog] == "close MCP second", json.encode(undoLog))
   Cmd, CreateUndo, CloseUndo = savedCmd, savedCreate, savedClose
   state.undo = nil
+end
+
+-------------------------------------------------------------------------------
+-- 0.56.0: undo.undo Oopses exactly this server's latest groups, after checking the console's undo list
+-------------------------------------------------------------------------------
+do
+  local saved = { Cmd = Cmd, CreateUndo = CreateUndo, CloseUndo = CloseUndo, HandleToStr = HandleToStr, IsObjectValid = IsObjectValid }
+  -- The console's undo list: a parent object whose children are the steps, oldest first; Oops removes the last one.
+  local list = { kids = {} }
+  function list:Children() local t = {}; for i, k in ipairs(self.kids) do t[i] = k end; return t end
+  local seq, cmds, oopsWorks = 0, {}, true
+  local function handle(name)
+    seq = seq + 1
+    local h = { name = name, hex = string.format("%08X", seq), alive = true }
+    function h:Parent() return list end
+    return h
+  end
+  local function step(name) local h = handle(name); list.kids[#list.kids + 1] = h; return h end
+  -- As on the console: a group becomes one step when it is closed, and an empty group adds none.
+  CreateUndo = function(name) return handle(name) end
+  CloseUndo = function(h) if h.used then list.kids[#list.kids + 1] = h end; return true end
+  HandleToStr = function(h) return h.hex:lower() end
+  IsObjectValid = function(h) return h.alive end
+  Cmd = function(c, h)
+    cmds[#cmds + 1] = c
+    if h then h.used = true end
+    if c == "Oops" and oopsWorks then local last = table.remove(list.kids); if last then last.alive = false end end
+    return "OK"
+  end
+  local a = { sock = {} }
+  state.undoHistory = {}
+  local function toolCall(name, commands)
+    request("undo.open", { name = name }, nil, a)
+    for _ = 1, commands do request("cmd", { command = "Store Macro 1" }, nil, a) end
+    return request("undo.close", {}, nil, a).result
+  end
+  local c1 = toolCall("gma3_store_macro", 2)
+  local c2 = toolCall("gma3_store_group", 1)
+  local c0 = toolCall("gma3_select", 0)
+  check("undo.close answers an id for a group with commands, none for an empty one", c1.id ~= nil and c2.id ~= nil and c0.id == nil and #state.undoHistory == 2, J({ c1, c2, c0 }))
+  local r = request("undo.list", {}, nil, a)
+  check("undo.list: the remembered groups, newest first", r.ok and #r.result.groups == 2 and r.result.groups[1].id == c2.id, J(r))
+  r = request("undo.undo", { ids = { c2.id }, preview = true }, nil, a)
+  check("preview checks the latest step and sends nothing", r.ok and r.result.preview == true and #cmds == 3 and #list.kids == 2, J(r))
+  r = request("undo.undo", { ids = { c1.id } }, nil, a)
+  check("a group that is not the latest step is refused", r.ok == false and r.error:find("not%-latest") and #list.kids == 2, J(r))
+  step("Fixture 1")
+  r = request("undo.undo", { ids = { c2.id } }, nil, a)
+  check("a step done on the console since is on top: refused, nothing undone", r.ok == false and r.error:find("not%-latest") and r.error:find("Fixture 1") and #list.kids == 3, J(r))
+  table.remove(list.kids).alive = false
+  request("undo.open", { name = "other" }, nil, { sock = {} })
+  r = request("undo.undo", { ids = { c2.id } }, nil, a)
+  check("an open group refuses (the console would answer Oops with Not possible)", r.ok == false and r.error:find("group%-open"), J(r))
+  state.undo = nil
+  r = request("undo.undo", { ids = { c2.id, c1.id } }, nil, a)
+  check("two groups, newest first: two Oops, each read back gone", r.ok and #r.result.undone == 2 and r.result.undone[1].gone and r.result.undone[2].gone and #list.kids == 0 and #state.undoHistory == 0, J(r))
+  r = request("undo.undo", { ids = { c1.id } }, nil, a)
+  check("an undone group is unknown afterwards", r.ok == false and r.error:find("unknown%-group"), J(r))
+  local c3 = toolCall("gma3_store_preset", 1)
+  oopsWorks = false
+  r = request("undo.undo", { ids = { c3.id } }, nil, a)
+  check("an Oops that leaves the group on top fails and keeps it remembered", r.ok == false and r.error:find("oops%-failed") and #state.undoHistory == 1, J(r))
+  oopsWorks = true
+  list.kids[1].alive = false; list.kids = {}
+  r = request("undo.undo", { ids = { c3.id } }, nil, a)
+  check("a group cleared from the console (show load, patch change) is refused and forgotten", r.ok == false and r.error:find("group%-gone") and #state.undoHistory == 0, J(r))
+  local c4 = toolCall("gma3_store_preset", 1)
+  list.kids[1].Parent = function() return nil end
+  r = request("undo.undo", { ids = { c4.id } }, nil, a)
+  check("an unreadable undo list refuses: no blind Oops", r.ok == false and r.error:find("unreadable") and cmds[#cmds] ~= "Oops", J(r))
+  r = request("undo.undo", { ids = {} }, nil, a)
+  check("undo.undo needs ids", r.ok == false and r.error:find("args.ids"), J(r))
+  Cmd, CreateUndo, CloseUndo, HandleToStr, IsObjectValid = saved.Cmd, saved.CreateUndo, saved.CloseUndo, saved.HandleToStr, saved.IsObjectValid
+  state.undo, state.undoHistory = nil, {}
 end
 
 print(string.format("%d passed, %d failed", passes, failures))
