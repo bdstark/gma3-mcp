@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.54.0"
+local VERSION      = "0.55.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -2858,9 +2858,75 @@ ops["control.recover"] = function(args)
   return r
 end
 
-ops.cmd = function(args)
+-------------------------------------------------------------------------------
+-- Undo groups (0.55.0, from silly82/gma3-mcp; probe docs/probes/undo-and-hooks-macos-2.5.1.md)
+-------------------------------------------------------------------------------
+-- CreateUndo(name) returns a handle; Cmd(c, handle) joins it and CloseUndo(handle) makes the group one Oops step. An
+-- empty group adds no step. Only commands of the `cmd` op from the connection that opened the group join it: property
+-- writes (set), CmdIndirect sends (patch sessions, show load/save, recipe editing, library import) and Lua do not.
+-- While a group is open the console answers Oops with "Not possible at the moment", so a command naming Oops closes
+-- the group first. The server opens and closes one group per tool call only when GMA3_UNDO_GROUPS is on.
+ops["undo.open"] = function(args, ctx)
+  local name = args.name
+  if type(name) ~= "string" or name == "" then error("args.name (string) is required") end
+  name = name:sub(1, 60)
+  local replaced
+  if state.undo then
+    local ok = pcall(CloseUndo, state.undo.handle)
+    replaced = { name = state.undo.name, commands = state.undo.commands, closed = ok }
+    state.undo = nil
+  end
+  local ok, h = pcall(CreateUndo, "MCP " .. name)
+  if not ok or h == nil then error("CreateUndo failed: " .. tostring(h)) end
+  state.undo = { handle = h, name = name, client = ctx and ctx.client, commands = 0 }
+  return { open = true, name = name, replaced = replaced }
+end
+
+ops["undo.close"] = function(args, ctx)
+  local g = state.undo
+  if not g then return { closed = false, note = "no group was open" } end
+  if ctx and g.client ~= ctx.client then return { closed = false, note = "the open group belongs to another connection" } end
+  state.undo = nil
+  local ok, r = pcall(CloseUndo, g.handle)
+  return { closed = ok and r ~= false, name = g.name, commands = g.commands, error = (not ok) and tostring(r) or nil }
+end
+
+ops.cmd = function(args, ctx)
   local command = args.command or args.cmd
   if type(command) ~= "string" or command == "" then error("args.command (string) is required") end
+  local g = state.undo
+  if g and ctx and g.client == ctx.client then
+    -- An executable Oops (review of #136): text in single or double quotes is data (Label Macro 5 "Oops", or
+    -- 'x; Oops'), so the line is scanned with both quote styles skipped, split on ";" outside quotes, and a command
+    -- whose first word is Oops counts. An unterminated quote runs to the end of the line, as in refTokens.
+    local runsOops, quote, part = false, nil, {}
+    local function flush()
+      if table.concat(part):lower():match("^%s*oops%f[%A]") then runsOops = true end
+      part = {}
+    end
+    for i = 1, #command do
+      local c = command:sub(i, i)
+      if quote then
+        if c == quote then quote = nil end
+      elseif c == '"' or c == "'" then
+        quote = c
+        part[#part + 1] = "_"
+      elseif c == ";" then
+        flush()
+      else
+        part[#part + 1] = c
+      end
+    end
+    flush()
+    if runsOops then
+      -- Oops acts on the steps before it, as typed: the group is closed first.
+      state.undo = nil
+      pcall(CloseUndo, g.handle)
+    else
+      g.commands = g.commands + 1
+      return { command = command, feedback = Cmd(command, g.handle), undoGroup = g.name }
+    end
+  end
   local feedback = Cmd(command)
   return { command = command, feedback = feedback }
 end
@@ -7817,6 +7883,8 @@ local function closeClient(i, reason)
   local c = state.clients[i]
   if c then
     releaseClientSession(c, reason or "disconnect")
+    -- 0.55.0: the connection's open undo group is closed with it.
+    if state.undo and state.undo.client == c then pcall(CloseUndo, state.undo.handle); state.undo = nil end
     pcall(function() c.sock:close() end)
   end
   table.remove(state.clients, i)
@@ -8339,6 +8407,8 @@ local function MainImpl(display_handle, argument)
   -- 0.53.0 (from silly82): an identity per start, so a client can tell a restarted bridge from the one that was running
   -- (the state table lives in _G and survives a show load).
   state.instance = string.format("%d-%d", os.time(), math.random(1, 1073741823))
+  -- 0.55.0: an undo group left open by a run that did not stop cleanly is closed.
+  if state.undo then pcall(CloseUndo, state.undo.handle); state.undo = nil end
   state.stopRequested = false
   state.clients = {}
   loadModules()

@@ -18,6 +18,7 @@
 | `GMA3_NET_OUTPUT_MULTICAST` | `1` | `0`: the listener joins no sACN multicast groups |
 | `GMA3_NET_OUTPUT_IDLE_MS` | `60000` | The listener closes after this long with no call |
 | `GMA3_AFTER_SAVE_HOOK` | *(none)* | Program started after every verified `gma3_save_show`, with the saved show's name (for example to commit show files to git); see [show.md](tools/show.md) |
+| `GMA3_UNDO_GROUPS` / `GMA3_UNDO_EXCLUDE` | off / *(none)* | `1` makes each tool call's commands one console undo group, so one Oops reverts them (bridge 0.55.0). Only commands sent through the bridge's `cmd` op join; property writes, CmdIndirect sends and Lua do not, and `gma3_load_show`, `gma3_save_show` and `gma3_patch_*` are never grouped. While a call runs, an operator's Oops answers "Not possible at the moment". `GMA3_UNDO_EXCLUDE`: more tool names (or `prefix*`) to leave out |
 
 ## Tools
 

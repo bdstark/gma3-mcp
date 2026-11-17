@@ -1569,7 +1569,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.54.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.55.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1682,7 +1682,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.54.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.55.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -2753,6 +2753,54 @@ do
 
   Root, GetPath, DirList, CmdIndirect, GetTopModal, Mouse = saved.Root, saved.GetPath, saved.DirList, saved.CmdIndirect, saved.GetTopModal, saved.Mouse
   Enums.PathType.Showfiles = saved.Showfiles
+end
+
+-------------------------------------------------------------------------------
+-- 0.55.0: undo groups (one Oops per tool call when the server opens them)
+-------------------------------------------------------------------------------
+do
+  local undoLog, cmdLog = {}, {}
+  local savedCmd, savedCreate, savedClose = Cmd, CreateUndo, CloseUndo
+  CreateUndo = function(name) local h = { name = name }; undoLog[#undoLog + 1] = "create " .. name; return h end
+  CloseUndo = function(h) undoLog[#undoLog + 1] = "close " .. h.name; return true end
+  Cmd = function(c, h) cmdLog[#cmdLog + 1] = c .. (h and (" @" .. h.name) or ""); return "OK" end
+  local a, b = { sock = {} }, { sock = {} }
+  local r = request("undo.open", {}, nil, a)
+  check("undo.open needs a name", r.ok == false and r.error:find("args.name"), json.encode(r))
+  r = request("undo.open", { name = "gma3_store_macro" }, nil, a)
+  check("undo.open creates a named group", r.ok and r.result.open == true and undoLog[1] == "create MCP gma3_store_macro", json.encode(r))
+  r = request("cmd", { command = "Store Macro 5" }, nil, a)
+  check("a command of the opening connection joins the group", r.ok and r.result.undoGroup == "gma3_store_macro" and cmdLog[#cmdLog] == "Store Macro 5 @MCP gma3_store_macro", json.encode(cmdLog))
+  r = request("cmd", { command = "Go+ Sequence 1" }, nil, b)
+  check("another connection's command stays outside it", r.ok and r.result.undoGroup == nil and cmdLog[#cmdLog] == "Go+ Sequence 1", json.encode(cmdLog))
+  r = request("undo.close", {}, nil, b)
+  check("another connection cannot close it", r.ok and r.result.closed == false and state.undo ~= nil, json.encode(r))
+  r = request("undo.close", {}, nil, a)
+  check("undo.close closes it and counts its commands", r.ok and r.result.closed == true and r.result.commands == 1 and state.undo == nil and undoLog[#undoLog] == "close MCP gma3_store_macro", json.encode(r))
+  r = request("undo.close", {}, nil, a)
+  check("closing with no group open is harmless", r.ok and r.result.closed == false, json.encode(r))
+  request("undo.open", { name = "gma3_command" }, nil, a)
+  r = request("cmd", { command = "Oops" }, nil, a)
+  check("a command naming Oops closes the group first and runs outside it", r.ok and r.result.undoGroup == nil and state.undo == nil and cmdLog[#cmdLog] == "Oops" and undoLog[#undoLog] == "close MCP gma3_command", json.encode({ cmdLog, undoLog }))
+  request("undo.open", { name = "gma3_store_macro" }, nil, a)
+  r = request("cmd", { command = 'Label Macro 5 "Oops"' }, nil, a)
+  check("quoted Oops is data: the label joins the group, which stays open", r.ok and r.result.undoGroup == "gma3_store_macro" and state.undo ~= nil, json.encode(r))
+  r = request("cmd", { command = 'Store Macro 6 "Oops then"' }, nil, a)
+  check("a quoted name starting with Oops is data too", r.ok and r.result.undoGroup == "gma3_store_macro" and state.undo ~= nil, json.encode(r))
+  r = request("cmd", { command = "Label Macro 5 'x; Oops'" }, nil, a)
+  check("a single-quoted ; Oops is data too: the group stays open", r.ok and r.result.undoGroup == "gma3_store_macro" and state.undo ~= nil, json.encode(r))
+  r = request("cmd", { command = 'Label Macro 5 "a; oops"' }, nil, a)
+  check("a double-quoted ; Oops is data: the group stays open", r.ok and r.result.undoGroup == "gma3_store_macro" and state.undo ~= nil, json.encode(r))
+  r = request("cmd", { command = 'Label Macro 7 "x"; oops' }, nil, a)
+  check("an Oops after a command separator is executable: the group is closed first", r.ok and r.result.undoGroup == nil and state.undo == nil, json.encode(r))
+  request("undo.open", { name = "first" }, nil, a)
+  r = request("undo.open", { name = "second" }, nil, a)
+  check("opening a second group closes the first", r.ok and r.result.replaced.name == "first" and undoLog[#undoLog] == "create MCP second", json.encode(r))
+  state.clients = { a }
+  state._closeClient(1, "test")
+  check("a closed connection's group is closed with it", state.undo == nil and undoLog[#undoLog] == "close MCP second", json.encode(undoLog))
+  Cmd, CreateUndo, CloseUndo = savedCmd, savedCreate, savedClose
+  state.undo = nil
 end
 
 print(string.format("%d passed, %d failed", passes, failures))

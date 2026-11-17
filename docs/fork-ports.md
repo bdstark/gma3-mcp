@@ -15,7 +15,7 @@ re-implemented on `main` and credit the author with `Co-Authored-By`.
 | 6 | `gma3_load_show`: unsaved-changes decision before loading, OSC restart through `gma3_start_bridge`, new-instance check | silly82 (feat/load-show) | re-implement | next |
 | 7 | `gma3_save_show` after-save hook (opt-in through `GMA3_AFTER_SAVE_HOOK` only, no default path) | RoyX4 (b0f367e, 97d83c4) | cherry-pick, then the default path removed | — |
 | 8 | `gma3_network_output`: passive sACN / Art-Net listener | silly82 (432b9cb) | cherry-pick | — |
-| 9 | Undo groups, one per tool call, off by default | silly82 (feat/status-undo) | re-implement | next |
+| 9 | Undo groups, one per tool call, off by default (`GMA3_UNDO_GROUPS=1`); only `cmd`-op commands join | silly82 (feat/status-undo) | re-implement | 0.55.0 |
 
 ## Not taken
 

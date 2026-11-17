@@ -46,6 +46,7 @@ import { registerTempoSyncTools, resyncPlayback, RESYNC_NOTE } from "./tools/tem
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 import { registerPoolUsageTools, shapeListing } from "./tools/poolusage.js";
 import { registerAnalysisTools } from "./tools/analysis.js";
+import { UndoGroups, inToolScope } from "./undo.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -78,6 +79,14 @@ const server = new McpServer(
   },
 );
 
+// Every tool handler runs in a scope that names its tool, so an undo group (GMA3_UNDO_GROUPS, src/undo.ts) can be
+// named after the tool call it covers and excluded tools can be recognised.
+{
+  const register = server.registerTool.bind(server) as (...a: unknown[]) => unknown;
+  (server as unknown as { registerTool: (...a: unknown[]) => unknown }).registerTool = (name: unknown, config: unknown, handler: unknown) =>
+    register(name, config, (...args: unknown[]) => inToolScope(String(name), () => (handler as (...a: unknown[]) => unknown)(...args)));
+}
+
 // Arbitrary Lua execution is a separately gated capability. The console-side switch (the plugin's
 // "lua" start argument, off by default) is the enforcement point; GMA3_ALLOW_LUA=0 additionally hides
 // the gma3_lua tool from this server so a deployment can rule it out regardless of console state.
@@ -88,7 +97,8 @@ const allowLuaTool = !/^(0|false|no|off)$/i.test((env.GMA3_ALLOW_LUA ?? "1").tri
 // existing single-command mutation tools and gma3_lua (arbitrary code cannot be classified as
 // read-only) take the same lock so a workflow is never split by them. This orders only this
 // process's own requests; it does not isolate anything from another console operator or client.
-const mutations = new MutationLock();
+// GMA3_UNDO_GROUPS=1: each tool call's mutation span is one console undo group (bridge 0.55.0); off by default.
+const mutations = new MutationLock(new UndoGroups(bridge));
 const toolContext: ToolContext = {
   bridge,
   mutations,
