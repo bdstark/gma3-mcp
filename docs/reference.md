@@ -13,6 +13,7 @@
 | `GMA3_OSC_PREFIX` | *(none)* | OSC prefix configured in onPC, without slashes |
 | `GMA3_INSTALL_DIR` | `~/MALightingTechnology` | Base folder containing versioned `gma3_<version>` directories; set explicitly on Windows |
 | `GMA3_HELP_DIR` | *(auto-detected)* | Override with the exact manual HTML directory (`gma3_<version>/shared/language/HTML`) |
+| `GMA3_AFTER_SAVE_HOOK` | *(none)* | Program started after every verified `gma3_save_show`, with the saved show's name (for example to commit show files to git); see [show.md](tools/show.md) |
 
 ## Tools
 

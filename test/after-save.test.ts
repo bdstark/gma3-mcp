@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterSaveHookPath, runAfterSaveHook } from "../src/afterSave.ts";
@@ -11,8 +11,9 @@ const waitFor = async (path: string, ms = 5000) => {
   return existsSync(path);
 };
 
-test("afterSaveHookPath: default under XDG_CONFIG_HOME, override by env, empty turns it off", () => {
-  assert.equal(afterSaveHookPath({ XDG_CONFIG_HOME: "/x" }), "/x/gma3-mcp/after-save");
+test("afterSaveHookPath: only GMA3_AFTER_SAVE_HOOK names a hook; unset or empty means none, with no default path", () => {
+  assert.equal(afterSaveHookPath({ XDG_CONFIG_HOME: "/x" }), null);
+  assert.equal(afterSaveHookPath({}), null);
   assert.equal(afterSaveHookPath({ GMA3_AFTER_SAVE_HOOK: "/bin/hook" }), "/bin/hook");
   assert.equal(afterSaveHookPath({ GMA3_AFTER_SAVE_HOOK: "" }), null);
 });
@@ -33,10 +34,15 @@ test("runAfterSaveHook: runs the hook with the show name and the shows folder", 
   }
 });
 
-test("runAfterSaveHook: an absent default hook is silent; a configured broken hook is reported, never thrown", async () => {
+test("runAfterSaveHook: an executable at the old default path does not run; a configured broken hook is reported, never thrown", async () => {
   const dir = mkdtempSync(join(tmpdir(), "after-save-"));
   try {
+    mkdirSync(join(dir, "gma3-mcp"));
+    const ran = join(dir, "ran.txt");
+    writeFileSync(join(dir, "gma3-mcp", "after-save"), `#!/bin/sh\ntouch "${ran}"\n`);
+    chmodSync(join(dir, "gma3-mcp", "after-save"), 0o755);
     assert.equal(await runAfterSaveHook("S", undefined, { XDG_CONFIG_HOME: dir }), undefined);
+    assert.equal(await waitFor(ran, 300), false, "nothing runs without GMA3_AFTER_SAVE_HOOK");
     assert.equal(await runAfterSaveHook("S", undefined, { GMA3_AFTER_SAVE_HOOK: "" }), undefined);
     const notExec = join(dir, "hook");
     writeFileSync(notExec, "#!/bin/sh\n");

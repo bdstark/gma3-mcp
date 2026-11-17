@@ -13,7 +13,7 @@ re-implemented on `main` and credit the author with `Co-Authored-By`.
 | 4 | Fixture selections bounded at 4,096 characters (compact, then split looks into parts); phaser read-back on a reversed physical range; patch fingerprint ignores a neighbour's Display text | RoyX4 (2cf0936, 48a230d, 9e12118) | re-implement | next |
 | 5 | Stale-socket close no longer drops the new connection; show state and instance id in the ping | silly82 (feat/status-undo) | re-implement | next |
 | 6 | `gma3_load_show`: unsaved-changes decision before loading, OSC restart through `gma3_start_bridge`, new-instance check | silly82 (feat/load-show) | re-implement | next |
-| 7 | `gma3_save_show` after-save hook (opt-in) | RoyX4 (b0f367e, 97d83c4) | re-implement | — |
+| 7 | `gma3_save_show` after-save hook (opt-in through `GMA3_AFTER_SAVE_HOOK` only, no default path) | RoyX4 (b0f367e, 97d83c4) | cherry-pick, then the default path removed | — |
 | 8 | `gma3_network_output`: passive sACN / Art-Net listener | silly82 (432b9cb) | cherry-pick | — |
 | 9 | Undo groups, one per tool call, off by default | silly82 (feat/status-undo) | re-implement | next |
 

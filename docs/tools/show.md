@@ -91,7 +91,7 @@ that is configured but can't start adds a warning.
 | --- | --- |
 | `GMA3_AFTER_SAVE_HOOK=/path/to/program` | Run this program (a relative path is resolved against the server's working folder) |
 | `GMA3_AFTER_SAVE_HOOK=` (empty) | Never run a hook |
-| unset | Run `$XDG_CONFIG_HOME/gma3-mcp/after-save` (`~/.config/gma3-mcp/after-save`) if it exists and is executable; otherwise do nothing |
+| unset | Never run a hook (there is no default path: nothing runs unless the operator names the program) |
 
 The program gets the name of the file the console wrote as its argument. Names compare case-insensitively, so this is
 the console's spelling, not necessarily the one requested. It also gets `GMA3_SHOW_NAME`, `GMA3_SHOWS_PATH` (the
