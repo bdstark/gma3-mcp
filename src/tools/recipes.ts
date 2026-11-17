@@ -161,7 +161,7 @@ const handle = (v: unknown): Handle | null => (v && typeof v === "object" && !Ar
 
 /** A list read that stopped at its bound: what is beyond it was not seen. */
 export class IncompleteRead extends Error {}
-const listComplete = (r: { total?: number; offset?: number; count?: number; items?: unknown[] } | null | undefined) =>
+export const listComplete = (r: { total?: number; offset?: number; count?: number; items?: unknown[] } | null | undefined) =>
   !r || typeof r.total !== "number" || (r.offset ?? 0) + (r.count ?? r.items?.length ?? 0) >= r.total;
 
 const NEEDS_BRIDGE = "the console runs an older bridge plugin (bridge 0.24.0 reads the cooked state of a cue part); update the plugin";

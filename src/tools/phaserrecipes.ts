@@ -38,7 +38,7 @@ import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
 import { presetId, STEP_DEFAULTS, type PresetRead } from "./presets.js";
-import { readLines } from "./recipes.js";
+import { listComplete, readLines } from "./recipes.js";
 import { asRead, buildResult, commandStep, notRequested, stepFromError, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { Validator, finiteNumber, objectName, objectNumber } from "../validate.js";
 
@@ -95,9 +95,9 @@ async function exists(bridge: Gma3Bridge, ref: string, t: number): Promise<boole
   }
 }
 
-async function readPreset(bridge: Gma3Bridge, ref: string, t: number): Promise<PresetRead | null> {
+async function readPreset(bridge: Gma3Bridge, ref: string, t: number, typesFor?: number[]): Promise<PresetRead | null> {
   try {
-    return (await bridge.request("preset.read", { ref }, t)) as PresetRead;
+    return (await bridge.request("preset.read", { ref, ...(typesFor ? { typesFor } : {}) }, t)) as PresetRead;
   } catch (err) {
     if (notFound(err)) return null;
     throw err;
@@ -1043,22 +1043,25 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
         // What a preset row applies to inside the selection depends on its mode (follow-up #140, docs/tools/presets.md):
         // a selective row to its own fixture or cell, a global row to every selected fixture of its fixture type (it
         // sits on the lowest FID of that type, which may be outside the group), a universal row to every selected
-        // fixture. Inside the selection each row becomes the members it applies to (`m:<sfIndex>|<attribute>`). A global
-        // row whose type, or a member's type, cannot be read stays as itself (`r:<row>`), so it can only be matched by
-        // the identical row of the other line. Without a readable selection every row stays as itself (as before).
-        const memberTypes = new Map<string, string | null>();
-        const typeOf = async (m: { fixture: string | null }): Promise<string | null> => {
+        // fixture that has its attribute. Inside the selection each row becomes the members it applies to
+        // (`m:<sfIndex>|<attribute>`). Fixture types come from preset.read's typesFor, in the same form as the rows'
+        // fixtureType ("6 Mega Hex Par"); a member's attributes from fixtureAttributes. A row whose type or attributes
+        // cannot be read stays as itself (`r:<row>`), matched only by the identical row of the other line. Without a
+        // readable selection every row stays as itself.
+        const memberTypes = new Map<number, string>();
+        const memberAttrs = new Map<string, Set<string> | null>();
+        const attrsOf = async (m: { fixture: string | null }): Promise<Set<string> | null> => {
           if (m.fixture === null) return null;
-          if (memberTypes.has(m.fixture)) return memberTypes.get(m.fixture)!;
-          let type: string | null = null;
+          if (memberAttrs.has(m.fixture)) return memberAttrs.get(m.fixture)!;
+          let attrs: Set<string> | null = null;
           try {
-            const fa = (await bridge.request("fixtureAttributes", { ref: `Fixture ${m.fixture}`, limit: 1 }, tm)) as { fixtureType?: unknown };
-            type = typeof fa.fixtureType === "string" && fa.fixtureType !== "" ? fa.fixtureType : null;
+            const fa = (await bridge.request("fixtureAttributes", { ref: `Fixture ${m.fixture}`, limit: 500 }, tm)) as { total?: number; offset?: number; count?: number; attributes?: Array<{ attribute?: string }> };
+            if (Array.isArray(fa.attributes) && listComplete({ ...fa, items: fa.attributes })) attrs = new Set(fa.attributes.map((x) => String(x.attribute)));
           } catch {
-            type = null;
+            attrs = null;
           }
-          memberTypes.set(m.fixture, type);
-          return type;
+          memberAttrs.set(m.fixture, attrs);
+          return attrs;
         };
         type Applied = { fixture?: unknown; sfIndex?: unknown; attribute?: unknown; mode?: unknown; fixtureType?: unknown };
         const appliesTo = async (r: Applied): Promise<string[]> => {
@@ -1066,13 +1069,22 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
           if (selection === null) return literal;
           const attr = String(r.attribute);
           const mode = String(r.mode ?? "selective").toLowerCase();
-          if (mode === "universal") return selection.map((m) => `m:${m.sfIndex}|${attr}`);
+          if (mode === "universal") {
+            // Universal data reaches every selected fixture that has the attribute (as gma3_cook_recipes predicts it).
+            const out: string[] = [];
+            for (const m of selection) {
+              const has = await attrsOf(m);
+              if (has === null) return literal;
+              if (has.has(attr)) out.push(`m:${m.sfIndex}|${attr}`);
+            }
+            return out;
+          }
           if (mode === "global") {
             if (typeof r.fixtureType !== "string" || r.fixtureType === "") return literal;
             const out: string[] = [];
             for (const m of selection) {
-              const t = await typeOf(m);
-              if (t === null) return literal;
+              const t = memberTypes.get(m.sfIndex);
+              if (t === undefined) return literal;
               if (t === r.fixtureType) out.push(`m:${m.sfIndex}|${attr}`);
             }
             return out;
@@ -1090,11 +1102,13 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
           if (coverageCache.has(pair)) return coverageCache.get(pair)!;
           let cells: Cell[] | null = [];
           for (const p of pair.split("/")) {
-            const d = await readPreset(bridge, `Preset ${p}`, tm).catch(() => null);
+            const typesFor = selection?.map((m) => m.sfIndex);
+            const d = await readPreset(bridge, `Preset ${p}`, tm, typesFor).catch(() => null);
             if (!d || d.truncated || !d.rows?.length || d.rows.some((r) => !r.attribute)) {
               cells = null;
               break;
             }
+            for (const [sf, t] of Object.entries(d.types ?? {})) if (typeof t === "string" && t !== "") memberTypes.set(Number(sf), t);
             cells.push(...d.rows);
           }
           coverageCache.set(pair, cells);
