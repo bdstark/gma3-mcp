@@ -20,11 +20,12 @@
  */
 export const MAX_SELECTION_CHARACTERS = 4096;
 
-interface Entry {
+export interface SelectionEntry {
   keyword: string;
   from: string;
   to?: string;
 }
+type Entry = SelectionEntry;
 
 const KEYWORDS = new Map(["fixture", "group", "channel", "subfixture"].map((k) => [k, k[0].toUpperCase() + k.slice(1)]));
 const ID = /^\d+(?:\.\d+)*$/;
@@ -84,6 +85,16 @@ function render(entries: Entry[]): string {
   return entries
     .map((e, i) => `${i === 0 || entries[i - 1].keyword !== e.keyword ? `${e.keyword} ` : ""}${e.from}${e.to === undefined ? "" : ` Thru ${e.to}`}`)
     .join(" + ");
+}
+
+/** The entries of a selection read exactly (`Keyword id [Thru id] (+ ...)`, keywords inherited), or null (`-`, open ranges). */
+export function selectionEntries(selection: string): SelectionEntry[] | null {
+  return parse(selection);
+}
+
+/** Entries as one selection, the keyword written only where it changes. */
+export function renderSelection(entries: SelectionEntry[]): string {
+  return render(entries);
 }
 
 /** The same selection, shorter when it is over the bound, otherwise unchanged. The result may still be over it. */

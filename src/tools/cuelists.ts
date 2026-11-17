@@ -69,7 +69,7 @@ import { SEQUENCE_SETTINGS, configureSequence, findReferences, settingValue, typ
 import { HeldLock } from "../mutations.js";
 import { VarTracker, variablePresence, variableRefs } from "./variables.js";
 import { dataPoolShape, inDataPool } from "./datapool.js";
-import { compactSelection, splitSelection } from "../selection-batches.js";
+import { compactSelection, renderSelection, selectionEntries, splitSelection, type SelectionEntry } from "../selection-batches.js";
 import { captureStoreExpectation, channelFilterWarning, readStorePreferences, verifyStoredValues, type StoreExpectation, type StoredCheck } from "./storeverify.js";
 
 export const MAX_CUES = 100;
@@ -445,47 +445,136 @@ function setStep(bridge: Gma3Bridge, name: string, ref: string, property: string
   return { name, run: () => requestStep(bridge, name, "set", args, (res) => ({ name, status: "succeeded", op: "set", detail: { ...args, result: res } }), t) };
 }
 
+/** At most this many selection entries per programmer scan of a look whose groups were expanded (#144). */
+const SCAN_ENTRIES = 50;
+/** At most this many groups in one look's `Group a Thru b`, each read with group.read. */
+const MAX_LOOK_GROUPS = 64;
+
+type ScanRow = Record<string, unknown> & { subfixtureIndex: number; attribute?: string; stepCount?: number };
+interface ScannedFixture {
+  subfixtureIndex?: number;
+  fid?: string | null;
+  name?: string | null;
+  rootFid?: string | null;
+  attributes?: string[];
+}
+/** A look's programmer content and its (sub)fixtures, read over one or more scans. */
+interface LookScan {
+  rows: ScanRow[];
+  fixtures: ScannedFixture[];
+  complete: boolean;
+  /** Why the scan is incomplete. */
+  reason?: string;
+  /** Group members by subfixture index -> fixture id ("101", a cell "101.1"), for reporting. */
+  labels: Map<number, string>;
+}
+
+/**
+ * #144: the selections a look's programmer scan reads. The programmer op resolves `fixtures` as objects and expands only
+ * fixtures and their cells, so a `Group n` reads as no fixture at all (coverage incomplete) and every phaser look on a
+ * group was refused. A look with groups is read through its groups' members instead (group.read: each member's fixture
+ * id, a cell's as "101.1", as gma3_build_phaser resolves a group), in scans of at most SCAN_ENTRIES entries. A group
+ * that cannot be read exactly (missing, truncated, a member without a fixture id, a selection with `-`) is a reason,
+ * never a guess.
+ */
+async function lookScanSelections(bridge: Gma3Bridge, fixtures: string, t: number): Promise<{ selections: string[]; labels: Map<number, string> } | { reason: string }> {
+  const labels = new Map<number, string>();
+  if (!/\bgroup\b/i.test(fixtures)) return { selections: [fixtures], labels };
+  const entries = selectionEntries(fixtures);
+  if (!entries) return { reason: `${fixtures} names a group in a form whose members cannot be read exactly (use + and Thru only)` };
+  const out: SelectionEntry[] = [];
+  for (const e of entries) {
+    if (e.keyword !== "Group") {
+      out.push(e);
+      continue;
+    }
+    const from = Number(e.from);
+    const to = e.to === undefined ? from : Number(e.to);
+    const span = `Group ${e.from}${e.to === undefined ? "" : ` Thru ${e.to}`}`;
+    if (!Number.isInteger(from) || !Number.isInteger(to) || to < from) return { reason: `${span} is not a range of whole group numbers, so its members cannot be read` };
+    if (to - from + 1 > MAX_LOOK_GROUPS) return { reason: `${span} names more than ${MAX_LOOK_GROUPS} groups` };
+    for (let n = from; n <= to; n++) {
+      let g: { truncated?: boolean; items?: Array<{ fixture?: string | null; sfIndex?: number; unreadable?: boolean }> };
+      try {
+        g = (await bridge.request("group.read", { ref: `Group ${n}` }, t)) as typeof g;
+      } catch (err) {
+        return { reason: `the members of Group ${n} could not be read: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      if (g.truncated) return { reason: `Group ${n} has more members than the bridge lists` };
+      for (const it of g.items ?? []) {
+        if (it.unreadable || !it.fixture || typeof it.sfIndex !== "number") return { reason: `Group ${n} holds a member without a fixture id` };
+        out.push({ keyword: "Fixture", from: it.fixture });
+        labels.set(it.sfIndex, it.fixture);
+      }
+    }
+  }
+  if (!out.length) return { reason: `${fixtures} holds no fixtures` };
+  const selections: string[] = [];
+  for (let i = 0; i < out.length; i += SCAN_ENTRIES) selections.push(renderSelection(out.slice(i, i + SCAN_ENTRIES)));
+  return { selections, labels };
+}
+
+/** Read a look's (sub)fixtures and their programmer content (up to `rowLimit` rows per scan; 1 when only the fixtures matter). */
+async function scanLook(bridge: Gma3Bridge, fixtures: string, t: number, rowLimit: number): Promise<LookScan> {
+  const sel = await lookScanSelections(bridge, fixtures, t);
+  if ("reason" in sel) return { rows: [], fixtures: [], complete: false, reason: sel.reason, labels: new Map() };
+  const rows = new Map<string, ScanRow>();
+  const seen = new Map<number | string, ScannedFixture>();
+  for (const selection of sel.selections) {
+    const scan = (await bridge.request("programmer", { scope: "fixtures", fixtures: selection, limit: rowLimit, maxChannels: 50000 }, t)) as {
+      rows?: ScanRow[];
+      scannedFixtures?: ScannedFixture[];
+      coverage?: { complete?: boolean };
+      fixturesTruncated?: boolean;
+      total?: number;
+      limitations?: string[];
+    };
+    const why = scan.limitations?.[0];
+    if (scan.coverage?.complete === false) return { rows: [], fixtures: [], complete: false, reason: `the scan of ${selection} was incomplete${why ? `: ${why}` : ""}`, labels: sel.labels };
+    if (scan.fixturesTruncated === true) return { rows: [], fixtures: [], complete: false, reason: `the scan of ${selection} listed only part of its fixtures`, labels: sel.labels };
+    if (rowLimit > 1 && typeof scan.total === "number" && scan.total > (scan.rows ?? []).length) return { rows: [], fixtures: [], complete: false, reason: `${selection} holds more than ${rowLimit} programmer values`, labels: sel.labels };
+    for (const f of scan.scannedFixtures ?? []) seen.set(typeof f.subfixtureIndex === "number" ? f.subfixtureIndex : `${f.fid}|${f.name}`, f);
+    for (const r of scan.rows ?? []) rows.set(`${r.subfixtureIndex}|${String(r.attribute)}`, r);
+  }
+  return { rows: [...rows.values()], fixtures: [...seen.values()], complete: true, labels: sel.labels };
+}
+
+/**
+ * A look's fixtures (top level, by their root FID; a group member by its own fixture id) and which of them have every
+ * phaser attribute on themselves or a cell.
+ */
+function phaserCoverage(scan: LookScan, attrs: string[]): { supported: Map<number, string>; unsupported: string[] } {
+  const supported = new Map<number, string>();
+  const roots = new Map<string, boolean>();
+  for (const e of scan.fixtures) {
+    const label = typeof e.subfixtureIndex === "number" ? scan.labels.get(e.subfixtureIndex) : undefined;
+    const root = label ?? (e.rootFid && e.rootFid !== "None" ? e.rootFid : e.fid && e.fid !== "None" ? e.fid : (e.name ?? "?"));
+    const has = attrs.every((a) => (e.attributes ?? []).includes(a));
+    roots.set(root, (roots.get(root) ?? false) || has);
+    if (has && typeof e.subfixtureIndex === "number") supported.set(e.subfixtureIndex, label ?? (e.fid && e.fid !== "None" ? e.fid : e.name ?? String(e.subfixtureIndex)));
+  }
+  return { supported, unsupported: [...roots].filter(([, ok]) => !ok).map(([r]) => r) };
+}
+
 /**
  * SU-14: check a look's phaser in the programmer: every (sub)fixture of the look that has the phaser's attributes holds
  * them with the requested steps, step timing and phaser layers, the phase spread over the selection grid (as
  * gma3_build_phaser checks it). Other attributes of the cue (a look's intensity or values) are not judged here; the
  * activation-group siblings that came with the phaser (same step count) are.
  */
-/** A look's fixtures (top level, by their root FID) and which of them have every phaser attribute on themselves or a cell. */
-async function phaserCoverage(bridge: Gma3Bridge, fixtures: string, attrs: string[], t: number): Promise<{ supported: Map<number, string>; unsupported: string[]; complete: boolean }> {
-  const scan = (await bridge.request("programmer", { scope: "fixtures", fixtures, limit: 1, maxChannels: 50000 }, t)) as {
-    scannedFixtures?: Array<{ subfixtureIndex?: number; fid?: string | null; name?: string | null; rootFid?: string | null; attributes?: string[] }>;
-    coverage?: { complete?: boolean };
-    fixturesTruncated?: boolean;
-  };
-  const supported = new Map<number, string>();
-  const roots = new Map<string, boolean>();
-  for (const e of scan.scannedFixtures ?? []) {
-    const root = e.rootFid && e.rootFid !== "None" ? e.rootFid : e.fid && e.fid !== "None" ? e.fid : (e.name ?? "?");
-    const has = attrs.every((a) => (e.attributes ?? []).includes(a));
-    roots.set(root, (roots.get(root) ?? false) || has);
-    if (has && typeof e.subfixtureIndex === "number") supported.set(e.subfixtureIndex, e.fid && e.fid !== "None" ? e.fid : e.name ?? String(e.subfixtureIndex));
-  }
-  return { supported, unsupported: [...roots].filter(([, ok]) => !ok).map(([r]) => r), complete: scan.coverage?.complete !== false && scan.fixturesTruncated !== true };
-}
-
 async function checkLookPhaser(bridge: Gma3Bridge, fixtures: string, effect: Effect, t: number): Promise<Verification> {
   const checked = `the phaser on ${fixtures} in the programmer (steps, step timing, phaser layers, phase per fixture)`;
   try {
-    const scan = (await bridge.request("programmer", { scope: "fixtures", fixtures, limit: 5000, maxChannels: 50000 }, t)) as {
-      rows?: Array<Record<string, unknown> & { subfixtureIndex: number; attribute?: string; stepCount?: number }>;
-      scannedFixtures?: Array<{ subfixtureIndex?: number; fid?: string | null; name?: string | null; attributes?: string[] }>;
-      coverage?: { complete?: boolean };
-    };
-    if (scan.coverage?.complete === false) return unavailable("the programmer scan of the look's fixtures was incomplete", checked);
+    const scan = await scanLook(bridge, fixtures, t, 5000);
+    if (!scan.complete) return unavailable(`the programmer scan of the look's fixtures was incomplete${scan.reason ? ` (${scan.reason})` : ""}`, checked);
     const attrs = effectAttributes(effect);
     // Every fixture of the look must be covered (review round 1): one without the attributes is a mismatch, not left out.
-    const cov = await phaserCoverage(bridge, fixtures, attrs, t);
+    const cov = phaserCoverage(scan, attrs);
     const scope = cov.supported;
     if (cov.unsupported.length) return { status: "mismatched", checked, detail: `fixture(s) ${cov.unsupported.join(", ")} of ${fixtures} have no ${attrs.join(", ")}, so they hold no phaser` };
     if (scope.size === 0) return { status: "mismatched", checked, detail: `no fixture of ${fixtures} has ${attrs.join(", ")}` };
     const n = effect.steps.length;
-    const rows = (scan.rows ?? []).filter((r) => scope.has(r.subfixtureIndex) && (attrs.includes(String(r.attribute)) || (r.stepCount ?? 1) === n));
+    const rows = scan.rows.filter((r) => scope.has(r.subfixtureIndex) && (attrs.includes(String(r.attribute)) || (r.stepCount ?? 1) === n));
     const implied = new Set(rows.map((r) => String(r.attribute)).filter((a) => !attrs.includes(a)));
     const b = verifyBuild({ effect, rows: rows as never, scope, implied, stepPresets: [] });
     return b.problems.length ? { status: "mismatched", checked, detail: b.problems.join("; ") } : { status: "matched", checked };
@@ -638,8 +727,9 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
         try {
           for (const look of allLooks.filter((l) => l.phaser)) {
             const attrs = effectAttributes(look.phaser as Effect);
-            const cov = await phaserCoverage(bridge, look.fixtures, attrs, t);
-            if (!cov.complete) return failedRead("check_phaser_fixtures", `the fixtures of ${look.fixtures} could not all be read; nothing was sent`);
+            const scan = await scanLook(bridge, look.fixtures, t, 1);
+            if (!scan.complete) return failedRead("check_phaser_fixtures", `the fixtures of ${look.fixtures} could not all be read${scan.reason ? ` (${scan.reason})` : ""}; nothing was sent`);
+            const cov = phaserCoverage(scan, attrs);
             if (cov.unsupported.length) return failedRead("check_phaser_fixtures", `fixture(s) ${cov.unsupported.join(", ")} of ${look.fixtures} have no ${attrs.join(", ")} (nor any cell with them), so the phaser would leave them out; nothing was sent`, { unsupported: cov.unsupported });
           }
           return asRead({ name: "check_phaser_fixtures", status: "succeeded", op: "programmer" });
