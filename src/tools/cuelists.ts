@@ -942,7 +942,9 @@ export async function buildCueBatch(ctx: ToolContext, b: Batch): Promise<BatchRe
       // The looks were asked for this cue: values the preference kept out of the store are missing from it.
       const leftOut: Verification[] = exp?.leftOut?.count
         ? [{ status: "mismatched", detail: `ChannelFilter ${JSON.stringify(exp.channelFilter)} stored only the selected fixtures (the last look's selection): ${exp.leftOut.count} value(s) of the cue's other looks are not in it (${exp.leftOut.shown.slice(0, 5).join(", ")}${exp.leftOut.count > 5 ? ", ..." : ""})` }]
-        : [];
+        : exp?.leftOutUnknown
+          ? [unavailable(`whether ChannelFilter ${JSON.stringify(exp.channelFilter)} kept the cue's other looks out could not be judged: ${exp.leftOutUnknown}`)]
+          : [];
       r.verification = worst([r.verification, props, ...(valueCheck ? [valueCheck] : []), ...leftOut], `cue ${c.cue}: looks in the programmer before the store; ${checked}${valueCheck ? `; ${valueCheck.checked}; every look's values` : ""}`);
     }
   }
