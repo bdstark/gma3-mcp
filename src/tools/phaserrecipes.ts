@@ -1022,7 +1022,25 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
         // A later line on the same group masks this line's cooked values (the later line wins on each fixture and
         // attribute both output): then no cooked value from this line is expected; its definition is still checked.
         const posAfter = action === "remove_line" ? -1 : k - 1;
-        const masker = !got.length && after ? after.slice(posAfter + 1).find((l) => l.group !== null && l.group === want!.group && rows.some((r) => rowPairOf(r) === stepPair(l))) : undefined;
+        // A later line masks this one only where it outputs the same fixtures and attributes (review of #138): its
+        // cooked rows must cover every fixture and attribute this line output before the edit, or, when this line
+        // output none before (already masked, or just added), its step presets must come from the same single-family
+        // pool (1-20; an All pool may mix families, so it proves nothing).
+        const poolOf = (pair: string) => Number(pair.split(".")[0]);
+        const oldKeys = oldPair ? rowsBefore.filter((r) => rowPairOf(r) === oldPair).map((r) => `${r.fixture}|${r.attribute}`) : [];
+        const masks = (l: LineDetail) => {
+          const pair = stepPair(l);
+          if (l.group === null || l.group !== want!.group || pair === null) return false;
+          const theirs = rows.filter((r) => rowPairOf(r) === pair);
+          if (!theirs.length) return false;
+          if (oldKeys.length) {
+            const keys = new Set(theirs.map((r) => `${r.fixture}|${r.attribute}`));
+            return oldKeys.every((key) => keys.has(key));
+          }
+          const mine = poolOf(newPair!);
+          return mine >= 1 && mine <= 20 && poolOf(pair) === mine;
+        };
+        const masker = !got.length && after ? after.slice(posAfter + 1).find(masks) : undefined;
         if (masker) maskedNote = `line ${k} cooks no value: line ${masker.line} on the same group (Group ${want!.group}) masks it; its definition was checked`;
         else if (!got.length) problems.push(`no cooked value comes from line ${k} (Preset ${newPair.replace("/", " / Preset ")})`);
         else if (want.speedHz !== undefined && !shared(newPair)) {

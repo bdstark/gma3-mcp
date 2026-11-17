@@ -397,7 +397,7 @@ async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boole
   const h = await startHarness(registerPhaserRecipeTools);
   const lines: FLine[] = structuredClone(initial);
   const cmds: string[] = [];
-  const st = { name: "TEST PH EDIT", ignoreAssignPreset: false, assignGroupToLine1: false, dimmerAbsolute: undefined as number | undefined, dimmerAbsoluteAfterCook: undefined as number | undefined };
+  const st = { name: "TEST PH EDIT", ignoreAssignPreset: false, assignGroupToLine1: false, dimmerAbsolute: undefined as number | undefined, dimmerAbsoluteAfterCook: undefined as number | undefined, dropDimmerAfterCook: false, dimmerDropped: false };
   const P = "Preset 21.9005";
   const addr = (cls: string, n: number, pool?: number) => ({ class: cls, index: n, addr: `14.14.1.${cls === "Preset" ? `5.${pool}` : 6}.${n}` });
   h.fake.on("recipe.editState", () => ({ environment: "Normal", editing: o.editing === true, partZeroLines: [], partZero: false, modal: o.modal ? UPDATE : false, lastCommand: "OK" }));
@@ -428,6 +428,7 @@ async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boole
       if (l.cls === "StandardRecipe") return;
       for (const fixture of l.group === 9001 ? ["251", "252"] : ["101"]) {
         const attribute = l.steps[0].preset.startsWith("4.") ? "ColorRGB_R" : "Dimmer";
+        if (attribute === "Dimmer" && st.dimmerDropped) continue;
         const absolute = attribute === "Dimmer" && st.dimmerAbsolute !== undefined ? { absolute: st.dimmerAbsolute } : {};
         const steps = l.steps.map((x, n) => ({ step: n + 1, ...absolute, accel: x.accel, decel: x.decel, trans: x.trans, integrated: { valid: true, pool: Number(x.preset.split(".")[0]), no: Number(x.preset.split(".")[1]) } }));
         out.set(`${fixture}|${attribute}`, { fixture, attribute, cooked: true, stepCount: 2, speed: l.speedHz, steps }); // the later line wins
@@ -474,8 +475,9 @@ async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boole
         next.accel = a;
         if (t !== undefined) own.trans = t;
       }
-    } else if (/^Cook Preset 21\.9005/.test(command) && st.dimmerAbsoluteAfterCook !== undefined) {
-      st.dimmerAbsolute = st.dimmerAbsoluteAfterCook;
+    } else if (/^Cook Preset 21\.9005/.test(command) && (st.dimmerAbsoluteAfterCook !== undefined || st.dropDimmerAfterCook)) {
+      if (st.dimmerAbsoluteAfterCook !== undefined) st.dimmerAbsolute = st.dimmerAbsoluteAfterCook;
+      if (st.dropDimmerAfterCook) st.dimmerDropped = true;
     } else if ((m = command.match(/^Copy Preset 21\.9005\.1 At Preset 21\.9005\.(\d+) \/NoConfirmation$/))) lines.push(structuredClone(lines[0]));
     else if ((m = command.match(/^Delete Preset 21\.9005\.(\d+) \/NoConfirmation$/))) lines.splice(Number(m[1]) - 1, 1);
     return "OK";
@@ -605,6 +607,20 @@ test("edit (review of #130): editing a line a later line fully masks matches; it
     const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90, detail: true });
     assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
     assert.ok((result.notes ?? []).some((n: string) => /line 1 cooks no value: line 2 .* masks it/.test(n)), JSON.stringify(result.notes));
+  } finally {
+    await h.close();
+  }
+});
+
+test("edit (review of #138): a later line of another attribute family does not mask the edited line", async () => {
+  // DIM_COUL: line 1 Dimmer and line 2 colour on the same group. Line 1's Dimmer values vanish after the edit; the colour
+  // line cooks other attributes, so it does not mask line 1: a mismatch, not a masked match.
+  const { h, st } = await editSetup(DIM_COUL);
+  try {
+    st.dropDimmerAfterCook = true;
+    const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90 });
+    assert.equal(result.verification.status, "mismatched", JSON.stringify(result.verification));
+    assert.match(result.verification.detail, /no cooked value comes from line 1/);
   } finally {
     await h.close();
   }
