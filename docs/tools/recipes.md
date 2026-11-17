@@ -134,11 +134,13 @@ and a cook at the end. This tool checks the references once, writes per cue part
 3. `check_references`, once for the whole call: every group, preset and MAtricks a line names is in the show (each read
    once, the missing ones listed with the first line that uses them). An empty group is a warning.
    `compare_existing` (`replace` only, #145): a cue part whose lines already read as asked (group, values, MAtricks or
-   none, Enabled, the name and selection mode when given, the given columns, and every column the request leaves out
+   none, Enabled, the name and selection mode as given or a new line's (no name, Strict), no Filter, SelectionFromValue
+   No, the given columns, and every column the request leaves out
    as a new line has it: the MAtricks settings None, X / Y / Z None, the other MAtricks properties at their reset
    values) and whose cue name and note match is **already done**: its item says so, is `matched`, and nothing is sent for it.
    Sending the same call again after a lost answer (a client timeout while the console finished) therefore rewrites
-   only what differs. `append` always writes (a repeat cannot be told from a wanted second copy). A `cook` still cooks
+   only what differs. A field or column that could not be read, or a list read in part, is never taken for a new line's
+   default: that part is written. `append` always writes (a repeat cannot be told from a wanted second copy). A `cook` still cooks
    every part.
 4. Each cue part is a batch item, in order, inside one span of the mutation lock (see
    [Batch forms](README.md#batch-forms-su-12)):

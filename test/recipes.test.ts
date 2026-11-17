@@ -80,7 +80,7 @@ test("set replies are compared per property", () => {
 // Fake console
 // ---------------------------------------------------------------------------
 
-interface FLine { cls: string; group: number | null; preset: string | null; matricks: number | null; enabled: boolean; name: string; mode: string; filter?: string; props?: Record<string, string> }
+interface FLine { cls: string; group: number | null; preset: string | null; matricks: number | null; enabled: boolean; name: string; mode: string; filter?: string; sfv?: boolean; props?: Record<string, string> }
 interface FRow { fixture: string; sfIndex: number; attribute: string; value: number; cooked: boolean }
 interface FTarget { lines: FLine[]; rows: FRow[] }
 
@@ -105,6 +105,9 @@ class Console {
   truncatedPresets = new Set<string>();
   truncatedGroups = new Set<number>();
   truncatedLines = new Set<FTarget>();
+  /** Fields the bridge fails to read (reported in fieldErrors, left out of fields), and a column list read in part. */
+  failFields = new Set<string>();
+  truncatedColumns = false;
   failAttributes = new Set<string>();
   /** #101: cue objects ("Sequence S Cue C") with the name (Part 0) and note the tools write. */
   cues = new Map<string, { name: string; note: string }>();
@@ -185,7 +188,15 @@ class Console {
       const t = this.targets.get(ref);
       if (!t) throw new Error(`no object found for '${ref}'`);
       // The display-role read of the per-line MAtricks columns (#101).
-      if (args.asText !== false) return { items: t.lines.map((l, i) => ({ class: l.cls, index: i + 1, fields: Object.fromEntries(((args.fields as string[]) ?? []).map((k) => [k, l.props?.[k] ?? "None"])) })) };
+      if (args.asText !== false) {
+        const fields = (args.fields as string[]) ?? [];
+        const ok = fields.filter((k) => !this.failFields.has(k));
+        const bad = fields.filter((k) => this.failFields.has(k));
+        return {
+          ...(this.truncatedColumns ? { total: t.lines.length + 1, offset: 0, count: t.lines.length } : {}),
+          items: t.lines.map((l, i) => ({ class: l.cls, index: i + 1, fields: Object.fromEntries(ok.map((k) => [k, l.props?.[k] ?? "None"])), ...(bad.length ? { fieldErrors: Object.fromEntries(bad.map((k) => [k, "read failed"])) } : {}) })),
+        };
+      }
       return {
         ...(this.truncatedLines.has(t) ? { total: t.lines.length + 1, offset: 0, count: t.lines.length } : {}),
         items: t.lines.map((l, i) => ({
@@ -195,9 +206,10 @@ class Console {
             Selection: l.group !== null ? { name: `Group ${l.group}`, class: "Group", index: l.group, addr: `g.${l.group}` } : "",
             Values: l.preset ? { name: this.presetOf(l.preset)?.[0] ?? "?", class: "Preset", addr: l.preset } : "",
             MAtricks: l.matricks !== null ? { name: `M${l.matricks}`, class: "MAtrick", index: l.matricks } : "",
-            Filter: l.filter ? { name: l.filter, class: "Filter" } : "", SelectionMode: l.mode, SelectionFromValue: false, FailedCookedPart: "None", EmptyLastCooking: false,
+            Filter: l.filter ? { name: l.filter, class: "Filter" } : "", SelectionMode: l.mode, SelectionFromValue: l.sfv ?? false, FailedCookedPart: "None", EmptyLastCooking: false,
             X: l.props?.X ?? "None", Y: l.props?.Y ?? "None", Z: l.props?.Z ?? "None",
           },
+          ...(this.failFields.has("Filter") ? { fieldErrors: { Filter: "read failed" } } : {}),
         })),
       };
     });
@@ -872,6 +884,49 @@ test("already done (#145 review): a column the replace leaves out must read as o
   con.commands = [];
   await store({ mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4", { x: { select: 1 } })] }] });
   assert.equal(con.commands[0], "Delete Sequence 9060 Cue 1 Part 0.1 /NoConfirmation");
+});
+
+test("already done (#145 review): a Filter, SelectionFromValue, a name or a selection mode a new line would not have is written again", async () => {
+  con.cue(9060, 1);
+  const req = { mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4")] }] };
+  await store(req);
+  con.commands = [];
+  assert.match((await store(req)).result.items[0].summary, /already done/, "the baseline is already done");
+  for (const [what, tweak] of [
+    ["Filter", (l: FLine) => (l.filter = "Color only")],
+    ["SelectionFromValue", (l: FLine) => (l.sfv = true)],
+    ["name", (l: FLine) => (l.name = "kept")],
+    ["selection mode", (l: FLine) => (l.mode = "Normal")],
+  ] as const) {
+    tweak(con.part(9060, 1).lines[0]);
+    con.commands = [];
+    const r = await store(req);
+    assert.doesNotMatch(r.result.items[0].summary, /already done/, what);
+    assert.equal(con.commands[0], "Delete Sequence 9060 Cue 1 Part 0.1 /NoConfirmation", what);
+    // The rewrite leaves a new line, which is already done again.
+    con.commands = [];
+    assert.match((await store(req)).result.items[0].summary, /already done/, `${what}: after the rewrite`);
+  }
+});
+
+test("already done (#145 review): a column or line field that could not be read, or a column list read in part, is never taken for a default", async () => {
+  con.cue(9060, 1);
+  await store({ mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4", { x: { wings: 2 } })] }] });
+  const req = { mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4")] }] };
+  for (const [what, set, clear] of [
+    ["XWings read failed", () => con.failFields.add("XWings"), () => con.failFields.clear()],
+    ["Filter read failed", () => con.failFields.add("Filter"), () => con.failFields.clear()],
+    ["columns read in part", () => (con.truncatedColumns = true), () => (con.truncatedColumns = false)],
+  ] as const) {
+    // Make the console hold a line that is not what the request asks (XWings=2), and fail the read that would show it.
+    con.part(9060, 1).lines[0].props = { XWings: "2" };
+    set();
+    con.commands = [];
+    const r = await store(req);
+    clear();
+    assert.doesNotMatch(r.result.items[0]?.summary ?? r.result.summary, /already done/, what);
+    assert.equal(con.commands[0], "Delete Sequence 9060 Cue 1 Part 0.1 /NoConfirmation", what);
+  }
 });
 
 test("progress (#145): one unit per written cue part, then one per cooked cue part; none without a token", async () => {
