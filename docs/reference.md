@@ -54,6 +54,7 @@ Workflow tools (shared result model, see [below](#workflow-tools); details in [`
 | `gma3_edit_cues` | The same trigger and timing, and one name per cue, on a list, range or all cues of a sequence, read back per cue ([docs](tools/cuelists.md)) |
 | `gma3_build_chase` | A looping chase into an empty sequence (one cue per look or preset, Time triggers, Wrap Around), then plays it and verifies one observed cycle through the wrap ([docs](tools/cuelists.md)) |
 | `gma3_recipes`, `gma3_edit_recipe`, `gma3_cook_recipes` | Read, add, change, move or remove one recipe line of a preset or cue part (references checked, every line read back); cook a preset, part, cue or sequence with an explicit option, verified ([docs](tools/recipes.md)) |
+| `gma3_edit_phaser_recipe` | Build one phaser recipe line (group, shape, 2 step presets, MAtricks, speed, phase) in a free preset slot through the Edit Recipe mode: checked first, "Update last object?" prevented (Cancel if it opens), programmer cleared, read back ([docs](tools/recipes.md#gma3_edit_phaser_recipe)) |
 | `gma3_store_recipe_cues` | The recipe lines of up to 100 cue parts of one sequence in one call (replace or append; group, preset, MAtricks, the per-line MAtricks and fade columns), with the cue's name and note; references checked once up front, a compact read-back per cue (line count and mismatches), an optional cook of every part ([docs](tools/recipes.md#gma3_store_recipe_cues)) |
 | `gma3_assign_to_executor`, `gma3_label_executor` | Inspect, then `Assign Sequence n At Page p.e` (replacing only with `replace`), label, read back ([docs](tools/executors.md)) |
 
@@ -477,6 +478,12 @@ carries `class` (`"Preset"` or `"Part"`), and every row has `cooked` (true when 
 `mask_cooked` non-zero; 511 on 2.5.1). Recipe lines themselves are read and written with `children` / `objects`
 (`asText: false` for their Selection, Values, MAtricks and Filter handles) and `set`. Tools:
 [tools/recipes.md](tools/recipes.md).
+
+### Edit Recipe mode (plugin v0.52.0; v0.52.1)
+
+- `recipe.editState` (read-only) → `{environment, editing, editingRaw, partZeroLines: [{index, class, name}], partZero, modal, modalError?, lastCommand}`: the current environment's `RecipeEditor.RecipeEditing`, the recipe lines in the programmer's Part Zero, the top dialog. A programmer without a Part Zero (seen live with phaser values in it) reads `partZero: false` and no line; before v0.52.1 it was an error (`no-part-zero`).
+- `recipe.editBegin {target, exclusive: true}` queues `EditRecipe <target>` with `CmdIndirect` (target `Preset P.N` or `Sequence S Cue C Part P` only). Refused (`not-exclusive`, `bad-args`, `modal-unknown`, `modal-open`, `editing-on`, `part-zero-busy`) before anything is queued. Queued, because "Update last object?" opened by a `Cmd()` on the plugin thread stalls the bridge; the server polls `recipe.editState`.
+- `recipe.editEnd {exclusive: true}` queues the `EditRecipe` toggle, only while the mode reads on (`editing-off` otherwise) and no dialog is open.
 
 ### Timecode shows (plugin v0.25.0, SB-08)
 

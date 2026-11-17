@@ -29,7 +29,7 @@ the live test procedure on a disposable show.
 | Groups with selection grids and MAtricks (SB-02, bridge 0.21.0; storing a group needs `exclusive: true`) | `gma3_selection_grid`, `gma3_store_group`, `gma3_matricks`, `gma3_configure_matricks` | [groups.md](groups.md) |
 | Presets with explicit storage rules (SB-03, bridge 0.22.0; storing needs `exclusive: true`) | `gma3_preset`, `gma3_store_preset` | [presets.md](presets.md) |
 | Phasers and effect distributions (SB-04, bridge 0.23.0; building needs `exclusive: true`) | `gma3_build_phaser`, `gma3_phaser_release` | [phasers.md](phasers.md) |
-| Recipes and cooking (SB-05, bridge 0.24.0) | `gma3_recipes`, `gma3_edit_recipe`, `gma3_store_recipe_cues`, `gma3_cook_recipes` | [recipes.md](recipes.md) |
+| Recipes and cooking (SB-05, bridge 0.24.0; phaser recipes 0.52.1) | `gma3_recipes`, `gma3_edit_recipe`, `gma3_store_recipe_cues`, `gma3_cook_recipes`, `gma3_edit_phaser_recipe` | [recipes.md](recipes.md) |
 | Shared speed and synchronisation (SB-06; sequence links through `gma3_configure_sequence`) | `gma3_speed_masters`, `gma3_configure_speed_master`, `gma3_speed_master_action`, `gma3_observe_tempo` | [speed.md](speed.md) |
 | Macros as show actions (SB-07; authoring never runs a macro) | `gma3_macros`, `gma3_store_macro`, `gma3_edit_macro_line`, `gma3_run_macro` | [macros.md](macros.md) |
 | Timecode shows (SB-08, bridge 0.25.0; building never plays or records) | `gma3_timecodes`, `gma3_build_timecode`, `gma3_timecode_transport` | [timecode.md](timecode.md) |
