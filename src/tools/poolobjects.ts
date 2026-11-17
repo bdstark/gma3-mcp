@@ -479,6 +479,7 @@ const objectShape = {
   to: z.union([z.number().int(), z.string()]).optional(),
   name: z.string().optional(),
   on_taken: z.enum(ON_TAKEN).optional(),
+  on_name_taken: z.enum(ON_NAME_TAKEN).optional(),
   force: z.boolean().optional(),
 };
 
@@ -499,7 +500,7 @@ export const registerPoolObjectTools: RegisterTools = (server, ctx) => {
         preview: z.boolean().optional().describe("Read and plan only; nothing is sent."),
         verify: z.boolean().optional().describe("Read back (default true)."),
         ...dataPoolShape,
-        objects: z.array(z.object(objectShape)).optional().describe("Batch form: several items, each {action?, object, to?, name?, on_taken?, force?}."),
+        objects: z.array(z.object(objectShape)).optional().describe("Batch form: several items, each {action?, object, to?, name?, on_taken?, on_name_taken?, force?}."),
         ...batchOptionShape,
       },
     },
@@ -513,6 +514,7 @@ export const registerPoolObjectTools: RegisterTools = (server, ctx) => {
               identityKeys: ["object", "to", "name"],
               label: (it) => `${String(it.action ?? "?")} ${String(it.object)}${it.to !== undefined ? ` At ${String(it.to)}` : ""}`,
               key: (it) => canonicalRef(it.object),
+              keys: destinationKeys,
               check: batchCheck,
               run: (it, c) => poolObject(c, it as PoolObjectArgs),
             })
@@ -527,6 +529,16 @@ export function canonicalRef(object: unknown): string {
     return parsePoolObject("object", object).ref.toLowerCase();
   } catch {
     return String(object).trim().replace(/\s+/g, " ").toLowerCase();
+  }
+}
+
+/** A copy's or move's destination (canonical), tracked like the source: a later item on it is skipped once the copy or move failed. */
+export function destinationKeys(it: Record<string, unknown>): string[] {
+  if ((it.action !== "copy" && it.action !== "move") || it.to === undefined) return [];
+  try {
+    return [parseDestination("to", it.to, parsePoolObject("object", it.object)).ref.toLowerCase()];
+  } catch {
+    return [];
   }
 }
 

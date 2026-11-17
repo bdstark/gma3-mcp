@@ -19,7 +19,7 @@ No bridge change: it uses the `objects`, `children`, `object` and `cmd` ops.
 | `preview` | read and plan, send nothing; the result has `plan` (the command lines) |
 | `verify` | read back (default true) |
 | `data_pool` | another data pool |
-| `objects` | batch form: `[{action?, object, to?, name?, on_taken?, force?}]`; the other arguments (`action` too) are defaults for every item |
+| `objects` | batch form: `[{action?, object, to?, name?, on_taken?, on_name_taken?, force?}]`; the other arguments (`action` too) are defaults for every item (an item's own fields win). A failed copy or move also skips later items on its destination |
 
 Tags (`gma3_store_tag`, `gma3_delete_tag`), cues (`gma3_delete_cue`, `gma3_store_cues`) and fixtures (patch tools)
 are refused with a pointer to their tools.

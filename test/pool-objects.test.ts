@@ -364,3 +364,27 @@ test("#155 review: batch keys and duplicates use the canonical object (Seq 5 = S
   assert.deepEqual(h.fake.commands, []);
   assert.deepEqual(batchCheck([{ action: "delete", object: "Group 01" }, { action: "move", object: "Group 1", to: 4 }]), ["group 1 is deleted or moved by more than one item"]);
 });
+
+test("#155 review 2: an item's own on_name_taken wins over the call's, in both directions", async () => {
+  let r = await h.callJson("gma3_pool_objects", { on_name_taken: "allow_suffix", objects: [{ action: "rename", object: "Group 1", name: "Back", on_name_taken: "refuse" }] });
+  assert.equal(r.result.items[0].outcome, "failed", r.text);
+  assert.deepEqual(h.fake.commands, []);
+  r = await h.callJson("gma3_pool_objects", { objects: [{ action: "rename", object: "Group 1", name: "Back", on_name_taken: "allow_suffix" }] });
+  assert.equal(r.result.items[0].outcome, "succeeded", r.text);
+  assert.deepEqual(h.fake.commands, ['Label Group 1 "Back"']);
+  assert.equal(c.objects.get("Group 1")?.name, "Back#2");
+});
+
+test("#155 review 2: a failed copy also blocks later items on its destination", async () => {
+  const r = await h.callJson("gma3_pool_objects", {
+    objects: [
+      { action: "copy", object: "Group 1", to: 2 },
+      { action: "delete", object: "Group 2", force: true },
+    ],
+  });
+  assert.equal(r.result.items[0].outcome, "failed", r.text);
+  assert.equal(r.result.items[1].outcome, "not_attempted", r.text);
+  assert.match(r.text, /item 1 on group 2 did not succeed/);
+  assert.deepEqual(h.fake.commands, []);
+  assert.ok(c.objects.has("Group 2"));
+});
