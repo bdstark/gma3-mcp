@@ -69,8 +69,16 @@ cannot open the patch copy or move a fixture between the checks, the `restore` v
 Pre-flight (read-only; nothing is sent on failure):
 - `patch.state`: the patch copy is closed. **Committing an open copy overwrites position writes** (live), so the tool
   refuses while someone is in the Patch menu or a patch session is open.
-- `patch.list`: every FID exists and is a top-level fixture. A fixture inside a grouping fixture is refused: whether
-  its position is relative to the parent is not established. Cells have no position of their own (see SU-08).
+- `patch.list`: every FID exists. Cells have no position of their own (see SU-08).
+- **Grouping fixtures.** Whether a fixture inside a grouping fixture is positioned relative to it is not established
+  (SU-04). Such a fixture (placed, or the source of a mirror pair) is accepted only when every grouping fixture above
+  it (`parentFid`, level by level) is, once this call is done, at the origin (within 0.1 mm) with no rotation (by
+  quaternion): then a relative and an absolute position are the same place. Otherwise the call is refused, step
+  `check_grouping`, naming the grouping fixture, its position and rotation: place it at 0, 0, 0 with rotation 0, 0, 0
+  first (a top-level grouping fixture is placed like any fixture), or in the same call. Within a call, outer fixtures
+  are written first, and a grouping fixture the call moves is read back at the origin with no rotation before any
+  fixture inside it is written (`<fid>.check_grouping_origin`, with or without `verify`): the console can acknowledge a
+  write it ignores, so a mismatch stops the call there. A grouping fixture whose FID is not a number is refused. Its `mirror_mesh` is not checked.
 - The current poses, which go into the result as `restore` and, in the full result, each fixture's `before`. A position or rotation value that is missing
   or not a number refuses the call (it is never read as 0).
 

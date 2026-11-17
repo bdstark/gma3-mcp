@@ -104,6 +104,9 @@ class FakeConsole {
   }
 }
 
+// A developer's own ~/.config/gma3-mcp/after-save must never run on these fake saves; one test sets a hook itself.
+process.env.GMA3_AFTER_SAVE_HOOK = "";
+
 let h: Harness;
 let con: FakeConsole;
 before(async () => {
@@ -394,4 +397,33 @@ test("save_show: outside ASCII the limit is 32 bytes in UTF-8", async () => {
   assert.match(r.result.validationErrors.join(" "), /is 17 characters, 34 bytes in UTF-8/);
   assert.doesNotMatch(r.result.validationErrors.join(" "), /would ask about/);
   assert.equal(h.fake.requests.length, 0);
+});
+
+test("after-save hook: only a matched save starts it, with the console's spelling of the file name", async () => {
+  const { mkdtempSync, writeFileSync, chmodSync, existsSync, readFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "save-hook-"));
+  const out = join(dir, "calls.txt");
+  const hook = join(dir, "after-save");
+  writeFileSync(hook, `#!/bin/sh\nprintf '%s|%s\\n' "$1" "$GMA3_SHOWS_PATH" >> "${out}"\n`);
+  chmodSync(hook, 0o755);
+  process.env.GMA3_AFTER_SAVE_HOOK = hook;
+  try {
+    const ok = await h.callJson("gma3_save_show", { name: "show a", exclusive: true }); // current show, other case
+    assert.equal(ok.result.verification.status, "matched", ok.text);
+    assert.deepEqual(ok.result.afterSave, { hook, started: true });
+    const t0 = Date.now();
+    while (!existsSync(out) && Date.now() - t0 < 5000) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(readFileSync(out, "utf8").split("|")[0], "Show A", "the hook gets the file the console wrote");
+
+    const refused = await h.callJson("gma3_save_show", { name: "Other", exclusive: true }); // another show's file: refused
+    assert.equal(refused.isError, true);
+    assert.equal(refused.result.afterSave, undefined);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(readFileSync(out, "utf8").trim().split("\n").length, 1, "a refused save never starts the hook");
+  } finally {
+    process.env.GMA3_AFTER_SAVE_HOOK = "";
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

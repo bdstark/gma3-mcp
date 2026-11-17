@@ -58,6 +58,7 @@ import {
   timeSeconds,
 } from "../validate.js";
 import { cueRef, exists, readFields } from "./common.js";
+import { captureStoreExpectation, channelFilterWarning, readStorePreferences, combineVerifications, verifyStoredValues, type StoreExpectation, type StoredCheck } from "./storeverify.js";
 import { stateAfterFrame } from "./livestate.js";
 import { dataPoolOf, dataPoolShape, inDataPool } from "./datapool.js";
 
@@ -80,7 +81,10 @@ export const TIMING_PROPS = {
 } as const;
 export type TimingKey = keyof typeof TIMING_PROPS;
 
-const NOT_VERIFIED_VALUES = "Stored fixture values (attribute data) are NOT verified; that needs gma3_cue_contents (FR-10).";
+const STORED_VALUES_NOTE =
+  "Stored fixture values are verified (verify: true, default): the programmer values the store should take are captured first, following the operator's ChannelFilter store preference " +
+  "(Active: every active value; Active For Selected: those of the selected fixtures; All / All For Selected likewise with inactive values), then the cue part is read back (GetPresetData) and every one must be stored with the same value or phaser steps (tolerance 0.5 %). " +
+  "Preset references and values the cue already held are not judged. With another ChannelFilter or StoreSource the values found are compared but completeness is not judged (verification unavailable). The result's storedValues names the preference and the counts. The plugin expects ChannelFilter Active: any other value is reported in warnings (read even with verify: false).";
 const LOCK_CAVEAT = "The mutation lock orders only this server's own mutations; it does not isolate the operation from another console operator or another client.";
 
 /** Seconds as the console command line / property editor accepts them. */
@@ -337,7 +341,20 @@ async function storeCue(ctx: ToolContext, args: StoreArgs, kind: "cue" | "part")
       existenceStep(ctx, "check_existing", () => refOf(target, target.part), "absent", 'Use mode "merge" or "overwrite" to store into an existing target. This check is a point-in-time read, not a transaction lock.'),
     );
   }
-  plan.push({ name: "store", run: () => commandStep(ctx.bridge, "store", buildStoreCommand(target, mode), ctx.requestTimeoutMs) });
+  // What the store should take is captured right before the command (after every check passed): a Store deactivates
+  // what it stored, so it cannot be read afterwards.
+  let expectation: StoreExpectation | undefined;
+  let filterWarning: string | undefined;
+  const verifyTimeout = Math.max(ctx.requestTimeoutMs, Math.min(ctx.requestTimeoutMs * 3, 60000));
+  plan.push({
+    name: "store",
+    run: async () => {
+      // The preference is read even without verify: a ChannelFilter other than Active is always reported.
+      if (args.verify !== false) expectation = await captureStoreExpectation(ctx.bridge, verifyTimeout);
+      filterWarning = channelFilterWarning(expectation ? expectation.channelFilter : (await readStorePreferences(ctx.bridge, ctx.requestTimeoutMs)).channelFilter);
+      return commandStep(ctx.bridge, "store", buildStoreCommand(target, mode), ctx.requestTimeoutMs);
+    },
+  });
   // Name and timing are applied as part properties, one step each, so every piece is individually verifiable
   // and no label text ever goes through the command line.
   if (name !== undefined) plan.push(setStep(ctx, "set_name", namedRef, "Name", name));
@@ -348,10 +365,10 @@ async function storeCue(ctx: ToolContext, args: StoreArgs, kind: "cue" | "part")
 
   // One lock span covers the commands AND the read-back: if the lock were released in between,
   // another queued mutation could change the cue first and the read-back would verify its work.
-  const { steps, verification } = await ctx.mutations.run(async () => {
+  const { steps, verification, valueCheck } = await ctx.mutations.run(async () => {
     const { steps } = await runSteps(plan);
 
-    // Read-back: existence, Name, and the timing fields that were requested. Fixture values are not read.
+    // Read-back: existence, Name, the timing fields that were requested, then the stored values.
     let verification: Verification;
     const expected: Record<string, unknown> = {
       Name: name,
@@ -372,29 +389,36 @@ async function storeCue(ctx: ToolContext, args: StoreArgs, kind: "cue" | "part")
         reads.push({ ref: partRef(), fields: ["Part", "Name", ...timingFields] });
       }
       const rb = await readBack(ctx.bridge, reads);
-      verification = verifyAgainst(
+      const props = verifyAgainst(
         kind === "cue" ? "cue exists; Name and part-0 timing fields that were given" : "part exists; Name and timing fields that were given",
         expected,
         rb,
         "does not exist after the store",
       );
+      const valueCheck = expectation ? await verifyStoredValues(ctx.bridge, partRef(), expectation, verifyTimeout) : undefined;
+      // The property read-back keeps its expected/actual; the value check adds its status and detail (counts in storedValues).
+      verification = valueCheck
+        ? { ...combineVerifications([props, valueCheck], `${props.checked}; ${valueCheck.checked}`), ...(props.expected !== undefined ? { expected: props.expected } : {}), ...(props.actual !== undefined ? { actual: props.actual } : {}) }
+        : props;
+      return { steps, verification, valueCheck };
     }
-    return { steps, verification };
+    return { steps, verification, valueCheck: undefined as StoredCheck | undefined };
   });
 
   const outcome = outcomeOf(steps);
   const summary =
     defaultSummary(op, outcome, verification, steps) +
-    ` Store step and read-back are reported separately. ${NOT_VERIFIED_VALUES}`;
+    " Store step and read-back are reported separately.";
   return buildResult({
     operation: op,
     target: describeTarget(target),
     steps,
     verification,
     summary,
+    ...(filterWarning ? { warnings: [filterWarning] } : {}),
     extra: {
       mode,
-      notVerified: NOT_VERIFIED_VALUES,
+      ...(valueCheck?.storedValues ? { storedValues: valueCheck.storedValues } : {}),
       ...(kind === "part" && target.part === 0 ? { partZeroNote: "Part 0 is the main part every cue has; storing to it is the same as storing the cue itself." } : {}),
       ...(name !== undefined ? { nameNote: "Names are set with the Name property of the part (part 0 for a cue) after the store, never inline on the command line." } : {}),
     },
@@ -634,7 +658,7 @@ export const registerCueTools: RegisterTools = (server, ctx) => {
     "Mode create first checks that the target does not exist and refuses (nothing sent) if it does; that check is a point-in-time read, not a transaction lock. " +
     "The current fixture selection is not changed; the programmer is not cleared (no Clear is sent). " +
     "Reads back existence, Name and the timing fields that were given; the store step and the read-back are reported separately. " +
-    `${NOT_VERIFIED_VALUES} ${LOCK_CAVEAT}`;
+    `${STORED_VALUES_NOTE} ${LOCK_CAVEAT}`;
 
   server.registerTool(
     "gma3_store_cue",

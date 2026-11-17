@@ -5,7 +5,7 @@
  *   gma3_programmer           active programmer content per UI channel        (bridge op `programmer`)
  *   gma3_fixture_output       DMX output per RT channel of one (sub)fixture   (bridge op `fixtureOutput`)
  *   gma3_dmx                  raw universe read over an explicit channel range (bridge op `dmx`)
- *   gma3_cue_contents         stored cue content the 2.5.1 API exposes         (bridge op `cueContents`)
+ *   gma3_cue_contents         stored cue properties, parts, recipes and values  (ops `cueContents`, `preset.read`)
  *
  * Every op is a structured op on the plugin thread: it works with the `lua` op disabled, it only
  * reads, and it never takes the mutation lock. Each result keeps the op's `source`, `limitations`
@@ -24,6 +24,7 @@ import type { ToolResult } from "../results.js";
 import { Validator, ValidationError, cueNumber, describe, finiteNumber, objectNumber, oneOf, partNumber, safeRef } from "../validate.js";
 import { explainUniverses } from "./dmxoutput.js";
 import { compactSelection } from "../selection-batches.js";
+import { fixtureMatcher, readPartRows, storedRow } from "./storedvalues.js";
 
 // ---------------------------------------------------------------------------
 // Local helpers
@@ -49,6 +50,12 @@ export const OUTPUT_ROW_KEYS = [
 ] as const;
 
 export const CUE_KEYS = ["no", "name", "trigType", "trigTime", "trigSound", "release", "assert", "allowDuplicates", "mibPreference", "break", "note", "partCount"] as const;
+/** The plugin's pre-sb-05 limitation ("... not exposed by the 2.5.1 Lua API"): dropped, the values are read per part. */
+const STALE_HARD_VALUES_LIMITATION = "hard (non-recipe) fixture values stored in a cue part are not exposed";
+/** Stored values one gma3_cue_contents call returns by default, and at most (preset.read's own cap per part). */
+export const DEFAULT_STORED_VALUES = 500;
+export const MAX_STORED_VALUES = 5000;
+
 export const PART_KEYS = ["part", "name", "cuePart", "timing", "command", "mib", "ownDataPresent", "ownNonCookedDataPresent", "memoryType", "recipes", "otherChildren", "storedValues"] as const;
 export const PART_TIMING_KEYS = ["cueFade", "cueDelay", "cueInFade", "cueInDelay", "cueOutFade", "cueOutDelay", "snapDelay", "duration", "indivFade", "indivDelay", "transition", "trackingDistance"] as const;
 export const RECIPE_KEYS = ["index", "name", "enabled", "selection", "selectionMode", "preset", "presetRef", "presetResolved", "presetDataKey", "values", "fadeX", "delayX", "speedX", "phaseX", "matricks", "filter", "generator"] as const;
@@ -421,14 +428,18 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
         "Read what a cue stores without playing it back or loading it: cue properties (No, Name, TrigType, TrigTime, TrigSound, Release, Assert, Note), per part the timing (CueFade, CueDelay, CueInFade, CueInDelay, CueOutFade, CueOutDelay, SnapDelay), command, MIB settings, " +
         "OwnDataPresent, and the recipes (selection, preset text plus the resolved preset reference or an explicit unresolved marker, values, FadeX/DelayX/SpeedX/PhaseX, enabled). `expand_presets: true` adds the referenced presets' data (GetPresetData) keyed by preset address. " +
         WORKS_WITHOUT_LUA +
-        "SUPPORTED MODE (onPC 2.5.1): recipe- and preset-based content only. NOT AVAILABLE: hard (non-recipe) fixture values stored in a part (`storedValues` is always null; a limitation is added when OwnDataPresent is Yes) and tracked/effective values (`trackedValues: \"not_reconstructed\"`; a part lists only what it stores). " +
-        "The `fixtures` filter applies to expanded preset data only (stated in limitations). Never sends Goto, Load or any playback command.",
+        "STORED VALUES (default on, `stored_values: false` to skip): per part `storedValues`, every value the part itself stores, hard (non-recipe) values and the cooked output of its recipes (`cooked: true`): fixture, attribute, value in percent, phaser steps, relative, the referenced preset, fade/delay; " +
+        "read with GetPresetData on the part (bridge preset.read, 0.24.0; probe SB-05). `storedValuesRead` per part says complete / incomplete / not_read with the reason (an older bridge, more values than `values_limit`, default 500, at most 5000 per call); an incomplete list is never a complete one. " +
+        "Tracked/effective values are not reconstructed (`trackedValues: \"not_reconstructed\"`; a part lists only what it stores; gma3_tracking_leaks folds tracking). " +
+        "The `fixtures` filter applies to storedValues and expanded preset data, not to recipe selections (stated in limitations). Never sends Goto, Load or any playback command.",
       inputSchema: {
         sequence: z.union([z.number(), z.string()]).describe("Sequence number (or exact name)."),
         cue: z.union([z.number(), z.string()]).describe("Cue number, e.g. 1, 2.5 or \"10.001\"."),
         part: z.number().int().optional().describe("Only this part (0..999). Default: all parts."),
-        fixtures: z.string().optional().describe('Fixture IDs/ranges ("1 Thru 5") to filter expanded preset data by fixture ID. Recipe selections are not expanded.'),
+        fixtures: z.string().optional().describe('Fixture IDs/ranges ("1 Thru 5") to filter storedValues and expanded preset data by fixture ID (an id includes its subfixtures). Recipe selections are not expanded.'),
         expand_presets: z.boolean().optional().describe("Read referenced presets with GetPresetData and include their flattened rows (default false)."),
+        stored_values: z.boolean().optional().describe("Read the values each part stores (default true; one preset.read per part with data)."),
+        values_limit: z.number().int().min(1).max(5000).optional().describe("Stored values returned per call, over all parts (default 500, max 5000)."),
       },
     },
     async (args) =>
@@ -443,8 +454,27 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
         const fixtures = args.fixtures === undefined || args.fixtures === null || args.fixtures === "" ? undefined : v.check(() => fixtureRange("fixtures", args.fixtures));
         if (!v.ok || sequence === undefined || cue === undefined) return validationError("gma3_cue_contents", v.errors);
         const expandPresets = args.expand_presets === true;
+        const wantValues = args.stored_values !== false;
+        const valuesLimit = v.check(() => finiteNumber("values_limit", args.values_limit, { integer: true, min: 1, max: MAX_STORED_VALUES, optional: true })) ?? DEFAULT_STORED_VALUES;
+        if (!v.ok) return validationError("gma3_cue_contents", v.errors);
         const res = await op(bridge, "cueContents", { sequence, cue, part, fixtures, expandPresets }, timeoutMs);
-        const parts = asArray(res.parts).map((p) => {
+        const cueRef = typeof res.ref === "string" && res.ref.trim() ? res.ref : `Sequence ${sequence} Cue ${cue}`;
+        const match = fixtures ? fixtureMatcher(fixtures) : undefined;
+        const limitations = stringList(res.limitations)
+          // Superseded: the values are read below with GetPresetData on each part (sb-05).
+          .filter((l) => !l.startsWith(STALE_HARD_VALUES_LIMITATION))
+          .map((l) => {
+            if (!wantValues || !fixtures || !match) return l;
+            if (l.startsWith("fixtures filter applied to expanded preset data")) return "fixtures filter applied to storedValues and to expanded preset data (by_fixtures); recipe selections (groups/ranges) were not expanded";
+            if (l.startsWith("fixtures filter not applied:")) return "fixtures filter applied to storedValues only: recipe selections are not expanded and presets were not expanded (set expand_presets)";
+            return l;
+          });
+        if (wantValues && fixtures && !match) limitations.push(`fixtures filter ${JSON.stringify(fixtures)} could not be applied to storedValues (only ids, Thru within one level, + and -); every stored value is returned`);
+        let remaining = valuesLimit;
+        let returned = 0;
+        const unreadParts: string[] = [];
+        const parts: Row[] = [];
+        for (const p of asArray(res.parts)) {
           const row = withNulls(p, PART_KEYS);
           row.timing = withNulls(row.timing, PART_TIMING_KEYS);
           row.command = withNulls(row.command, ["text", "delay", "enabled"]);
@@ -452,21 +482,56 @@ export const registerInspectionTools: RegisterTools = (server, ctx: ToolContext)
           row.recipes = asArray(row.recipes).map((r) => withNulls(r, RECIPE_KEYS));
           row.otherChildren = asArray(row.otherChildren);
           row.storedValues = null;
-          return row;
-        });
+          const partNo = typeof row.part === "number" && Number.isInteger(row.part) ? row.part : null;
+          if (!wantValues) row.storedValuesRead = { status: "not_requested" };
+          else if (row.ownDataPresent === false) {
+            // OwnDataPresent No: the part stores nothing (a recipe's cooked output sets it to Yes, sb-05).
+            row.storedValues = [];
+            row.storedValuesRead = { status: "complete", count: 0, returned: 0, note: "OwnDataPresent No: nothing stored, not read" };
+          } else if (partNo === null) {
+            row.storedValuesRead = { status: "not_read", reason: "the part's number could not be read, so its data cannot be addressed" };
+            unreadParts.push(`part ?: ${(row.storedValuesRead as Row).reason}`);
+          } else {
+            const read = await readPartRows(bridge, `${cueRef} Part ${partNo}`, timeoutMs);
+            const rows = match ? read.rows.filter((r) => match(String(r.fixture))) : read.rows;
+            const take = rows.slice(0, remaining);
+            remaining -= take.length;
+            returned += take.length;
+            const short = take.length < rows.length;
+            row.storedValues = read.unread && !read.rows.length ? null : take.map(storedRow);
+            const reasons = [read.unread, short ? `values_limit ${valuesLimit} reached: ${take.length} of ${rows.length} returned (narrow with part or fixtures, or raise values_limit up to ${MAX_STORED_VALUES})` : undefined].filter((x): x is string => !!x);
+            row.storedValuesRead = {
+              status: reasons.length ? (row.storedValues === null ? "not_read" : "incomplete") : "complete",
+              count: rows.length,
+              returned: take.length,
+              ...(match ? { filtered: read.rows.length - rows.length } : {}),
+              ...(reasons.length ? { reason: reasons.join("; ") } : {}),
+            };
+            if (reasons.length) unreadParts.push(`part ${partNo}: ${reasons.join("; ")}`);
+          }
+          parts.push(row);
+        }
+        for (const u of unreadParts) limitations.push(`stored values not fully returned: ${u}`);
         return {
           tool: "gma3_cue_contents",
           target: { sequence, cue, part: part ?? null, fixtures: fixtures ?? null },
-          supportedMode: "recipes and preset references (onPC 2.5.1); hard stored values and tracked values are not readable",
+          supportedMode: wantValues
+            ? "recipes, preset references and the values each part stores (hard and cooked); tracked values are not reconstructed"
+            : "recipes and preset references (stored_values: false); tracked values are not reconstructed",
           ...res,
-          source: res.source ?? "cue object tree",
+          source: wantValues ? "cue object tree (cueContents) and GetPresetData on each part (preset.read)" : (res.source ?? "cue object tree"),
           cue: withNulls(res.cue, CUE_KEYS),
           parts,
+          storedValues: wantValues
+            ? { complete: unreadParts.length === 0, returned, limit: valuesLimit, ...(unreadParts.length ? { incomplete: unreadParts } : {}) }
+            : { requested: false },
           presets: expandPresets ? (res.presets && typeof res.presets === "object" ? res.presets : {}) : null,
           trackedValues: "not_reconstructed",
-          limitations: stringList(res.limitations),
+          limitations,
           notes: [
-            "storedValues is always null: hard (non-recipe) values in a cue part are not exposed by the 2.5.1 Lua API",
+            wantValues
+              ? "storedValues per part: what the part itself stores (hard values, blocked values and the cooked output of its recipes, `cooked: true`), one row per fixture and attribute; value is percent; preset names a referenced preset; storedValuesRead says whether the list is complete"
+              : "storedValues not requested (stored_values: false)",
             "trackedValues is not_reconstructed: a part lists only what it stores; tracked values from earlier cues are absent",
             NULL_NOTE,
             "no Goto, Load or playback command was sent; selection and programmer were not changed",

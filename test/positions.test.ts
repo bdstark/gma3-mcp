@@ -104,6 +104,8 @@ interface Fx {
   fid: number;
   name: string;
   depth: number;
+  /** The grouping fixture it is inside (depth > 0). */
+  parent?: number;
   pos: Vec3;
   q: Quat;
   rot: Vec3;
@@ -130,13 +132,14 @@ class Stage {
   /** Garble every written fixture's POSX from the next read on. */
   garbleWritten = false;
   constructor() {
-    for (const [fid, depth] of [[101, 0], [102, 0], [103, 0], [4, 0], [401, 1]] as const) this.fixtures.set(fid, { fid, name: `Fx ${fid}`, depth, pos: { x: 0, y: 0, z: 0 }, q: [0, 0, 0, 1], rot: { x: 0, y: 0, z: 0 }, mirror: false });
+    // 4 is a grouping fixture with 401 inside it, and 4011 inside 401.
+    for (const [fid, depth, parent] of [[101, 0], [102, 0], [103, 0], [4, 0], [401, 1, 4], [4011, 2, 401]] as Array<[number, number, number?]>) this.fixtures.set(fid, { fid, name: `Fx ${fid}`, depth, ...(parent ? { parent } : {}), pos: { x: 0, y: 0, z: 0 }, q: [0, 0, 0, 1], rot: { x: 0, y: 0, z: 0 }, mirror: false });
   }
   install(h: Harness) {
     const f = h.fake;
     f.on("patch.state", () => ({ copyOpen: this.copyOpen, destination: this.copyOpen ? "Stage 1.Fixtures" : "Root", atRoot: !this.copyOpen }));
     f.on("patch.list", (args) => {
-      const rows = [...this.fixtures.values()].filter((x) => x.fid >= (args.fromFid as number) && x.fid <= (args.toFid as number)).map((x) => ({ fid: x.fid, name: x.name, depth: x.depth, ...(x.depth ? { parentFid: 4 } : {}) }));
+      const rows = [...this.fixtures.values()].filter((x) => x.fid >= (args.fromFid as number) && x.fid <= (args.toFid as number)).map((x) => ({ fid: x.fid, name: x.name, depth: x.depth, ...(x.parent ? { parentFid: x.parent } : {}) }));
       return { total: rows.length, offset: 0, count: rows.length, fixtures: rows };
     });
     f.on("objects", (args) => {
@@ -217,7 +220,7 @@ test("gma3_place_fixtures: preview sends nothing; a mirror pair uses the source'
   }
 });
 
-test("gma3_place_fixtures: refused with the patch copy open, for a missing FID and for a fixture inside a grouping fixture", async () => {
+test("gma3_place_fixtures: refused with the patch copy open, for a missing FID and for a fixture inside a grouping fixture that is not at the origin", async () => {
   const { h, s, sets } = await setup();
   try {
     s.copyOpen = true;
@@ -227,13 +230,80 @@ test("gma3_place_fixtures: refused with the patch copy open, for a missing FID a
     s.copyOpen = false;
     r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 999, position: { x: 1 } }] });
     assert.match(r.result.summary, /no fixture with FID 999/);
+    // The grouping fixture is moved: its pose is named, and placing it at the origin first is suggested.
+    s.fixtures.get(4)!.pos = { x: 2, y: 0, z: 1.5 };
     r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 401, position: { x: 1 } }] });
-    assert.match(r.result.summary, /inside a grouping fixture/);
+    assert.equal(r.result.outcome, "failed");
+    assert.match(r.result.summary, /FID 401 is inside grouping fixture FID 4, which is at 2, 0, 1\.5 m with rotation 0, 0, 0°/);
+    assert.match(r.result.summary, /Place FID 4 at 0, 0, 0 with rotation 0, 0, 0 first, or in the same call/);
+    assert.equal(r.result.failure.step, "check_grouping");
+    // Only rotated: refused as well.
+    s.fixtures.get(4)!.pos = { x: 0, y: 0, z: 0 };
+    s.fixtures.get(4)!.q = quatFromEuler({ x: 0, y: 0, z: 90 });
+    r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 401, position: { x: 1 } }] });
+    assert.match(r.result.summary, /grouping fixture FID 4, which is at 0, 0, 0 m with rotation 0, 0, 90°/);
+    // A mirror source inside it too (its position is read).
+    r = await h.callJson("gma3_place_fixtures", { layouts: [{ kind: "mirror", pairs: [[401, 102]] }] });
+    assert.match(r.result.summary, /FID 401 is inside grouping fixture FID 4/);
+    // Placed by this call away from the origin: refused, nothing sent.
+    s.fixtures.get(4)!.q = [0, 0, 0, 1];
+    r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 4, position: { x: 3 } }, { fid: 401, position: { x: 1 } }] });
+    assert.match(r.result.summary, /grouping fixture FID 4, which this call places at 3, 0, 0 m/);
     r = await h.callJson("gma3_place_fixtures", { unit: "yards", placements: [{ fid: 101, position: { x: 1 } }] });
     assert.equal(r.isError, true);
     assert.deepEqual(sets(), []);
   } finally {
     await h.close();
+  }
+});
+
+test("gma3_place_fixtures: a fixture inside grouping fixtures at the origin is placed; one placed at the origin in the same call is written first", async () => {
+  const { h, s, sets } = await setup();
+  try {
+    let r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 401, position: { x: 1, y: 2 } }] });
+    assert.equal(r.isError, false, JSON.stringify(r.result, null, 2));
+    assert.equal(r.result.verification.status, "matched");
+    assert.deepEqual(sets(), ["Fixture 401.POSX=1", "Fixture 401.POSY=2"]);
+    // The compact result of a clean success (#100) keeps the step without its detail; detail: true has the chains.
+    assert.equal(r.result.steps.find((x: any) => x.name === "check_grouping").status, "succeeded");
+    r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 401, position: { x: 1, y: 2 } }], detail: true });
+    const check = r.result.steps.find((x: any) => x.name === "check_grouping");
+    assert.equal(check.status, "succeeded");
+    assert.deepEqual(check.detail.grouped, { "401": [4] });
+    // Two levels: 4011 is inside 401, inside 4. 401 sits at 1, 2, 0 now, so 4011 is refused, naming 401.
+    r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 4011, position: { z: 1 } }] });
+    assert.match(r.result.summary, /FID 4011 is inside grouping fixture FID 401, which is at 1, 2, 0 m/);
+    // The grouping fixture moved back to the origin and rotated to none in the same call: written before the fixture inside it,
+    // whatever the order given.
+    s.fixtures.get(4)!.pos = { x: 5, y: 0, z: 0 };
+    s.fixtures.get(4)!.q = quatFromEuler({ x: 0, y: 0, z: 45 });
+    h.fake.requests.length = 0;
+    r = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 4011, position: { z: 1 } }, { fid: 401, position: { x: 0, y: 0 } }, { fid: 4, position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 } }] });
+    assert.equal(r.isError, false, JSON.stringify(r.result, null, 2));
+    assert.deepEqual(sets(), ["Fixture 4.POSX=0", "Fixture 4.POSY=0", "Fixture 4.POSZ=0", "Fixture 4.ROTDIRECT=0,0,0,1", "Fixture 401.POSX=0", "Fixture 401.POSY=0", "Fixture 4011.POSZ=1"]);
+    assert.deepEqual(s.fixtures.get(4011)!.pos, { x: 0, y: 0, z: 1 });
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_place_fixtures: a grouping fixture whose origin write the console ignores keeps the fixture inside it unwritten, with or without verify", async () => {
+  for (const verify of [true, false]) {
+    const { h, s, sets } = await setup();
+    try {
+      s.fixtures.get(4)!.pos = { x: 5, y: 0, z: 0 };
+      s.ignore.add("POSX");
+      const { result, isError } = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 4, position: { x: 0 } }, { fid: 401, position: { z: 1 } }], verify, detail: true });
+      assert.equal(isError, true, `verify ${verify}: ${JSON.stringify(result, null, 2)}`);
+      assert.deepEqual(sets(), ["Fixture 4.POSX=0"], `verify ${verify}: the fixture inside is not written`);
+      const check = result.steps.find((x: any) => x.name === "401.check_grouping_origin");
+      assert.equal(check.status, "failed");
+      assert.match(check.error, /grouping fixture FID 4 reads 5, 0, 0 m .* not the origin with no rotation/);
+      assert.equal(result.steps.find((x: any) => x.name === "401.POSZ").status, "skipped");
+      assert.deepEqual(s.fixtures.get(401)!.pos, { x: 0, y: 0, z: 0 });
+    } finally {
+      await h.close();
+    }
   }
 });
 

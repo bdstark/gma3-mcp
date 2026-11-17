@@ -219,11 +219,18 @@ and `topLevelKeys` is there to check it live.
 Readable without playback: cue properties, part timing/command/MIB, `OwnDataPresent`, recipes (Group/Selection x
 Preset with timing), preset references, and preset content via `GetPresetData`.
 
-Not readable: **hard (non-recipe) fixture values stored in a cue part**. There is no `GetCueData` in 2.5.1; the
-cooked value storage is binary (`MemoryType Compressed`) and not exposed as children or properties. The tool
-reports `storedValues: null` and, when a part has `OwnDataPresent = Yes`, the limitation
-`"hard (non-recipe) fixture values stored in a cue part are not exposed by the 2.5.1 Lua API (no GetCueData); only
-recipe and preset references are readable"`. Tracked values are not reconstructed either: a part lists only what is
+**Stored values of each part** (`storedValues`, on by default). There is no `GetCueData` in 2.5.1 and the value
+storage is binary (`MemoryType Compressed`), so `cueContents` does not read them. But `GetPresetData` works on a cue
+part as on a preset (probe SB-05, [sb-05-recipes-macos-2.5.1.md](../probes/sb-05-recipes-macos-2.5.1.md) "Reading
+cooked coverage": `mask_cooked` 511 for cooked values, 0 for hard ones), and the bridge's `preset.read` (0.24.0)
+accepts a part. The tool reads each part with data that way (`src/tools/storedvalues.ts`): one row per fixture and
+attribute with the value in percent, phaser steps, relative, the referenced preset, fade/delay and `cooked`.
+`storedValuesRead` per part says `complete`, `incomplete` (more than `values_limit`, default 500, max 5000 per call)
+or `not_read` (an older bridge, a failed read), and every incomplete part is a limitation. A part whose
+OwnDataPresent is No is not read. The plugin's old limitation ("not exposed by the 2.5.1 Lua API") is dropped.
+Checked live on onPC 2.5.1 (SB-05, and [cue-part-data-macos-2.5.1.md](../probes/cue-part-data-macos-2.5.1.md)):
+hard values, cooked recipe output, preset references and phaser steps match the programmer they were stored from.
+Not yet checked: relative values, per-value fade/delay, parts other than 0, parts over 5000 values. Tracked values are not reconstructed either: a part lists only what is
 stored in it (`trackedValues: "not_reconstructed"`). The alternatives (`Fixture X At Cue N`, `Cue N` SelFix, the
 DMX sheet during playback) all mutate state and are excluded.
 
@@ -383,7 +390,8 @@ look at its diagnostics, or run the tools by hand:
   0..255 and a 16-bit attribute combined as `raw16`.
 * `gma3_cue_contents` on a recipe cue: recipes with `presetResolved: true` and `presetRef.addrNative`; with
   `expand_presets: true` inspect `presets[*].topLevelKeys` and `rows` to confirm the `GetPresetData` flattening.
-  On a part with hard values: `ownDataPresent: true`, `storedValues: null` and the hard-values limitation.
+  On a part with hard values: `ownDataPresent: true` and `storedValues` with those values (`storedValuesRead.status`
+  `complete`); with a bridge older than 0.24.0, `not_read` and a limitation.
 * In every case the selection count and the programmer must be unchanged (the live test asserts the selection count).
 
 ## Live test

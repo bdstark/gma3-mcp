@@ -25,6 +25,7 @@ import { registerDialogTools } from "./tools/dialog.js";
 import { registerPhaserTools } from "./tools/phasers.js";
 import { registerPresetTools } from "./tools/presets.js";
 import { registerRecipeTools } from "./tools/recipes.js";
+import { registerPhaserRecipeTools } from "./tools/phaserrecipes.js";
 import { registerSpeedTools } from "./tools/speed.js";
 import { registerMacroTools } from "./tools/macros.js";
 import { registerTimecodeTools } from "./tools/timecode.js";
@@ -42,6 +43,7 @@ import { setPropertyChecked } from "./tools/setproperty.js";
 import { registerTempoSyncTools, resyncPlayback, RESYNC_NOTE } from "./tools/temposync.js";
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 import { registerPoolUsageTools, shapeListing } from "./tools/poolusage.js";
+import { registerAnalysisTools } from "./tools/analysis.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -690,6 +692,7 @@ registerGroupTools(server, toolContext);
 registerPresetTools(server, toolContext);
 registerPhaserTools(server, toolContext);
 registerRecipeTools(server, toolContext);
+registerPhaserRecipeTools(server, toolContext);
 registerSpeedTools(server, toolContext);
 registerMacroTools(server, toolContext);
 registerTimecodeTools(server, toolContext);
@@ -705,6 +708,7 @@ registerShowTools(server, toolContext);
 registerTagTools(server, toolContext);
 registerTempoSyncTools(server, toolContext);
 registerPoolUsageTools(server, toolContext);
+registerAnalysisTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

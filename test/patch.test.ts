@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
 import { BridgeReplyError, SILENT } from "./helpers/fake-bridge.js";
-import { registerPatchTools, blockAddress, copyArrival, dmxAddress, type PatchState } from "../src/tools/patch.js";
+import { registerPatchTools, blockAddress, copyArrival, dmxAddress, patchText, type PatchState } from "../src/tools/patch.js";
 
 /**
  * KB-26 patch tools against a fake bridge whose patch.* ops behave like the bridge's: the copy opens and
@@ -63,6 +63,12 @@ class PatchWorld {
     const s = this.stages[i - 1];
     return s.named ? `Stage ${i} '${s.name}'.Fixtures` : `Stage ${i}.Fixtures`;
   }
+  /** Multi-break fixtures: unpatched, their Patch displays "," (onPC 2.5.1); readdressing them is refused. */
+  multiBreak = new Set<number>();
+  /** The bridge does not answer ping (still busy with an earlier request). */
+  pingSilent = false;
+  /** Collections whose fingerprint is answered in two parts per side (bridge 0.51.0 resume). */
+  chunked = new Set<string>();
 
   frame() {
     if (this.delay > 0) {
@@ -136,7 +142,9 @@ class PatchWorld {
         const moving = new Set(edits.filter((e) => e.address !== undefined).map((e) => e.fid));
         const rows = edits.map((e) => {
           const cur = this.live.find((x) => x.fid === e.fid);
-          return cur ? { fid: e.fid, exists: true, singleBreak: true, current: cur } : { fid: e.fid, exists: false };
+          if (!cur) return { fid: e.fid, exists: false };
+          // Like the bridge: singleBreak only for a new address.
+          return { fid: e.fid, exists: true, ...(e.address ? { singleBreak: !this.multiBreak.has(e.fid) } : {}), current: cur };
         });
         const occ = this.occupied(this.live, moving);
         const conflicts: unknown[] = [];
@@ -178,12 +186,15 @@ class PatchWorld {
     f.on("patch.set", (args) => {
       if (!this.copy) throw new BridgeReplyError("[copy-closed] not open", "copy-closed");
       const edits = args.edits as Array<{ fid: number; address?: string; name?: string }>;
+      const out = [];
       for (const e of edits) {
         const fx = this.copy.find((x) => x.fid === e.fid)!;
-        if (e.address !== undefined) fx.patch = e.address;
+        const before = { patch: patchText(fx), name: fx.name };
+        if (e.address !== undefined) fx.patch = e.address === "" && this.multiBreak.has(fx.fid) ? "," : e.address;
         if (e.name !== undefined) fx.name = e.name;
+        out.push({ fid: fx.fid, before, after: { ...fx, mode: `3 ${fx.mode}` } });
       }
-      return { set: true };
+      return { set: true, edits: out, sets: edits.length, unpatchedFirst: [], ms: 1 };
     });
     f.on("patch.remove", (args) => {
       if (!this.copy) throw new BridgeReplyError("[copy-closed] not open", "copy-closed");
@@ -194,10 +205,14 @@ class PatchWorld {
     f.on("patch.collections", () => ({ copyOpen: this.copy !== null, live: ["Stages", "FixtureTypes"], copy: this.copy ? ["Stages", "FixtureTypes"] : false }));
     f.on("patch.fingerprint", (args) => {
       const exclude = (args.excludeFids as number[]) ?? [];
-      if (args.collection === "FixtureTypes") return { objects: 2, hash: 7, complete: true };
-      if (args.side === "copy") return this.fingerprint(this.copy ?? [], exclude, this.foreignInCopy);
-      return this.fingerprint(this.live, exclude, false);
+      const collection = String(args.collection);
+      // A part: the bridge stopped after its budget and says where to resume.
+      if (this.chunked.has(collection) && args.resume === undefined) return { side: args.side, collection, objects: 1, hash: "partial", complete: true, done: false, resume: { cursor: [1], hash: "0000002a", objects: 1 } };
+      if (collection === "FixtureTypes") return { objects: 2, hash: 7, complete: true, done: true };
+      if (args.side === "copy") return { ...this.fingerprint(this.copy ?? [], exclude, this.foreignInCopy), done: true };
+      return { ...this.fingerprint(this.live, exclude, false), done: true };
     });
+    f.on("ping", () => (this.pingSilent ? SILENT : { pong: true }));
     f.on("patch.commit", (args) => {
       if (args.exclusive !== true) throw new BridgeReplyError("[not-exclusive] needs exclusive", "not-exclusive");
       if (this.commitSilent) return SILENT;
@@ -209,7 +224,8 @@ class PatchWorld {
       const to = args.toFid as number | undefined;
       const limit = Math.min((args.limit as number) ?? 200, 2000);
       const offset = (args.offset as number) ?? 0;
-      const rows = this.live.filter((x) => (from === undefined || x.fid >= from) && (to === undefined || x.fid <= to)).map((x) => ({ ...x, mode: `3 ${x.mode}` }));
+      const list = args.side === "copy" ? (this.copy ?? []) : this.live;
+      const rows = list.filter((x) => (from === undefined || x.fid >= from) && (to === undefined || x.fid <= to)).map((x) => ({ ...x, mode: `3 ${x.mode}` }));
       const page = rows.slice(offset, offset + limit);
       return { total: rows.length + this.listTotalExtra, offset, count: page.length, fixtures: page };
     });
@@ -647,6 +663,32 @@ test("gma3_patch_set: a clean rename of 88 fixtures returns one line per fixture
   }
 });
 
+// ---------------------------------------------------------------------------
+// Bridge 0.51.0: multi-break unpatch, slow edits, requests without a reply, chunked fingerprints, compact results
+// ---------------------------------------------------------------------------
+
+test("gma3_patch_set: a multi-break fixture can be unpatched (its \",\" reads as unpatched) and renamed, not readdressed", async () => {
+  const { h, w, ops } = await setup();
+  try {
+    w.live.push({ fid: 403, name: "Two Break", patch: "2.001,3.001", mode: "TwoBreak" });
+    w.multiBreak.add(403);
+    let r = await h.callJson("gma3_patch_set", { edits: [{ fid: 403, unpatch: true, name: "Spare" }], exclusive: true, detail: true });
+    assert.equal(r.result.outcome, "succeeded", r.result.summary);
+    assert.equal(r.result.verification.status, "matched", JSON.stringify(r.result.verification));
+    assert.equal(w.live.find((x) => x.fid === 403)!.patch, ",", "the console displays the unpatched breaks as ','");
+    assert.deepEqual(r.result.verification.actual, [{ fid: 403, patch: "", name: "Spare" }]);
+    const before = ops().length;
+    r = await h.callJson("gma3_patch_set", { edits: [{ fid: 403, address: "4.001" }], exclusive: true });
+    assert.equal(r.result.outcome, "failed");
+    assert.match(r.result.summary, /FID 403 uses a multi-break mode; readdressing it is not supported \(unpatch: true and name are\)/);
+    assert.ok(!ops().slice(before).includes("patch.enter"));
+    assert.equal(patchText({ patch: " , " }), "");
+    assert.equal(patchText({ patch: "3.202," }), "3.202,", "a partly patched multi-break fixture keeps its text");
+  } finally {
+    await h.close();
+  }
+});
+
 test("gma3_patch_set: readdress and unpatch items show [before, after]; a mismatch returns the full result (#100)", async () => {
   const { h, w } = await setup();
   try {
@@ -672,7 +714,8 @@ test("gma3_patch_set: readdress and unpatch items show [before, after]; a mismat
     assert.equal(r.result.before.length, 50);
     assert.equal(r.result.verification.actual.length, 50);
     assert.equal(r.result.target.edits.length, 50);
-    assert.ok(r.result.steps.find((s: any) => s.name === "read_back").detail.length === 50);
+    // The rows read back are in verification.actual (and after); the read_back step only counts them.
+    assert.deepEqual(r.result.steps.find((s: any) => s.name === "read_back").detail, { found: 50 });
   } finally {
     await h.close();
   }
@@ -685,6 +728,23 @@ test("gma3_patch_set: a refused call is returned in full (#100)", async () => {
     assert.equal(r.result.outcome, "failed");
     assert.equal(r.result.items, undefined);
     assert.ok(r.result.steps.find((s: any) => s.name === "check_edits").detail, "the pre-check keeps its detail");
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_set: the result carries each fixture row once (before, after) and compact step details", async () => {
+  const { h } = await setup();
+  try {
+    const { result } = await h.callJson("gma3_patch_set", { edits: [{ fid: 401, address: "1.009" }, { fid: 402, address: "1.001", name: "Swapped" }], exclusive: true, detail: true });
+    assert.equal(result.outcome, "succeeded", result.summary);
+    const step = (n: string) => result.steps.find((s: any) => s.name === n);
+    assert.ok(step("check_edits").detail.edits.every((e: any) => e.current === undefined), "check_edits leaves out the rows that are in before");
+    assert.deepEqual(step("set").detail.edits[1], { fid: 402, before: { patch: "1.009", name: "Par 2" }, after: { patch: "1.001", name: "Swapped" } });
+    assert.deepEqual(step("read_back").detail, { found: 2 });
+    assert.deepEqual(result.verification.actual, [{ fid: 401, patch: "1.009", name: "Par 1" }, { fid: 402, patch: "1.001", name: "Swapped" }]);
+    assert.equal(result.before[0].mode, "Ch08");
+    assert.equal(result.after[1].mode, "3 Ch08");
   } finally {
     await h.close();
   }
@@ -735,6 +795,148 @@ test("gma3_patch_add: a clean block of 50 lists fid, name and address per fixtur
     assert.equal(r.result.verification.status, "matched");
     assert.equal(r.result.items, undefined);
     assert.equal(r.result.fixtures.length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a failed patch call reads from the top: outcome, summary and the failing step first; steps last", async () => {
+  const { h, w } = await setup();
+  try {
+    w.addError = new BridgeReplyError("[add-failed] the new range overlaps FID 402", "add-failed");
+    const res = await h.call("gma3_patch_add", { type: 6, mode: 3, fid: 901, address: "2.001", exclusive: true });
+    const text = res.content.map((c: any) => c.text).join("\n");
+    const keys = Object.keys(JSON.parse(text));
+    assert.deepEqual(keys.slice(0, 4), ["operation", "outcome", "summary", "failure"]);
+    assert.equal(keys.at(-1), "steps");
+    const failure = JSON.parse(text).failure;
+    assert.deepEqual(failure, { step: "add", status: "failed", op: "patch.add", error: "[add-failed] the new range overlaps FID 402" });
+    assert.ok(text.indexOf("overlaps FID 402") < text.indexOf('"steps"'), "the error is readable before the steps");
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_set: an edit slower than the request timeout is waited for (its timeout scales with the Sets it makes)", async () => {
+  const { h, w } = await setup();
+  try {
+    const orig = h.fake.handlerFor("patch.set")!;
+    h.fake.on("patch.set", async (args, req) => {
+      await new Promise((r) => setTimeout(r, 700)); // > the 400 ms request timeout
+      return orig(args, req);
+    });
+    const { result } = await h.callJson("gma3_patch_set", { edits: [{ fid: 401, address: "1.017" }], exclusive: true });
+    assert.equal(result.outcome, "succeeded", result.summary);
+    assert.equal(w.live.find((x) => x.fid === 401)!.patch, "1.017");
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_set: an edit without a reply is not resent; once the bridge answers, the copy is read and closed when unchanged (failed)", async () => {
+  const { h, w, ops } = await setup();
+  try {
+    // The bridge refused and restored, but the reply was lost.
+    h.fake.on("patch.set", () => SILENT);
+    const { result } = await h.callJson("gma3_patch_set", { edits: [{ fid: 401, name: "Renamed" }], exclusive: true });
+    assert.equal(result.outcome, "failed", result.summary);
+    assert.equal(result.committed, false);
+    assert.equal(result.copyLeftOpen, false);
+    assert.deepEqual(stepNames(result).slice(4), ["set:unknown", "wait_bridge:succeeded", "inspect_copy:succeeded", "isolation_check:skipped", "commit:skipped", "wait_commit:skipped", "close_check:succeeded", "close:succeeded", "wait_close:succeeded"]);
+    assert.match(result.summary, /the set step got no reply within 1 s \(it was not resent\); the bridge answered again after 0 s\. Read in the copy afterwards: as before the call: FID 401/);
+    assert.match(result.summary, /closed again without changes/);
+    assert.equal(ops().filter((o) => o === "patch.set").length, 1, "never resent");
+    assert.equal(h.fake.requests.find((r) => r.op === "patch.list")!.args.side, "copy");
+    assert.equal(result.failure.step, "set");
+    assert.equal(w.copy, null);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_set: an edit that applied without a reply leaves the copy open, says what it holds, and is unknown", async () => {
+  const { h, w } = await setup();
+  try {
+    const orig = h.fake.handlerFor("patch.set")!;
+    h.fake.on("patch.set", async (args, req) => {
+      await orig(args, req);
+      return SILENT;
+    });
+    const { result } = await h.callJson("gma3_patch_set", { edits: [{ fid: 401, name: "Renamed" }], exclusive: true });
+    assert.equal(result.outcome, "unknown");
+    assert.equal(result.copyLeftOpen, true);
+    assert.match(result.summary, /Read in the copy afterwards: as requested: FID 401/);
+    assert.match(result.summary, /THE PATCH COPY WAS LEFT OPEN/);
+    assert.deepEqual(result.steps.find((s: any) => s.name === "inspect_copy").detail, { side: "copy", requested: [401], previous: [], other: [] });
+    assert.ok(!h.fake.requests.some((r) => r.op === "patch.commit"));
+    assert.equal(w.live.find((x) => x.fid === 401)!.name, "Par 1", "nothing is live");
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_remove: an edit without a reply while the bridge stays busy: unknown, nothing more is sent", async () => {
+  const { h, w, ops } = await setup();
+  try {
+    h.fake.on("patch.remove", () => SILENT);
+    w.pingSilent = true;
+    const { result } = await h.callJson("gma3_patch_remove", { fids: [402], exclusive: true });
+    assert.equal(result.outcome, "unknown");
+    assert.equal(result.committed, false);
+    assert.equal(result.copyLeftOpen, true);
+    assert.match(result.summary, /the remove step \(allowed 1 s\) got no reply and the bridge has not answered since/);
+    assert.match(result.summary, /THE PATCH COPY IS STILL OPEN/);
+    const after = ops().slice(ops().indexOf("patch.remove") + 1);
+    assert.ok(after.length > 0 && after.every((o) => o === "ping"), `only pings after the edit: ${after.join(", ")}`);
+    assert.deepEqual(stepNames(result).slice(4, 6), ["remove:unknown", "wait_bridge:unknown"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("the isolation check reads a large collection in parts and resumes where each part stopped (bridge 0.51.0)", async () => {
+  const { h, w } = await setup();
+  try {
+    w.chunked.add("FixtureTypes");
+    const { result } = await h.callJson("gma3_patch_set", { edits: [{ fid: 401, name: "Renamed" }], exclusive: true, detail: true });
+    assert.equal(result.outcome, "succeeded", result.summary);
+    const fp = h.fake.requests.filter((r) => r.op === "patch.fingerprint" && r.args.collection === "FixtureTypes");
+    assert.equal(fp.length, 4, "two parts per side");
+    assert.ok(fp.every((r) => r.args.budgetMs === 2000));
+    assert.deepEqual(fp[1].args.resume, { cursor: [1], hash: "0000002a", objects: 1 }, "the resume point is passed back as given");
+    assert.equal(fp[0].args.resume, undefined);
+    assert.deepEqual(result.steps.find((s: any) => s.name === "isolation_check").detail.requests, { FixtureTypes: 4 });
+  } finally {
+    await h.close();
+  }
+});
+
+test("a part without a resume point makes the isolation check incomplete: nothing is committed", async () => {
+  const { h } = await setup();
+  try {
+    h.fake.on("patch.fingerprint", () => ({ objects: 1, hash: 1, complete: true, done: false }));
+    const { result } = await h.callJson("gma3_patch_set", { edits: [{ fid: 401, name: "Renamed" }], exclusive: true });
+    assert.equal(result.outcome, "failed");
+    assert.match(result.summary, /could not be fingerprinted completely/);
+    assert.ok(!h.fake.requests.some((r) => r.op === "patch.commit"));
+  } finally {
+    await h.close();
+  }
+});
+
+test("an isolation check without a reply waits for the bridge, then reports the copy left open; it is not repeated", async () => {
+  const { h, w, ops } = await setup();
+  try {
+    const orig = h.fake.handlerFor("patch.fingerprint")!;
+    h.fake.on("patch.fingerprint", (args, req) => (args.collection === "FixtureTypes" && args.side === "live" ? SILENT : orig(args, req)));
+    const { result } = await h.callJson("gma3_patch_set", { edits: [{ fid: 401, name: "Renamed" }], exclusive: true });
+    assert.equal(result.outcome, "failed");
+    assert.equal(result.copyLeftOpen, true);
+    assert.deepEqual(stepNames(result).slice(5, 9), ["isolation_check:unknown", "wait_bridge:succeeded", "commit:skipped", "wait_commit:skipped"]);
+    assert.match(result.summary, /the isolation check got no reply .*; the bridge answered again after \d+ s; nothing was committed\. THE PATCH COPY WAS LEFT OPEN/);
+    assert.equal(ops().filter((o) => o === "patch.fingerprint").length, 3, "Stages both sides, then the FixtureTypes part without a reply; not repeated");
+    assert.ok(!ops().includes("patch.commit"));
+    assert.ok(w.copy !== null);
   } finally {
     await h.close();
   }

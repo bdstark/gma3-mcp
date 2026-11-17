@@ -90,8 +90,36 @@ Verification reads `No`, `Name` from the cue and the given timing fields (`CueIn
 `CueOutDelay`) from Part 0, and compares `Name` and the timing values that were given. A cue that does not exist
 after the store is `mismatched`.
 
-**Not verified:** the stored fixture values (attribute data). The result says so in `summary` and
-`notVerified`; that needs `gma3_cue_contents` (FR-10).
+**Stored values** (`src/tools/storeverify.ts`, live 2026-11-14, [probe](../probes/cue-part-data-macos-2.5.1.md)).
+Right before the store, the tool reads the store preferences (`preset.context`) and the programmer. What a Store
+takes follows the operator's `ChannelFilter` (the store command sends no option that overrides it):
+
+| ChannelFilter (StoreSource `Programmer`) | Values expected in the cue |
+|---|---|
+| `Active` | every active programmer value |
+| `Active For Selected` | the active values of the selected (sub)fixtures |
+| `All` | every programmer value, active or not |
+| `All For Selected` | every programmer value of the selected (sub)fixtures |
+
+A value is active while its `activeValue` or `activePhaser` mask is set. After the store the part is read with
+GetPresetData (`preset.read`). Each expected value must be there, with every layer the programmer holds the same
+within 0.5 %: the absolute and the relative value, and on a phaser each step's absolute, relative, width, transition,
+acceleration and deceleration (a stored step leaves out a timing layer at its default: width and transition 100,
+acceleration and deceleration 0). A phaser's speed, phase and measure are not compared. A missing or different value
+or layer makes the verification `mismatched` and the call an MCP error; nothing is stored again. An expected value
+that could not be compared (a cell without its own FID whose stored row is not found) makes it `unavailable`, never
+`matched`, and is counted in `notCompared`. Preset references are not compared, because the programmer's `absPreset` is not reliable for a hard
+value. Values the cue already held (merge) are not judged either. With another ChannelFilter or StoreSource, or a
+programmer that could not be read completely, the values found are still compared, but completeness is not judged
+(`unavailable`). `storedValues` gives the preference and the counts: `expected`, `stored`, `compared`, `missing`,
+`different`, plus the first labels. `verify: false` skips the programmer and part reads.
+
+**Expected preference: `ChannelFilter` `Active`** (decided 2026-11-14). With it a store takes every active programmer
+value, whatever is selected. Any other value is reported in `warnings`, which names the value and its effect:
+- `Active For Selected`: only the selected fixtures' values are stored;
+- `All` or `All For Selected`: inactive values are stored too.
+
+The preference is read before every store, even with `verify: false`.
 
 Programmer: not cleared. Selection: unchanged.
 
@@ -105,7 +133,8 @@ timing on the same part.
 storing the cue itself, so `mode: "create"` refuses part 0 of an existing cue (use `merge`/`overwrite`); the
 result carries `partZeroNote`. Parts 1..999 hold their own values and timing.
 
-Verification reads `Part`, `Name` and the given timing fields from the part. Fixture values are not verified.
+Verification reads `Part`, `Name` and the given timing fields from the part, and the stored values of that part
+as for `gma3_store_cue`.
 
 ## gma3_set_cue_timing
 

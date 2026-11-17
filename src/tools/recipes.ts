@@ -1291,7 +1291,9 @@ export const registerRecipeTools: RegisterTools = (server, ctx) => {
         line: z.number().optional().describe("Line number (set, move, remove)."),
         to: z.number().optional().describe("New position (move)."),
         selection: z.number().optional().describe("Group number."),
-        values: z.union([z.string(), z.number()]).nullable().optional().describe('Preset as the plain string "N.M" ("4.2"; a number is refused: 4.20 and 4.2 are the same number); null clears it.'),
+        // A string only: with "string or number" an MCP client sends "1.901" as the number 1.901 (seen live on 2.5.1,
+        // THK migration docs/phaser-recipes.md §3), which the handler then has to refuse.
+        values: z.string().nullable().optional().describe('Preset as the plain string "N.M" ("4.2"; 4.20 and 4.2 are different presets); null clears it.'),
         matricks: z.number().optional().describe("MAtricks pool number."),
         enabled: z.boolean().optional(),
         name: z.string().optional(),

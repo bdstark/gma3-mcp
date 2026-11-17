@@ -106,6 +106,8 @@ class StageWorld {
       this.apply(args);
       return { action: args.action, stages: StageWorld.rows(this.copy) };
     });
+    // After a request without a reply the session pings until the bridge answers again (bridge 0.51.0 sessions).
+    f.on("ping", () => ({ pong: true }));
     f.on("patch.collections", () => ({ copyOpen: this.copy !== null, live: ["Stages", "FixtureTypes"], copy: this.copy ? ["Stages", "FixtureTypes"] : false }));
     f.on("patch.fingerprint", (args) => this.fingerprint(args.side === "copy" ? (this.copy ?? []) : this.live, args));
     f.on("patch.commit", (args) => {
@@ -293,7 +295,9 @@ test("gma3_patch_stages: an edit without a reply is never resent; the copy is cl
     w.editSilent = { apply: false };
     h.fake.requests.length = 0;
     ({ result } = await h.callJson("gma3_patch_stages", { action: "rename", stage: 1, name: "Main Floor", exclusive: true }));
-    assert.equal(result.outcome, "unknown");
+    // Bridge 0.51.0 sessions: once the bridge answers again the synchronous edit is over, and a copy verified unchanged
+    // and closed proves the call changed nothing: failed, not unknown.
+    assert.equal(result.outcome, "failed");
     assert.equal(result.copyLeftOpen, false);
     assert.match(result.summary, /closed again without changes/);
     assert.equal(ops().filter((o) => o === "patch.stageEdit").length, 1, "sent once, never retried");

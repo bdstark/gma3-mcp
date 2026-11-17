@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.50.0"
+local VERSION      = "0.52.1"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -3483,7 +3483,7 @@ end
 -- moves the same command line, so patch.enter refuses while the copy is open, the destination is not
 -- Root, or a modal is open. Every mutating op needs exclusive = true: the client confirms that nobody
 -- else edits the show while a session runs. patch.fingerprint is best-effort detection of foreign
--- changes, read one collection per request; it is not a consistent snapshot, which is why exclusive use
+-- changes, read one collection (since 0.51.0 a bounded part of one) per request; it is not a consistent snapshot, which is why exclusive use
 -- is required rather than implied.
 -------------------------------------------------------------------------------
 
@@ -3672,10 +3672,15 @@ local function fixtureMode(c)
   return nil
 end
 
+-- A property in the display role, as text. A multi-break fixture with no break patched displays its Patch as ","
+-- (onPC 2.5.1, live 2026-10-21: Break1 and Break2 raw -1); that is returned as "", like any unpatched fixture, so every
+-- report and comparison of patch text treats it as unpatched. A partly patched one ("3.202,") is kept as it reads.
 local function displayProp(c, k)
   local ok, v = pcall(function() return c:Get(k, Enums.Roles.Display) end)
-  if ok and v ~= nil then return tostring(v) end
-  return nil
+  if not ok or v == nil then return nil end
+  v = tostring(v)
+  if k == "Patch" and v:match("^[%s,]*$") then return "" end
+  return v
 end
 
 local function numericFid(c)
@@ -4114,13 +4119,21 @@ ops["patch.add"] = function(args)
   return { added = true, ret = tostring(ret), type = { no = safeProp(ft, "no"), name = tostring(safeProp(ft, "name")) }, mode = modeOut(info), created = emptyArray(created), patchedByBridge = setByBridge }
 end
 
--- Readdress, unpatch or rename fixtures in the copy. Every addressed fixture is unpatched first and then
--- given its new address, so swaps work; the new ranges are checked against every other range of the copy,
--- and on any problem every change of this call is restored and the op fails.
+-- Readdress, unpatch or rename fixtures in the copy (bridge 0.51.0). Each Set in the copy can be slow on a large show:
+-- 22 readdresses done as 22 unpatches and 22 Sets failed on onPC 2.5.1 (2026-10-21), probably because the request
+-- outlived the client's 15 s timeout (not established). So the op sends only the Sets it needs:
+--   - a fixture whose current range a new range of this call overlaps (its own new range included) is unpatched
+--     first, so swaps and moves across a fixture's own range work; any other readdress is one Set("Patch", new)
+--     (KB-25: a patched fixture readdressed directly). A fixture whose range cannot be read is unpatched first;
+--   - a multi-break fixture is unpatched break by break, the highest first (Set("Break<n>", "")): Set("Patch", "")
+--     leaves its breaks as they are (live 2026-10-21). Readdressing one is refused.
+-- The new ranges are checked against every other range of the copy. On any problem every change of this call is put
+-- back (a multi-break fixture break by break) and read back, and the error says whether that restore was verified.
 ops["patch.set"] = function(args)
   requireExclusive(args, "patch.set")
   local p = requireCopy(nil)
   if type(args.edits) ~= "table" or #args.edits == 0 then raise("[bad-args] edits must be a non-empty list") end
+  local started = now()
   local by = fixturesByFid(p)
   local edits, seen = {}, {}
   for _, e in ipairs(args.edits) do
@@ -4129,37 +4142,107 @@ ops["patch.set"] = function(args)
     seen[fid] = true
     local entry = by[fid]
     if not entry then raise("[no-fixture] no fixture with FID " .. fid .. " in the copy") end
-    local ed = { fid = fid, entry = entry, name = nameArg(e.name, "edits[].name") }
+    local ed = { fid = fid, entry = entry, fixture = entry.fixture, name = nameArg(e.name, "edits[].name") }
     if e.address ~= nil then
+      local mode = fixtureMode(entry.fixture)
+      local info = mode and modeInfo(mode) or { breaks = {} }
+      ed.multi = #info.breaks > 1
       if e.address == "" then ed.address = ""
       else
         local d = parseDmx(e.address)
         if not d then raise("[bad-args] edits[].address must be U.AAA or \"\" (unpatch)") end
         ed.address = formatDmx(d.abs)
-        local mode = fixtureMode(entry.fixture)
-        local info = mode and modeInfo(mode) or { breaks = {} }
         if #info.breaks > 1 then raise("[multi-break] FID " .. fid .. " uses a multi-break mode; readdressing it is not supported") end
         if not info.footprint or info.footprint < 1 then raise("[no-footprint] FID " .. fid .. " has no DMX footprint to patch") end
+        ed.first, ed.last = d.abs, d.abs + info.footprint - 1
       end
     end
     if ed.address == nil and ed.name == nil then raise("[bad-args] edit for FID " .. fid .. " changes nothing (give address and/or name)") end
     edits[#edits + 1] = ed
   end
+  -- A fixture's patched breaks ({b, address}, from Break1-Break8 in the display role) and its whole patch as one text.
+  local function breaksOf(c)
+    local out = {}
+    for b = 1, 8 do
+      local v = displayProp(c, "Break" .. b)
+      if v and v ~= "" then out[#out + 1] = { b = b, address = v } end
+    end
+    return out
+  end
+  local function patchState(c)
+    local t = { displayProp(c, "Patch") or "?" }
+    for _, x in ipairs(breaksOf(c)) do t[#t + 1] = x.b .. "=" .. x.address end
+    return table.concat(t, ";")
+  end
   local orig = {}
-  for _, ed in ipairs(edits) do orig[ed.fid] = { patch = displayProp(ed.entry.fixture, "Patch") or "", name = tostring(safeProp(ed.entry.fixture, "name")) } end
-  local function restore()
-    for _, ed in ipairs(edits) do pcall(function() ed.entry.fixture:Set("Patch", "") end) end
-    for _, ed in ipairs(edits) do
-      local o = orig[ed.fid]
-      pcall(function() ed.entry.fixture:Set("Patch", o.patch) end)
-      pcall(function() ed.entry.fixture:Set("Name", o.name) end)
+  for _, ed in ipairs(edits) do
+    local o = { patch = displayProp(ed.fixture, "Patch") or "", name = tostring(safeProp(ed.fixture, "name")), breaks = breaksOf(ed.fixture), state = patchState(ed.fixture) }
+    orig[ed.fid] = o
+    -- A break beyond the first patched makes it multi-break even when its mode cannot be read.
+    if ed.address ~= nil then for _, x in ipairs(o.breaks) do if x.b > 1 then ed.multi = true end end end
+  end
+  local sets = 0
+  local function set(c, k, v) sets = sets + 1; c:Set(k, v) end
+  local function unpatch(ed)
+    if ed.multi then
+      local list = breaksOf(ed.fixture)
+      for i = #list, 1, -1 do set(ed.fixture, "Break" .. list[i].b, "") end
+    else
+      set(ed.fixture, "Patch", "")
     end
   end
+  -- Which readdressed fixtures are in the way of a new range (their own included), read before any Set.
+  local first = {}
+  for _, ed in ipairs(edits) do
+    if ed.first then
+      local rs, why = fixtureRanges(ed.fixture)
+      if why then first[ed.fid] = true end
+      for _, r in ipairs(rs) do
+        for _, n in ipairs(edits) do
+          if n.first and r.first <= n.last and n.first <= r.last then first[ed.fid] = true end
+        end
+      end
+    end
+  end
+  local unpatchedFirst = {}
   local okE, errE = pcall(function()
-    for _, ed in ipairs(edits) do if ed.address ~= nil then ed.entry.fixture:Set("Patch", "") end end
-    for _, ed in ipairs(edits) do if ed.address ~= nil and ed.address ~= "" then ed.entry.fixture:Set("Patch", ed.address) end end
-    for _, ed in ipairs(edits) do if ed.name ~= nil then ed.entry.fixture:Set("Name", ed.name) end end
+    for _, ed in ipairs(edits) do
+      if ed.address == "" or first[ed.fid] then
+        unpatch(ed)
+        if ed.address ~= "" then unpatchedFirst[#unpatchedFirst + 1] = ed.fid end
+      end
+    end
+    for _, ed in ipairs(edits) do if ed.first then set(ed.fixture, "Patch", ed.address) end end
+    for _, ed in ipairs(edits) do if ed.name ~= nil then set(ed.fixture, "Name", ed.name) end end
   end)
+  -- Put back what this call changed: clear every changed fixture first (so a put-back address never meets a fixture
+  -- that moved there), then its original breaks and the names. Returns what still differs afterwards.
+  local function restore()
+    local changed = {}
+    for _, ed in ipairs(edits) do if ed.address ~= nil and patchState(ed.fixture) ~= orig[ed.fid].state then changed[#changed + 1] = ed end end
+    for _, ed in ipairs(changed) do pcall(unpatch, ed) end
+    for _, ed in ipairs(changed) do
+      local o = orig[ed.fid]
+      if ed.multi then
+        for _, x in ipairs(o.breaks) do pcall(set, ed.fixture, "Break" .. x.b, x.address) end
+      elseif o.patch ~= "" then
+        pcall(set, ed.fixture, "Patch", o.patch)
+      end
+    end
+    for _, ed in ipairs(edits) do
+      if ed.name ~= nil and tostring(safeProp(ed.fixture, "name")) ~= orig[ed.fid].name then pcall(set, ed.fixture, "Name", orig[ed.fid].name) end
+    end
+    local wrong = {}
+    for _, ed in ipairs(edits) do
+      local o = orig[ed.fid]
+      if patchState(ed.fixture) ~= o.state then
+        wrong[#wrong + 1] = "FID " .. ed.fid .. " reads patch " .. (displayProp(ed.fixture, "Patch") or "?") .. ", was " .. (o.patch == "" and "unpatched" or o.patch)
+      elseif tostring(safeProp(ed.fixture, "name")) ~= o.name then
+        wrong[#wrong + 1] = "FID " .. ed.fid .. " reads name " .. tostring(safeProp(ed.fixture, "name")) .. ", was " .. o.name
+      end
+    end
+    return wrong
+  end
   local problem, conflicts
   if not okE then problem = "a Set raised: " .. tostring(errE) end
   if not problem then
@@ -4167,13 +4250,14 @@ ops["patch.set"] = function(args)
     for _, ed in ipairs(edits) do
       if ed.address ~= nil then
         ignore[ed.fid] = true
-        local rs, why = fixtureRanges(ed.entry.fixture)
+        local rs, why = fixtureRanges(ed.fixture)
         if why then problem = "FID " .. ed.fid .. ": " .. why end
         for _, r in ipairs(rs) do ranges[#ranges + 1] = { fid = ed.fid, first = r.first, last = r.last } end
-        local now = displayProp(ed.entry.fixture, "Patch") or ""
-        if now ~= ed.address then problem = "FID " .. ed.fid .. " reads back patch " .. now .. ", not " .. (ed.address == "" and "unpatched" or ed.address) end
+        local got = displayProp(ed.fixture, "Patch") or ""
+        if got ~= ed.address then problem = "FID " .. ed.fid .. " reads back patch " .. got .. ", not " .. (ed.address == "" and "unpatched" or ed.address)
+        elseif ed.address == "" and #breaksOf(ed.fixture) > 0 then problem = "FID " .. ed.fid .. " still has a DMX break patched after the unpatch" end
       end
-      if ed.name ~= nil and tostring(safeProp(ed.entry.fixture, "name")) ~= ed.name then problem = "FID " .. ed.fid .. " reads back name " .. tostring(safeProp(ed.entry.fixture, "name")) end
+      if ed.name ~= nil and tostring(safeProp(ed.fixture, "name")) ~= ed.name then problem = "FID " .. ed.fid .. " reads back name " .. tostring(safeProp(ed.fixture, "name")) end
     end
     local unknown
     conflicts, unknown = rangeConflicts(p, ranges, ignore)
@@ -4182,12 +4266,17 @@ ops["patch.set"] = function(args)
     if not problem and #conflicts > 0 then problem = "the new addresses overlap patched fixtures" end
   end
   if problem then
-    restore()
-    raise({ code = "set-failed", message = problem .. "; every change of this call was restored in the copy", conflicts = conflicts })
+    local wrong = restore()
+    local restored = #wrong == 0 and "; every change of this call was restored in the copy"
+      or ("; THE RESTORE COULD NOT BE VERIFIED (" .. table.concat(wrong, "; ") .. "): the copy may still hold part of this call's change")
+    raise({ code = "set-failed", message = problem .. restored, conflicts = conflicts, restored = #wrong == 0, unrestored = emptyArray(wrong), sets = sets, ms = math.floor((now() - started) * 1000 + 0.5) })
   end
   local rows = {}
-  for _, ed in ipairs(edits) do rows[#rows + 1] = { fid = ed.fid, before = orig[ed.fid], after = fixtureRow(ed.entry) } end
-  return { set = true, edits = emptyArray(rows) }
+  for _, ed in ipairs(edits) do
+    local o = orig[ed.fid]
+    rows[#rows + 1] = { fid = ed.fid, before = { patch = o.patch, name = o.name }, after = fixtureRow(ed.entry) }
+  end
+  return { set = true, edits = emptyArray(rows), sets = sets, unpatchedFirst = emptyArray(unpatchedFirst), ms = math.floor((now() - started) * 1000 + 0.5) }
 end
 
 -- Delete fixtures from the copy by FID. Fixtures with sub-fixtures are refused (nothing is deleted).
@@ -4271,7 +4360,14 @@ end
 --                 children as the guide's matching container has. Every other container, the inside of every
 --                 existing type and every other collection are compared in full: an unrelated addition (a
 --                 fixture, a mode in an existing type) still differs.
-local PATCH_FP_SKIP = { DmxAddresses = true, UIChannels = true, RTChannels = true, FixtureTypesOverview = true, PatchFilter = true }
+--   budgetMs, maxObjects, resume   (bridge 0.51.0) a bounded part of one collection per request. On a large show
+--                 one request, presumably for FixtureTypes, outlived the client's 15 s timeout, and the bridge, which
+--                 cannot be interrupted, answered nothing for minutes (live 2026-10-21, 61 types with geometry). The walk now
+--                 stops once it has hashed for budgetMs (or maxObjects objects; at least one object per request) and
+--                 reports done = false with `cursor`: the child index at each depth of the next object to hash. The
+--                 next request passes it back with the hash and object count so far (resume) and continues exactly
+--                 there, so the parts give the hash of one uninterrupted walk.
+local PATCH_FP_SKIP ={ DmxAddresses = true, UIChannels = true, RTChannels = true, FixtureTypesOverview = true, PatchFilter = true }
 local PATCH_FP_SKIP_CLASS = { SubfixtureOverview = true }
 local PATCH_FP_SHALLOW = { DmxUniverses = true }
 local PATCH_FP_RENUMBERED = { DmxCurves = true }
@@ -4293,8 +4389,15 @@ local function patchFingerprint(p, only, exclude, opts)
   opts = opts or {}
   local excludeGuids = opts.excludeGuids or {}
   local excludeTypes = opts.excludeTypes
-  local r = { objects = 0, hash = 2166136261, complete = true }
+  local resume = opts.resume
+  local r = { objects = resume and resume.objects or 0, hash = resume and resume.hash or 2166136261, complete = true, done = true }
   local names = {}
+  -- The budget of this request: path[d] is the child index being hashed at depth d, so a stop can say where to go on.
+  local started, hashed, path = now(), 0, {}
+  local function overBudget()
+    if hashed == 0 then return false end
+    return (opts.maxObjects ~= nil and hashed >= opts.maxObjects) or (opts.budgetMs ~= nil and (now() - started) * 1000 >= opts.budgetMs)
+  end
   local function guidOf(h) local ok, g = pcall(function() return h:Get("Guid", Enums.Roles.Display) end); return ok and g ~= nil and tostring(g) or "" end
   -- (A table with Get is accepted too: the harness's mock objects. On the console a handle is userdata.)
   local function typeIdentity(h)
@@ -4335,6 +4438,7 @@ local function patchFingerprint(p, only, exclude, opts)
       end
     end
     r.objects = r.objects + 1
+    hashed = hashed + 1
     r.hash = fnv(r.hash, table.concat(parts, "\31") .. "\n")
     return true
   end
@@ -4344,13 +4448,19 @@ local function patchFingerprint(p, only, exclude, opts)
     return (name == "Min" and inV == "000000" and outV == "000000") or (name == "Max" and inV == "FFFFFF" and outV == "FFFFFF")
   end
   -- stageList: h is the Stages collection (its children are the stages, for excludeStages / bareStages).
-  local function walk(h, depth, renumbered, guide, typeList, append, defaultCurve, stageList)
+  -- rpath: the resume cursor, followed down from the collection. At its depth the walk starts at the child it names;
+  -- above that depth the named child was hashed in an earlier request and the walk goes on inside it. shallow: only
+  -- the collection's own children (the universes, whose per-address children are left out).
+  local function walk(h, depth, renumbered, guide, typeList, append, defaultCurve, stageList, shallow, rpath)
     local kids = h:Children()
     local gkids = guide and guide:Children() or nil
     -- Truncate to the guide only where an import appends; elsewhere every child is hashed (so an extra one differs).
     local n = (gkids and append and append[depth]) and math.min(#kids, #gkids) or #kids
-    for i = 1, n do
-      if not r.complete then return end
+    local from = rpath and rpath[depth] or 1
+    for i = from, n do
+      if not r.complete or not r.done then return end
+      path[depth] = i
+      local inside = rpath ~= nil and i == from and #rpath > depth
       local c = kids[i]
       local class = safeCall(c, "GetClass")
       local fid = class == "Fixture" and numericFid(c) or nil
@@ -4358,23 +4468,23 @@ local function patchFingerprint(p, only, exclude, opts)
       local skipPoint = defaultCurve and class == "DmxCurvePoint" and defaultEndPoint(c)
       local skipStage = stageList and opts.excludeStages and opts.excludeStages[i]
       if not (fid and exclude[fid]) and not PATCH_FP_SKIP_CLASS[class] and not skipType and not skipPoint and not skipStage then
-        if not add(c, depth, renumbered, typeList, stageList and opts.bareStages and opts.bareStages[i]) then return end
-        walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false, append, renumbered and depth == 1 and i == 1)
+        if not inside then
+          if overBudget() then r.done = false; r.cursor = { table.unpack(path, 1, depth) }; return end
+          if not add(c, depth, renumbered, typeList, stageList and opts.bareStages and opts.bareStages[i]) then return end
+        end
+        if not shallow then walk(c, depth + 1, renumbered, gkids and gkids[i] or nil, false, append, renumbered and depth == 1 and i == 1, false, false, inside and rpath or nil) end
       end
     end
   end
   for _, c in ipairs(p:Children()) do
-    if not r.complete then break end
+    if not r.complete or not r.done then break end
     local cname = tostring(safeProp(c, "name"))
-    if (only == nil or cname == only) and not PATCH_FP_SKIP[cname] and add(c, 0) then
-      if PATCH_FP_SHALLOW[cname] then
-        for _, u in ipairs(c:Children()) do if not add(u, 1) then break end end
-      else
-        local append = opts.guide and PATCH_FP_APPEND[cname] or nil
-        local guide = append and opts.guide[cname] or nil
-        if append and not guide then r.complete = false; r.reason = "the guide has no collection " .. cname; break end
-        walk(c, 1, PATCH_FP_RENUMBERED[cname], guide, cname == "FixtureTypes", append, nil, cname == "Stages")
-      end
+    -- A resumed walk hashed the collection itself in its first request.
+    if (only == nil or cname == only) and not PATCH_FP_SKIP[cname] and (resume ~= nil or add(c, 0)) then
+      local append = opts.guide and PATCH_FP_APPEND[cname] or nil
+      local guide = append and opts.guide[cname] or nil
+      if append and not guide then r.complete = false; r.reason = "the guide has no collection " .. cname; break end
+      walk(c, 1, PATCH_FP_RENUMBERED[cname], guide, cname == "FixtureTypes", append, nil, cname == "Stages", PATCH_FP_SHALLOW[cname], resume and resume.cursor)
     end
   end
   return r
@@ -4390,7 +4500,12 @@ end
 -- args: { side = "live" | "copy", collection = <name>, excludeFids = [ ... ],
 --         excludeGuids = [ type GUID, ... ], excludeTypes = [ { index, guid }, ... ], prefixOfLive = true (copy side only: hash only what the live patch
 --         has in every container, leaving out what an import appended), fixturePositions = false (a move, 0.42.0),
---         excludeStages = [ position, ... ], bareStages = [ position, ... ] (a stage session, 0.48.0) }
+--         excludeStages = [ position, ... ], bareStages = [ position, ... ] (a stage session, 0.48.0),
+--         budgetMs = <ms>, maxObjects = <n> (stop after that much work), resume = <the resume object
+--         of the previous reply> }
+-- The reply has done = false and `resume` while the collection is not finished: the client sends the same request
+-- with that resume object until done is true; objects and hash are then the whole collection's. Without budgetMs and
+-- maxObjects the whole collection is hashed in one request, as before.
 ops["patch.fingerprint"] = function(args)
   if type(args.collection) ~= "string" then raise("[bad-args] collection (string) is required; patch.collections lists them") end
   local exclude = {}
@@ -4415,6 +4530,17 @@ ops["patch.fingerprint"] = function(args)
       end
     end
   end
+  if args.budgetMs ~= nil then opts.budgetMs = integerArg(args.budgetMs, "budgetMs", 1, 60000) end
+  if args.maxObjects ~= nil then opts.maxObjects = integerArg(args.maxObjects, "maxObjects", 1, PATCH_FP_LIMIT) end
+  if args.resume ~= nil then
+    -- The hash travels as hex text, so no JSON number formatting can change it on the way.
+    local rs = args.resume
+    local bad = "[bad-args] resume must be the resume object of the previous patch.fingerprint reply"
+    if type(rs) ~= "table" or type(rs.cursor) ~= "table" or #rs.cursor == 0 or type(rs.hash) ~= "string" or not rs.hash:match("^%x+$") then raise(bad) end
+    local cursor = {}
+    for i, x in ipairs(rs.cursor) do cursor[i] = math.tointeger(integerArg(x, "resume.cursor[]", 1, PATCH_FP_LIMIT)) end
+    opts.resume = { cursor = cursor, hash = tonumber(rs.hash, 16), objects = math.tointeger(integerArg(rs.objects, "resume.objects", 0, PATCH_FP_LIMIT)) }
+  end
   local p = patchSide(args.side or "live")
   if args.prefixOfLive == true then
     if args.side ~= "copy" then raise("[bad-args] prefixOfLive applies to the copy side only") end
@@ -4422,6 +4548,8 @@ ops["patch.fingerprint"] = function(args)
   end
   local started = now()
   local fp = patchFingerprint(p, args.collection, exclude, opts)
+  if not fp.done then fp.resume = { cursor = fp.cursor, hash = string.format("%08x", fp.hash), objects = fp.objects } end
+  fp.cursor = nil
   fp.collection = args.collection
   fp.side = args.side or "live"
   fp.ms = math.floor((now() - started) * 1000 + 0.5)
@@ -6628,6 +6756,99 @@ end)()
     return { clicked = args.button, title = md.title, text = md.text, class = md.class, display = md.display, at = at }
   end
   GUARDED_OPS["dialog.press"] = "a dialog answer"
+
+  ---------------------------------------------------------------------------
+  -- Edit Recipe mode (phaser recipes, bridge 0.52.0)
+  ---------------------------------------------------------------------------
+  -- recipe.editState  read-only: whether the operator's Edit Recipe mode is on (RecipeEditor.RecipeEditing of the
+  --                   current environment), the recipe lines in the programmer's Part Zero, the top modal and the
+  --                   console's last command
+  -- recipe.editBegin  queues `EditRecipe <target>` with CmdIndirect after checking that no dialog is open, the mode is
+  --                   off and Part Zero holds no recipe line
+  -- recipe.editEnd    queues `EditRecipe` (the toggle) with CmdIndirect, only while the mode is on and no dialog is open
+  -- Console facts (onPC 2.5.1, live 2026-11-14, THK migration docs/phaser-recipes.md §1.7): a store made in Edit
+  -- Recipe mode leaves its target pending; the next `EditRecipe <other target>` opens "Update last object?" (OK
+  -- updates the pending target with the programmer, an empty programmer wipes its recipe lines; Cancel aborts the
+  -- EditRecipe). Sent with Cmd() from the plugin thread, that dialog stalls the bridge, so the command is queued
+  -- and the server polls recipe.editState. A normal store with an empty programmer (the target's own empty Store)
+  -- clears the pending target.
+  local function recipeEditor()
+    local okE, env = pcall(CurrentEnvironment)
+    if not okE or env == nil then raise("[no-environment] the current user environment cannot be read") end
+    local okR, re = pcall(function() return env.RecipeEditor end)
+    if not okR or re == nil then raise("[no-recipe-editor] the environment " .. tostring(safeProp(env, "name")) .. " has no RecipeEditor") end
+    return env, re
+  end
+  local function truthy(v)
+    if v == true or v == 1 then return true end
+    if v == false or v == 0 or v == nil then return false end
+    local s = tostring(v):lower()
+    return s == "yes" or s == "on" or s == "true" or s == "1"
+  end
+  local function partZero()
+    local okP, prog = pcall(Programmer)
+    if not okP or prog == nil then raise("[no-programmer] the programmer cannot be read") end
+    for _, c in ipairs(prog:Children() or {}) do
+      if tostring(safeProp(c, "name")) == "Part Zero" or tonumber(safeProp(c, "no")) == 0 then return c end
+    end
+    -- No Part Zero (seen live once, the programmer then held 20 phaser values; cause not established): no recipe line.
+    return nil
+  end
+  local function editState()
+    local env, re = recipeEditor()
+    local okG, raw = pcall(function() return re:Get("RecipeEditing") end)
+    if not okG or raw == nil then raw = safeProp(re, "RecipeEditing") end
+    local pz = partZero()
+    local lines = {}
+    for i, c in ipairs(pz and pz:Children() or {}) do lines[#lines + 1] = { index = i, class = safeCall(c, "GetClass"), name = tostring(safeProp(c, "name")) } end
+    local md, _, why = topModal()
+    return {
+      environment = tostring(safeProp(env, "name")),
+      editing = truthy(raw),
+      editingRaw = raw ~= nil and tostring(raw) or nil,
+      partZeroLines = emptyArray(lines),
+      partZero = pz ~= nil,
+      modal = md or false,
+      modalError = why,
+      lastCommand = lastCommand(),
+    }
+  end
+  -- The target forms the server sends; anything else is refused (the text goes into a command line).
+  local function recipeTarget(ref)
+    if type(ref) ~= "string" then raise("[bad-args] target must be a string") end
+    if ref:match("^Preset %d+%.%d+$") or ref:match("^Sequence %d+ Cue %d+%.?%d* Part %d+$") then return ref end
+    raise("[bad-args] target must read \"Preset P.N\" or \"Sequence S Cue C Part P\", not " .. ref)
+  end
+
+  ops["recipe.editState"] = function() return editState() end
+
+  -- args: { target, exclusive }
+  ops["recipe.editBegin"] = function(args)
+    if args.exclusive ~= true then raise("[not-exclusive] recipe.editBegin needs exclusive = true: the client confirms that nobody else uses the programmer while it builds a recipe") end
+    local ref = recipeTarget(args.target)
+    local before = editState()
+    if before.modalError then raise("[modal-unknown] whether a dialog is open cannot be read (" .. before.modalError .. "); EditRecipe was not sent") end
+    if before.modal then raise({ code = "modal-open", message = "a dialog is open (" .. tostring(before.modal.title) .. "); EditRecipe was not sent", modal = before.modal }) end
+    if before.editing then raise("[editing-on] the Edit Recipe mode is already on; EditRecipe was not sent") end
+    if #before.partZeroLines > 0 then raise({ code = "part-zero-busy", message = "the programmer's Part Zero holds " .. #before.partZeroLines .. " recipe line(s); EditRecipe was not sent", lines = before.partZeroLines }) end
+    local command = "EditRecipe " .. ref
+    CmdIndirect(command)
+    return { queued = true, command = command, before = before }
+  end
+  GUARDED_OPS["recipe.editBegin"] = "an Edit Recipe session"
+
+  -- args: { exclusive } -> queues `EditRecipe` (a toggle) with CmdIndirect, only while the mode reads on and no dialog
+  -- is open, so it can only switch the mode off. Part Zero is left as it is (lines not stored stay; ClearAll removes them).
+  ops["recipe.editEnd"] = function(args)
+    if args.exclusive ~= true then raise("[not-exclusive] recipe.editEnd needs exclusive = true: the client confirms that nobody else uses the programmer") end
+    local before = editState()
+    if before.modalError then raise("[modal-unknown] whether a dialog is open cannot be read (" .. before.modalError .. "); EditRecipe was not sent") end
+    if before.modal then raise({ code = "modal-open", message = "a dialog is open (" .. tostring(before.modal.title) .. "); EditRecipe was not sent", modal = before.modal }) end
+    if not before.editing then raise("[editing-off] the Edit Recipe mode is already off; EditRecipe (a toggle) was not sent") end
+    CmdIndirect("EditRecipe")
+    return { queued = true, command = "EditRecipe", before = before }
+  end
+  GUARDED_OPS["recipe.editEnd"] = "an Edit Recipe session"
 
   ---------------------------------------------------------------------------
   -- Moving fixtures

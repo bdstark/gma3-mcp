@@ -30,6 +30,18 @@ class FakeShow {
   missingThrows = false;
   /** When true, Delete answers OK but leaves the cue in place. */
   deleteIsNoop = false;
+  /** Store preferences as preset.context reads them. */
+  prefs: Record<string, string> = { ChannelFilter: "Active", StoreSource: "Programmer" };
+  /** Programmer rows as the `programmer` op reports them; `selected` marks the selected fixtures. */
+  programmer: Array<{ fid: string; attribute: string; value: number | null; stepCount?: number; steps?: Array<{ absolute: number }>; selected: boolean; masks: { activeValue: number; activePhaser: number; individual: number } }> = [
+    { fid: "101", attribute: "Dimmer", value: 50, selected: true, masks: { activeValue: 2, activePhaser: 0, individual: 1 } },
+  ];
+  /** Stored part data (preset.read rows) per part key; a Store copies what ChannelFilter selects. */
+  partData = new Map<string, Array<Record<string, unknown>>>();
+  /** "fid|attribute" keys a Store leaves out (a console that did not store them). */
+  storeDrops = new Set<string>();
+  /** Added to every stored value (a console that stored another value). */
+  storeOffset = 0;
   /** SU-16: the playback state per sequence as the bridge 0.32.0 `object` op reports it (Goto sets it). */
   playback = new Map<number, { hasActivePlayback: boolean; currentCue?: { no: number; name: string } }>();
 
@@ -105,6 +117,16 @@ class FakeShow {
       if (this.selected === null) throw new Error("no object found for 'SelectedSequence'");
       return { name: `Seq ${this.selected}`, class: "Sequence", index: this.selected, addr: `14.14.${this.selectedPool}.7.${this.selected}` };
     });
+    fake.on("preset.context", () => ({ preferences: { ...this.prefs }, preferencesReadable: true }));
+    fake.on("programmer", ({ scope }) => {
+      const rows = this.programmer.filter((r) => scope !== "selection" || r.selected).map(({ selected: _s, ...r }) => ({ ...r }));
+      return { rows, total: rows.length, coverage: { complete: true } };
+    });
+    fake.on("preset.read", ({ ref }) => {
+      const key = norm(String(ref));
+      if (!this.objects.has(key)) throw new Error(`[not-preset] ${ref} does not exist`);
+      return { byFixtures: true, rows: this.partData.get(key) ?? [] };
+    });
     fake.onCommand((command) => this.exec(command));
   }
 
@@ -116,6 +138,16 @@ class FakeShow {
       if (!options.includes("/NoConfirmation")) return "Error: a store pop-up would have opened";
       if (!this.has(`Sequence ${seq} Cue ${cue}`)) this.addCue(seq, cue);
       if (part !== undefined && !this.has(`Sequence ${seq} Cue ${cue} Part ${part}`)) this.addPart(seq, cue, Number(part));
+      // The values the ChannelFilter preference selects go into the part, and are deactivated.
+      const key = this.cueKey(seq, cue, part === undefined ? 0 : Number(part));
+      const f = this.prefs.ChannelFilter.toLowerCase();
+      const take = this.programmer.filter((r) => (f.includes("selected") ? r.selected : true) && (f.startsWith("all") || r.masks.activeValue !== 0 || r.masks.activePhaser !== 0));
+      const kept = options.includes("/Merge") ? (this.partData.get(key) ?? []).filter((x) => !take.some((r) => `${r.fid}|${r.attribute}` === `${x.fixture}|${x.attribute}`)) : [];
+      const stored = take
+        .filter((r) => !this.storeDrops.has(`${r.fid}|${r.attribute}`))
+        .map((r) => ({ fixture: r.fid, attribute: r.attribute, ...(r.stepCount && r.stepCount > 1 ? { stepCount: r.stepCount, steps: r.steps } : { value: (r.value ?? 0) + this.storeOffset }) }));
+      this.partData.set(key, [...kept, ...stored]);
+      for (const r of take) r.masks = { activeValue: 0, activePhaser: 0, individual: r.masks.individual };
       return "OK";
     }
     const del = command.match(/^Delete Sequence (\d+) Cue ([\d.]+) \/NoConfirmation$/);
@@ -177,9 +209,61 @@ test("store_cue create: stores a new cue with /NoConfirmation only and verifies 
   assert.equal(result.outcome, "succeeded");
   assert.equal(result.verification.status, "matched");
   assert.deepEqual(result.target, { sequence: 900, sequenceSource: "explicit", cue: "1" });
-  assert.match(result.summary, /fixture values.*NOT verified/i);
-  assert.match(result.notVerified, /FR-10/);
+  assert.deepEqual(result.storedValues, { channelFilter: "Active", storeSource: "Programmer", expected: 1, stored: 1, compared: 1, missing: 0, different: 0 });
+  assert.deepEqual(h.fake.requests.filter((r) => r.op === "preset.read").map((r) => r.args.ref), ["Sequence 900 Cue 1 Part 0"]);
   assert.equal(show.has("Sequence 900 Cue 1"), true);
+});
+
+test("store_cue: the stored values follow ChannelFilter; Active For Selected expects the selected fixtures only", async () => {
+  show.prefs.ChannelFilter = "Active For Selected";
+  show.programmer.push({ fid: "102", attribute: "Dimmer", value: 80, selected: false, masks: { activeValue: 2, activePhaser: 0, individual: 1 } });
+  const { result, isError } = await h.callJson("gma3_store_cue", { sequence: 900, cue: 1, mode: "create" });
+  assert.equal(isError, false, result.summary);
+  assert.equal(result.verification.status, "matched");
+  assert.equal(result.storedValues.channelFilter, "Active For Selected");
+  assert.equal(result.storedValues.expected, 1, "102 is not selected, so it is not expected");
+  assert.match(result.warnings.join(" "), /ChannelFilter is "Active For Selected": a store takes only the selected fixtures' values\. The plugin's cue tools expect "Active"/);
+  assert.deepEqual(h.fake.requests.filter((r) => r.op === "programmer").map((r) => r.args.scope), ["selection"]);
+});
+
+test("store_cue: an expected value that is not stored, or stored with another value, is a mismatch (and an MCP error)", async () => {
+  show.programmer.push(
+    { fid: "102", attribute: "Dimmer", value: 80, selected: false, masks: { activeValue: 2, activePhaser: 0, individual: 1 } },
+    { fid: "102", attribute: "ColorRGB_R", value: null, stepCount: 2, steps: [{ absolute: 100 }, { absolute: 20 }], selected: false, masks: { activeValue: 2, activePhaser: 1, individual: 1 } },
+  );
+  show.storeDrops.add("102|Dimmer");
+  let r = await h.callJson("gma3_store_cue", { sequence: 900, cue: 1, mode: "create" });
+  assert.equal(r.isError, true);
+  assert.equal(r.result.outcome, "succeeded", "the store itself succeeded");
+  assert.equal(r.result.verification.status, "mismatched");
+  assert.match(r.result.verification.detail, /1 expected value\(s\) are not stored \(102 Dimmer\)/);
+  assert.deepEqual(r.result.storedValues.missingShown, ["102 Dimmer"]);
+  assert.equal(h.fake.commands.length, 1, "nothing is re-stored");
+
+  show.storeDrops.clear();
+  show.storeOffset = 5;
+  for (const p of show.programmer) p.masks.activeValue = 2;
+  r = await h.callJson("gma3_store_cue", { sequence: 900, cue: 1, mode: "overwrite" });
+  assert.equal(r.result.verification.status, "mismatched");
+  assert.match(r.result.verification.detail, /101 Dimmer: 50 in the programmer, 55 stored/);
+  assert.equal(r.result.storedValues.different, 2, "both single values differ; the phaser steps match");
+});
+
+test("store_cue: an unmodelled ChannelFilter compares the values found but does not judge completeness", async () => {
+  show.prefs.ChannelFilter = "Something Else";
+  show.storeDrops.add("101|Dimmer");
+  const { result } = await h.callJson("gma3_store_cue", { sequence: 900, cue: 1, mode: "create" });
+  assert.equal(result.verification.status, "unavailable");
+  assert.match(result.verification.detail, /completeness not judged: ChannelFilter "Something Else"/);
+});
+
+test("store_cue: verify false reads only the preferences (for the ChannelFilter warning), not the programmer or the cue", async () => {
+  const { result } = await h.callJson("gma3_store_cue", { sequence: 900, cue: 1, mode: "create", verify: false });
+  assert.deepEqual(h.fake.requests.filter((r) => ["preset.context", "programmer", "preset.read"].includes(r.op)).map((r) => r.op), ["preset.context"]);
+  assert.equal(result.warnings, undefined, "Active: no warning");
+  show.prefs.ChannelFilter = "Active For Selected";
+  const sel = await h.callJson("gma3_store_cue", { sequence: 900, cue: 2, mode: "create", verify: false });
+  assert.deepEqual(sel.result.warnings, ['Store preference ChannelFilter is "Active For Selected": a store takes only the selected fixtures\' values. The plugin\'s cue tools expect "Active" (set it in the user profile\'s store preferences).']);
 });
 
 test("store_cue: merge and overwrite send their option, never both, and an unknown mode is rejected by the schema", async () => {
@@ -440,6 +524,9 @@ test("store_cue_part: stores a part, applies name/timing to the part, documents 
   ]);
   assert.equal(result.verification.status, "matched");
   assert.deepEqual(result.target, { sequence: 900, sequenceSource: "explicit", cue: "1", part: 1 });
+  // The stored values are read from the part that was stored, not from Part 0.
+  assert.deepEqual(h.fake.requests.filter((r) => r.op === "preset.read").map((r) => r.args.ref), ["Sequence 900 Cue 1 Part 1"]);
+  assert.deepEqual([result.storedValues.expected, result.storedValues.compared, result.storedValues.missing], [1, 1, 0]);
 
   // Part 0 of an existing cue always exists, so create refuses it; merge works and the result explains part 0.
   const p0 = await h.callJson("gma3_store_cue_part", { sequence: 900, cue: 1, part: 0, mode: "create" });
@@ -764,7 +851,7 @@ test("tool descriptions state selection/programmer impact, verification scope an
     assert.match(d, /another console operator/, name);
   }
   for (const name of ["gma3_store_cue", "gma3_store_cue_part"]) {
-    assert.match(h.tools.get(name)!.description!, /NOT verified/, name);
+    assert.match(h.tools.get(name)!.description!, /Stored fixture values are verified.*ChannelFilter/, name);
     assert.match(h.tools.get(name)!.description!, /not a transaction lock/, name);
   }
 });

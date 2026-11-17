@@ -48,6 +48,12 @@ Executors are addressed by page: "Page 1.201" or "Executor 201" (current page). 
 - Plugin "name" "argument"     run a plugin
 - SendOSC 1 "/path,i,1"        send OSC from line 1 of the OSC configuration
 
+## Show analysis (structured, read-only tools: no command line or Lua needed)
+- Where is Preset 4.12 used, and by which executors?   gma3_preset_usage {preset: "4.12"}
+- Invalid preset references in cue data               gma3_preset_usage {dangling: true}
+- What differs between two cues (stored data)          gma3_cue_diff {a: {sequence, cue}, b: {sequence, cue}}
+- Values that keep tracking unintentionally            gma3_tracking_leaks {sequence}
+
 ## Show data paths (for gma3_get_object / gma3_lua)
 Root
   ShowData                       -> ShowData()
