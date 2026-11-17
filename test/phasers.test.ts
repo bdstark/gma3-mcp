@@ -100,8 +100,19 @@ test("physical values convert through the range, relative values through its siz
   const row = (from: number, to: number, rel: number, abs: number): Row => ({ subfixtureIndex: 2, fid: "601", attribute: "Pan", stepCount: 2, physicalFrom: from, physicalTo: to, steps: [{ relative: rel }, { absolute: abs }], phaser: { gridPos: 0 } });
   const s = new Map([[2, "601"]]);
   assert.deepEqual(verifyBuild({ effect: e, rows: [row(-225, 225, 6.667, 40)], scope: s, implied: new Set(), stepPresets: [] }).problems, []);
-  assert.deepEqual(verifyBuild({ effect: e, rows: [row(270, -270, 5.556, 58.333)], scope: s, implied: new Set(), stepPresets: [] }).problems, [], "reversed range: relative stays positive");
+  assert.deepEqual(verifyBuild({ effect: e, rows: [row(270, -270, 5.556, 41.667)], scope: s, implied: new Set(), stepPresets: [] }).problems, [], "reversed DMX range: absolute follows ascending UI range, relative stays positive");
   assert.match(verifyBuild({ effect: e, rows: [{ ...row(-225, 225, 6.667, 40), physicalFrom: undefined }], scope: s, implied: new Set(), stepPresets: [] }).problems.join(), /physical range of Pan is unknown/);
+});
+
+test("physical phaser absolute steps use ascending UI range when DMX Zoom runs backwards", () => {
+  const effect: Effect = { unit: "physical", steps: [{ values: { Zoom: { absolute: 25 } } }], phaser: {} };
+  const input: Row = { subfixtureIndex: 1111, fid: "2037", attribute: "Zoom", physicalFrom: 50.2, physicalTo: 6.6,
+    stepCount: 1, steps: [{ absolute: 42.201834917068 }], phaser: { gridPos: 0 } };
+  const scope = new Map([[1111, "2037"]]);
+  const check = (value: Row) => verifyBuild({ effect, rows: [value], scope, implied: new Set(), stepPresets: [] });
+  assert.deepEqual(check(input).problems, []);
+  assert.ok(check({ ...input, steps: [{ absolute: 57.798165082932 }] }).problems.length > 0,
+    "the former DMX-directed fraction must not falsely verify");
 });
 
 test("step presets must be referenced by their step", () => {

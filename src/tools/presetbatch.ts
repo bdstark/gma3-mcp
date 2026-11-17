@@ -114,7 +114,7 @@ export async function storePresetsFromContent(ctx: ToolContext, merged: Array<Re
       };
       return { prefix: pre, looks: p.looks, store: [{ name: `${pre}store`, run }] };
     });
-    const built = await buildInPreview(ctx, { items: preview, verify: o.verify, noun: "presets", inspect: [], continueAfterFailure: o.stopOnFailure !== true });
+    const built = await buildInPreview(ctx, { items: preview, verify: o.verify, noun: "presets", inspect: [], continueAfterFailure: o.stopOnFailure !== true, storeFilterExplicit: "/Active" });
     const common = built.steps.filter((s) => !items.some((p) => s.name.startsWith(`preset ${p.preset}: `)));
     if (!built.sent) {
       return buildResult({ operation: OP, target: { presets: items.map((p) => p.preset) }, steps: common, verification: { status: "unavailable", detail: "nothing was sent" }, summary: `${OP} was not performed; nothing was sent: ${common.find((s) => s.status !== "succeeded")?.error ?? "the inspection failed"}`, warnings: built.warnings });

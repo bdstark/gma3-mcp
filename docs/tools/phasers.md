@@ -141,7 +141,9 @@ a template.
    - Step timing and the phaser layers are checked on **every** attribute of the effect: the explicit ones, those a
      step preset brought, and activation-group siblings.
    - Each step has its value (percent; physical values converted through the attribute's range, relative values
-     through its size) and its timing.
+     through its size) and its timing. An absolute physical value is read on the ascending range, whichever way the
+     DMX runs: a Zoom of 50.2° to 6.6° reads Physical 25 as 42.2 % (captured on onPC 2.5.1.1), as
+     `gma3_set_attributes` already assumes.
    - Each step preset is referenced by every fixture in its step, and no other preset is referenced there.
    - Speed, measure and speed master match, and every fixture has the expected phase for its grid position and the
      repetition (`0 Thru 360` as one cycle, see above).

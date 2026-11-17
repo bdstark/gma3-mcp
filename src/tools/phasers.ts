@@ -489,9 +489,11 @@ function expectedPercent(v: number, kind: "absolute" | "relative", unit: Unit, r
   const from = row.physicalFrom;
   const to = row.physicalTo;
   if (typeof from !== "number" || typeof to !== "number" || to === from) return `the physical range of ${row.attribute} is unknown`;
+  // Absolute programmer/preset values follow the ascending UI physical range, not DMX direction (captured onPC
+  // 2.5.1.1 Ultra Zoom 50.2 -> 6.6: Physical 25 reads 42.2018 %), as gma3_set_attributes read-back already assumes.
   // A relative value is a share of the range's size: a fixture with a reversed range (from > to) still reads +30° as
   // a positive percentage (Thrill Mini Profile Pan, SB-04 probe).
-  return kind === "absolute" ? ((v - from) / (to - from)) * 100 : (v / Math.abs(to - from)) * 100;
+  return kind === "absolute" ? ((v - Math.min(from, to)) / Math.abs(to - from)) * 100 : (v / Math.abs(to - from)) * 100;
 }
 
 const near = (a: unknown, b: unknown, tol: number) => typeof a === "number" && typeof b === "number" && Math.abs(a - b) <= tol;

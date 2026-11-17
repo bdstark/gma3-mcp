@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { registerCueListTools, expectedOrder, judgeCycle, planObservation } from "../src/tools/cuelists.ts";
+import { registerCueListTools, expectedOrder, judgeCycle, planObservation, buildInPreview, validateLooks } from "../src/tools/cuelists.ts";
+import { Validator } from "../src/validate.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 
@@ -57,6 +58,8 @@ interface Seq {
 }
 
 class Console {
+  /** False: preset.context cannot read the store preferences. */
+  prefsReadable = true;
   fixtures: Record<string, string[]> = {
     "101": ["Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"],
     "102": ["Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"],
@@ -316,7 +319,7 @@ class Console {
     f.reset();
     f.onCommand((cmd) => this.apply(cmd));
     f.on("programmer", (args) => this.programmer(args));
-    f.on("preset.context", () => ({ preferences: { ...this.prefs }, preferencesReadable: true }));
+    f.on("preset.context", () => (this.prefsReadable ? { preferences: { ...this.prefs }, preferencesReadable: true } : { preferences: {}, preferencesReadable: false }));
     f.on("preset.read", (args) => {
       const m = String(args.ref).match(/^Sequence (\d+) Cue ([\d.]+) Part 0$/);
       const c = m ? this.cue(+m[1], +m[2]) : undefined;
@@ -420,6 +423,94 @@ test("store_cues: three cues built in Preview, each from its looks, named, timed
     assert.deepEqual([seq.cues[1].trigType, seq.cues[2].trigType, seq.cues[2].trigTime], ["Follow", "Time", 2]);
     assert.deepEqual(c.commands.slice(0, 6), ["Preview On", "[P] ClearSelection", "[P] Fixture 101 + 102", "[P] At Preset 4.1", "[P] At 100", "[P] Store Sequence 951 Cue 1 /NoConfirmation"]);
     assert.deepEqual(c.commands.slice(-2), ["[P] ClearAll", "[P] Preview Off"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues: a 530-fixture look over the one-command bound is built in parts, each selected, valued and checked", async () => {
+  const { h, c } = await setup();
+  try {
+    // Odd 5-digit ids, so no run collapses into a range: 4,245 characters, over the 4,096 one command may hold.
+    const ids = Array.from({ length: 530 }, (_, i) => String(10001 + 2 * i));
+    for (const id of ids) c.fixtures[id] = ["Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"];
+    const { result, isError } = await h.callJson("gma3_store_cues", {
+      sequence: 981, mode: "create", exclusive: true, detail: true,
+      cues: [{ cue: 1, fixtures: ids.join(" + "), presets: [{ pool: 4, preset: 1 }], intensity: 70 }],
+    });
+    assert.equal(isError, false, JSON.stringify(result, null, 2));
+    assert.equal(result.verification.status, "matched");
+    const stored = c.seqs.get(981)!.cues[0].data;
+    assert.equal(Object.keys(stored).length, 530, "every fixture is in the cue");
+    for (const id of ids) assert.deepEqual(stored[id], { ColorRGB_R: 100, ColorRGB_G: 0, ColorRGB_B: 0, Dimmer: 70 }, `fixture ${id}`);
+    const selects = c.commands.filter((cmd) => cmd.startsWith("[P] Fixture "));
+    assert.equal(selects.length, 2);
+    for (const cmd of selects) {
+      const selection = cmd.slice(4);
+      assert(selection.length <= 4096, `${selection.length} characters`);
+      const at = c.commands.indexOf(cmd);
+      assert.deepEqual(c.commands.slice(at - 1, at + 3), ["[P] ClearSelection", cmd, "[P] At Preset 4.1", "[P] At 70"], "each part gets its own ClearSelection and the look's whole content");
+    }
+    assert.deepEqual(selects.flatMap((cmd) => cmd.slice("[P] Fixture ".length).split(" + ")), ids, "the parts select every fixture once, in order");
+    assert.deepEqual(result.cues[0].looks.map((l: any) => [l.selectionPart, l.verification]), ["1/2", "2/2"].map((part) => [part, "matched"]), "each part is reported and checked");
+    const storeAt = c.commands.indexOf("[P] Store Sequence 981 Cue 1 /NoConfirmation");
+    assert(storeAt > c.commands.indexOf(selects[1]), "one store, after the last part");
+    assert.equal(c.commands.filter((cmd) => cmd.startsWith("[P] Store Sequence 981")).length, 1);
+    normalUntouched(c);
+  } finally {
+    await h.close();
+  }
+});
+
+test("buildInPreview: a store that sets its own channel filter (gma3_store_preset /Active) passes the split-look scope check under Active For Selected", async () => {
+  const { h, c } = await setup();
+  try {
+    c.prefs.ChannelFilter = "Active For Selected";
+    const ids = Array.from({ length: 530 }, (_, i) => String(10001 + 2 * i));
+    for (const id of ids) c.fixtures[id] = ["Dimmer"];
+    const v = new Validator();
+    const looks = validateLooks(v, { fixtures: ids.join(" + "), intensity: 70 }, "preset", undefined);
+    assert.ok(v.ok && looks.length === 2, "the look is split in two");
+    let stores = 0;
+    const store = async () => { stores++; return { name: "preset 4.9: store", status: "succeeded" as const, op: "test" }; };
+    const run = (storeFilterExplicit?: string) => buildInPreview(h.ctx, { items: [{ prefix: "preset 4.9: ", looks, store: [{ name: "preset 4.9: store", run: store }] }], verify: false, noun: "presets", inspect: [], ...(storeFilterExplicit ? { storeFilterExplicit } : {}) });
+    const refused = await run();
+    assert.equal(refused.sent, false);
+    assert.match(refused.steps.find((x) => x.name === "check_store_scope")!.error!, /Active For Selected/);
+    const explicit = await run("/Active");
+    assert.equal(explicit.steps.find((x) => x.name === "check_store_scope")!.status, "succeeded");
+    assert.equal(stores, 1, "the store ran");
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues: a split look is refused before anything is sent when ChannelFilter stores only the selection, or cannot be read", async () => {
+  for (const [filter, pattern] of [["Active For Selected", /ChannelFilter is "Active For Selected": the store would take only the last part/], ["All For Selected", /ChannelFilter is "All For Selected"/], [null, /ChannelFilter could not be read/]] as Array<[string | null, RegExp]>) {
+    for (const verify of [true, false]) {
+      const { h, c } = await setup();
+      try {
+        if (filter === null) c.prefsReadable = false;
+        else c.prefs.ChannelFilter = filter;
+        const ids = Array.from({ length: 530 }, (_, i) => String(10001 + 2 * i));
+        for (const id of ids) c.fixtures[id] = ["Dimmer"];
+        const before = c.commands.length;
+        const { result, isError } = await h.callJson("gma3_store_cues", { sequence: 981, mode: "create", exclusive: true, verify, cues: [{ cue: 1, fixtures: ids.join(" + "), intensity: 70 }] });
+        assert.equal(isError, true, `${filter} verify ${verify}`);
+        assert.match(errors({ result }), pattern);
+        assert.deepEqual(c.commands.slice(before), [], `${filter} verify ${verify}: nothing was sent`);
+        assert.equal(c.seqs.has(981), false);
+      } finally {
+        await h.close();
+      }
+    }
+  }
+  // A look that is not split stores as before, whatever the ChannelFilter.
+  const { h, c } = await setup();
+  try {
+    c.prefs.ChannelFilter = "Active For Selected";
+    const { isError, result } = await h.callJson("gma3_store_cues", { sequence: 982, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101 + 102", intensity: 50 }] });
+    assert.equal(isError, false, JSON.stringify(result));
   } finally {
     await h.close();
   }
