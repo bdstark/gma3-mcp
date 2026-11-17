@@ -360,22 +360,24 @@ export async function loadShow(ctx: ToolContext, raw: Record<string, unknown>): 
       if (ctx.oscCommand) [sender, via] = [ctx.oscCommand, "osc"];
       else if (restart === "osc") return validationFailure(op, target, ["this server has no OSC sender; use keystroke or none"]);
     }
-    const port = ctx.bridge.port;
-    const startCommand = port && port !== DEFAULT_BRIDGE_PORT ? `${BRIDGE_COMMAND} "${port}"` : BRIDGE_COMMAND;
-
     let before: ShowFiles;
     let instance: unknown;
     let saveNeeded: boolean | undefined;
+    // The port the console's bridge listens on (ping), not this client's: through a tunnel (GMA3_BRIDGE_PORT=19800
+    // forwarded to 9800, docs/remote-access.md) the restart must reopen 9800 (review of #133).
+    let consolePort = ctx.bridge.port;
     try {
       before = await readShowFiles(ctx.bridge, t);
-      const ping = (await ctx.bridge.request("ping", {}, t)) as { instance?: unknown; show?: { saveNeeded?: unknown } };
+      const ping = (await ctx.bridge.request("ping", {}, t)) as { instance?: unknown; port?: unknown; show?: { saveNeeded?: unknown } };
       instance = ping.instance;
+      if (typeof ping.port === "number" && Number.isInteger(ping.port) && ping.port > 0) consolePort = ping.port;
       if (typeof ping.show?.saveNeeded === "boolean") saveNeeded = ping.show.saveNeeded;
       steps.push(asRead({ name: "read_show_files", status: "succeeded", op: "show.files", detail: { current: before.current, files: before.files.length, instance: instance ?? null, saveNeeded: saveNeeded ?? null } }));
     } catch (err) {
       steps.push(asRead(stepFromError("read_show_files", err, { op: "show.files" })));
       return buildResult({ operation: op, target, steps, verification: unavailable("nothing was sent") });
     }
+    const startCommand = consolePort && consolePort !== DEFAULT_BRIDGE_PORT ? `${BRIDGE_COMMAND} "${consolePort}"` : BRIDGE_COMMAND;
     const refuse = (why: string, extra: Record<string, unknown> = {}) => {
       steps.push(asRead({ name: "check", status: "failed", error: `${why}; nothing was loaded` }));
       return buildResult({ operation: op, target, steps, verification: unavailable("nothing was loaded"), extra: { current: before.current ?? null, ...extra } });
@@ -558,6 +560,15 @@ export async function loadShow(ctx: ToolContext, raw: Record<string, unknown>): 
         press.status = "succeeded";
         press.error = undefined;
         press.detail = { ...(press.detail as object), note: "the reply was lost because the press started the load (it unloaded the bridge); the load that followed proves the press acted" };
+      }
+      // A LoadShow whose reply was lost (never resent) is proven by the new bridge naming the requested show (review of #133).
+      const queued = steps.find((s) => s.name === "load");
+      if (queued?.status === "unknown" && same(loaded as string | undefined, to)) {
+        queued.status = "succeeded";
+        queued.error = undefined;
+        queued.detail = { ...((queued.detail as object) ?? {}), note: "the reply was lost; a new bridge naming the requested show proves LoadShow ran (it was not resent)" };
+        const i = warnings.indexOf("the reply to LoadShow was lost: it was not resent");
+        if (i >= 0) warnings[i] = "the reply to LoadShow was lost (not resent); the load is confirmed by the new bridge";
       }
       if (typeof loaded !== "string") steps.push({ name: "confirm_show", status: "unknown", error: "the new bridge does not name the console's show: check it with gma3_show_files" });
       verification =
