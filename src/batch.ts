@@ -43,6 +43,8 @@ export interface BatchItem {
   label: string;
   /** The object the item changes; later items on the same object are skipped once one did not succeed. */
   key?: string;
+  /** More objects the item changes (a copy's destination): tracked like `key`. */
+  keys?: string[];
   run: () => Promise<OperationResult>;
 }
 
@@ -111,6 +113,8 @@ export interface BatchCall {
   identityKeys: string[];
   label: (item: Record<string, unknown>, index: number) => string;
   key?: (item: Record<string, unknown>) => string | undefined;
+  /** Every object an item changes, when more than one (a copy's source and destination); used together with `key`. */
+  keys?: (item: Record<string, unknown>) => string[];
   /** One item through the single form, with the context to use (its lock is the batch's held span). */
   run: (item: Record<string, unknown>, ctx: ToolContext) => Promise<OperationResult>;
   /** Checks across items (duplicates); any reason refuses the whole call before anything is sent. */
@@ -127,7 +131,7 @@ export async function runBatchCall(args: Record<string, unknown>, c: BatchCall):
   return c.ctx.mutations.run(() =>
     runBatch(
       c.operation,
-      split.items.map((item, i) => ({ label: c.label(item, i), key: c.key?.(item), run: () => c.run(item, held) })),
+      split.items.map((item, i) => ({ label: c.label(item, i), key: c.key?.(item), keys: c.keys?.(item), run: () => c.run(item, held) })),
       { stopOnFailure: args.stop_on_failure === true, detail: args.detail === true },
     ),
   );
@@ -152,8 +156,10 @@ export async function runBatch(operation: string, items: BatchItem[], o: BatchOp
       entries.push({ label: item.label, skipped: halted });
       continue;
     }
-    if (item.key !== undefined && failedKeys.has(item.key)) {
-      entries.push({ label: item.label, skipped: `not attempted: item ${failedKeys.get(item.key)} on ${item.key} did not succeed` });
+    const itemKeys = [...(item.key !== undefined ? [item.key] : []), ...(item.keys ?? [])];
+    const failedOn = itemKeys.find((k) => failedKeys.has(k));
+    if (failedOn !== undefined) {
+      entries.push({ label: item.label, skipped: `not attempted: item ${failedKeys.get(failedOn)} on ${failedOn} did not succeed` });
       continue;
     }
     let result: OperationResult;
@@ -166,7 +172,7 @@ export async function runBatch(operation: string, items: BatchItem[], o: BatchOp
     entries.push({ label: item.label, result });
     if (hasUncertainStep(result)) halted = `not attempted: item ${i + 1} (${item.label}) has a step without a reply that may have changed the console, so its state is not known`;
     else if (!itemOk(result)) {
-      if (item.key !== undefined) failedKeys.set(item.key, i + 1);
+      for (const k of itemKeys) failedKeys.set(k, i + 1);
       if (o.stopOnFailure) halted = `not attempted: item ${i + 1} (${item.label}) did not succeed and stop_on_failure is set`;
     }
   }
