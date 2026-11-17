@@ -23,14 +23,15 @@ Per universe:
 | Field | Meaning |
 | --- | --- |
 | `protocol`, `universe` | `sACN` or `Art-Net` and the protocol universe; Art-Net also as `{net, subnet, universe}` |
-| `priority` | sACN: the winning priority |
-| `fps` | packets per second during the window (a static universe may be sent at a reduced keep-alive rate) |
+| `priority` | sACN: the winning priority (absent when no active stream is left) |
+| `fps` | packets per second during the window from the contributing sources (a static universe may be sent at a reduced keep-alive rate; 0 when no active stream is left) |
 | `slots`, `nonzero` | slots in the frame, channels above 0 |
-| `merge` | `single source`, `<name> wins at priority N`, or `HTP of N sources`: the highest sACN priority wins, equal ones merge HTP; preview and terminated streams are left out |
-| `sources` | each sender: name and CID (sACN), IP, priority, fps, last sequence number, `preview` / `terminated` flags, `last_seen_ms_ago` |
+| `merge` | `single source`, `<name> wins at priority N`, or `HTP of N sources`: the highest sACN priority wins, equal ones merge HTP. The participants are the sources that are live (a packet within the last 2.5 s, E1.31's data loss timeout), not only those that sent during the window, so a keep-alive source quiet for a short window keeps its universe. Preview and terminated streams never take part: when only they are left the merge is `no active stream` with no values |
+| `sources` | each live sender: name and CID (sACN), IP, priority, fps (this window), last sequence number, `preview` / `terminated` flags, `last_seen_ms_ago` |
 | `values` | `{channel: value}` (0..255) |
 
 Also: `sockets` (each protocol's port, whether it listens, and a bind error in words), `multicast_groups` joined,
+`multicast_failures` (a group no interface could join, with the error; a hint says multicast on it cannot arrive),
 `ignored_packets` (datagrams on the ports that were not DMX data, by reason: a sync or discovery packet, a non-zero
 start code), and `hints` when nothing, or not every requested universe, arrived.
 
@@ -54,13 +55,16 @@ The hints cover the usual causes:
   the port; a unicast datagram is delivered to one of them only, so another receiver on the same port may take it.
 - A port that another application holds without address reuse (sometimes the console itself, a visualiser or node
   software) cannot be bound. The tool reports it per protocol and still listens on the other port; with both ports
-  held it returns an error.
+  held it returns an error. A protocol whose bind failed is tried again on the next call, so it recovers once the
+  port is free.
 - sACN multicast: the listener joins `239.255.(u >> 8).(u & 255)` on every IPv4 interface for the universes asked for
-  (1-4 when none are given). Join errors are ignored. `GMA3_NET_OUTPUT_MULTICAST=0` turns joining off.
+  (1-4 when none are given) for the call, and leaves each group again when no running call needs it, so repeated
+  calls for different universes do not pile up memberships (Linux allows 20 per socket by default). A group no
+  interface could join is reported in `multicast_failures`. `GMA3_NET_OUTPUT_MULTICAST=0` turns joining off.
 - The latest frame is kept per protocol, universe and source (sACN by CID, Art-Net by sender address and physical
   port), with the packet count and the time last seen.
-- The sockets close after `GMA3_NET_OUTPUT_IDLE_MS` (default 60 s) with no call, and the frames are dropped. Nothing
-  listens permanently.
+- The sockets close after `GMA3_NET_OUTPUT_IDLE_MS` (default 60 s) with no call, and the frames are dropped. The
+  countdown does not run while a call is collecting; it starts when the last one ends. Nothing listens permanently.
 
 Packets are validated before they count. E1.31: preamble, ACN packet identifier, root vector 0x4, framing vector
 0x2, DMP vector 0x02 and address type 0xa1, universe 1..63999, property count, start code 0. ArtDmx: ID `Art-Net\0`,
@@ -81,4 +85,6 @@ OpCode 0x5000, length 1..512.
 `test/netoutput.test.ts`: the parsers with hand-built packets (valid, wrong identifier, wrong vectors, start code,
 short and truncated), channel lists and options, the priority / HTP merge, an end-to-end run sending sACN and Art-Net
 to the listener on ephemeral ports (values, fps, samples of a rising fade, ignored packets, idle close), the hints
-when nothing arrives, a port held by another socket, and the tool over MCP with no bridge running.
+when nothing arrives, a port held by another socket, and the tool over MCP with no bridge running. Review cases: an
+idle time shorter than `listen_ms`, a failed bind retried once the port is free, a quiet live high-priority source,
+multicast groups left after each call and a join failure reported, and preview-only or terminated-only streams.

@@ -4,12 +4,12 @@
  * console's merge and priority. No bridge request: it works while the bridge is down (a show load), and it is not a
  * mutation, so it never takes the mutation lock.
  *
- * The sockets bind on the first call and close after GMA3_NET_OUTPUT_IDLE_MS (default 60 s) with no call
+ * The sockets bind on the first call and close after GMA3_NET_OUTPUT_IDLE_MS (default 60 s) with no call running
  * (src/netoutput.ts), so nothing listens permanently.
  */
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
-import { NetOutputListener, listenerOptionsFromEnv, type NetProtocol, type SourceState, type SocketStatus } from "../netoutput.js";
+import { NetOutputListener, SOURCE_TIMEOUT_MS, listenerOptionsFromEnv, type MembershipFailure, type NetProtocol, type SourceState, type SocketStatus } from "../netoutput.js";
 import { Validator, finiteNumber } from "../validate.js";
 import { json, type RegisterTools } from "./context.js";
 
@@ -59,10 +59,13 @@ interface Merged {
   contributing: SourceState[];
 }
 
-/** What a receiver would output for one universe: highest sACN priority wins, HTP among equals; preview and terminated streams left out. */
+/**
+ * What a receiver would output for one universe: highest sACN priority wins, HTP among equals. Preview and terminated
+ * streams never take part: when no other stream is left the merge is empty (no values, no contributing source).
+ */
 export function mergeSources(sources: SourceState[]): Merged {
-  const live = sources.filter((s) => !s.frame.preview && !s.frame.terminated);
-  const pool = live.length ? live : sources;
+  const pool = sources.filter((s) => !s.frame.preview && !s.frame.terminated);
+  if (!pool.length) return { data: new Uint8Array(0), merge: "no active stream (every stream is preview or terminated)", contributing: [] };
   const top = Math.max(...pool.map((s) => s.frame.priority ?? 0));
   const winners = pool[0].protocol === "sacn" ? pool.filter((s) => (s.frame.priority ?? 0) === top) : pool;
   const len = Math.max(...winners.map((s) => s.frame.data.length));
@@ -70,9 +73,8 @@ export function mergeSources(sources: SourceState[]): Merged {
   for (const s of winners) for (let i = 0; i < s.frame.data.length; i++) if (s.frame.data[i] > data[i]) data[i] = s.frame.data[i];
   const prio = pool[0].protocol === "sacn" ? top : undefined;
   let merge: string;
-  if (winners.length === 1) merge = sources.length === 1 ? "single source" : `${winners[0].frame.sourceName || winners[0].address} wins${prio !== undefined ? ` at priority ${prio}` : ""}`;
+  if (winners.length === 1) merge = pool.length === 1 ? "single source" : `${winners[0].frame.sourceName || winners[0].address} wins${prio !== undefined ? ` at priority ${prio}` : ""}`;
   else merge = `HTP of ${winners.length} sources${prio !== undefined ? ` at priority ${prio}` : ""}`;
-  if (!live.length) merge += " (every stream is preview or terminated)";
   return { data, priority: prio, merge, contributing: winners };
 }
 
@@ -119,13 +121,32 @@ export async function collectNetworkOutput(listener: NetOutputListener, raw: Col
   }
   if (!v.ok || listenMs === undefined || samples === undefined) return { result: { error: v.errors.join("; ") }, isError: true };
 
-  const sockets = await listener.ensure();
-  if (!sockets.some((s) => s.listening)) {
-    return { result: { tool: "gma3_network_output", error: "could not listen on either port", sockets: socketReport(sockets) }, isError: true };
+  // The collection runs from here to end(): the listener is not closed by its idle timer meanwhile.
+  listener.begin();
+  const joinList = universes?.length ? universes : DEFAULT_MULTICAST_UNIVERSES;
+  let joined = false;
+  try {
+    const sockets = await listener.ensure();
+    if (!sockets.some((s) => s.listening)) {
+      return { result: { tool: "gma3_network_output", error: "could not listen on either port", sockets: socketReport(sockets) }, isError: true };
+    }
+    const membership = listener.joinUniverses(joinList);
+    joined = true;
+    return await collectWindow(listener, { universes, listenMs, samples, channels, sockets, groups: membership.groups, failures: membership.failures });
+  } finally {
+    listener.end(joined ? joinList : []);
   }
-  const groups = listener.joinUniverses(universes?.length ? universes : DEFAULT_MULTICAST_UNIVERSES);
+}
+
+async function collectWindow(
+  listener: NetOutputListener,
+  o: { universes?: number[]; listenMs: number; samples: number; channels?: number[]; sockets: SocketStatus[]; groups: string[]; failures: MembershipFailure[] },
+): Promise<{ result: unknown; isError: boolean }> {
+  const { universes, listenMs, samples, channels, sockets, groups, failures } = o;
   const wanted = universes?.length ? new Set(universes) : undefined;
-  const inScope = (s: SourceState, since: number) => s.lastSeen >= since && (!wanted || wanted.has(s.universe));
+  // Merge participants are the sources live at that moment (a packet within SOURCE_TIMEOUT_MS), not only those that
+  // happened to send during the window: a keep-alive source between two packets still holds its universe.
+  const liveAt = (t: number) => listener.allSources().filter((s) => t - s.lastSeen <= SOURCE_TIMEOUT_MS && (!wanted || wanted.has(s.universe)));
 
   const start = Date.now();
   const baseline = new Map(listener.allSources().map((s) => [`${s.protocol}|${s.universe}|${s.key}`, s.packets]));
@@ -136,15 +157,14 @@ export async function collectNetworkOutput(listener: NetOutputListener, raw: Col
     if (wait > 0) await sleep(wait);
     if (samples > 1) {
       const values: Record<string, Record<string, number>> = {};
-      for (const [, srcs] of groupByUniverse(listener.allSources().filter((s) => inScope(s, start)))) values[universeLabel(srcs[0].protocol, srcs[0].universe)] = pickValues(mergeSources(srcs).data, channels);
+      for (const [, srcs] of groupByUniverse(liveAt(Date.now()))) values[universeLabel(srcs[0].protocol, srcs[0].universe)] = pickValues(mergeSources(srcs).data, channels);
       sampled.push({ t_ms: Date.now() - start, values });
     }
   }
   const elapsed = Math.max(1, Date.now() - start);
-  listener.touch();
   const now = Date.now();
 
-  const seen = listener.allSources().filter((s) => inScope(s, start));
+  const seen = liveAt(now);
   const rows = [...groupByUniverse(seen).values()].map((srcs) => {
     const m = mergeSources(srcs);
     const fpsOf = (s: SourceState) => Math.round(((s.packets - (baseline.get(`${s.protocol}|${s.universe}|${s.key}`) ?? 0)) / elapsed) * 10000) / 10;
@@ -156,7 +176,7 @@ export async function collectNetworkOutput(listener: NetOutputListener, raw: Col
       universe: u,
       ...(p === "artnet" ? { artnet: { net: u >> 8, subnet: (u >> 4) & 0xf, universe: u & 0xf } } : {}),
       ...(m.priority !== undefined ? { priority: m.priority } : {}),
-      fps: Math.max(...m.contributing.map(fpsOf)),
+      fps: m.contributing.length ? Math.max(...m.contributing.map(fpsOf)) : 0,
       slots: m.data.length,
       nonzero,
       merge: m.merge,
@@ -178,7 +198,12 @@ export async function collectNetworkOutput(listener: NetOutputListener, raw: Col
 
   const missing = wanted ? [...wanted].filter((u) => !seen.some((s) => s.universe === u)) : [];
   const ignored = Object.fromEntries(listener.ignored);
-  const hints = !rows.length ? NOTHING_RECEIVED_HINTS : missing.length ? [`nothing received for universe(s) ${missing.join(", ")} (other universes arrived): check that a protocol entry sends them and that they are granted`] : undefined;
+  const hints = [
+    ...(!rows.length ? NOTHING_RECEIVED_HINTS : missing.length ? [`nothing received for universe(s) ${missing.join(", ")} (other universes arrived): check that a protocol entry sends them and that they are granted`] : []),
+    ...(failures.length
+      ? [`sACN multicast could not be joined for universe(s) ${failures.map((f) => f.universe).join(", ")} (${failures[0].error}): multicast output on them cannot arrive here (the host's membership limit, or no multicast-capable interface); unicast and broadcast still can`]
+      : []),
+  ];
   const result = {
     tool: "gma3_network_output",
     summary: rows.length
@@ -187,14 +212,16 @@ export async function collectNetworkOutput(listener: NetOutputListener, raw: Col
     listen_ms: elapsed,
     sockets: socketReport(sockets),
     ...(groups.length ? { multicast_groups: groups } : {}),
+    ...(failures.length ? { multicast_failures: failures } : {}),
     universes: rows,
     ...(sampled.length ? { samples: sampled } : {}),
     ...(Object.keys(ignored).length ? { ignored_packets: ignored } : {}),
-    ...(hints ? { hints } : {}),
+    ...(hints.length ? { hints } : {}),
     notes: [
       channels ? "values: the selected channels ({channel: value}, 0..255)" : "values: nonzero channels only ({channel: value}, 0..255); pass channels for a range including zeros",
       "values are what the console puts on the network (after its merge and priority); with several sources, the highest sACN priority wins and equal ones merge HTP",
       "a static universe may be sent at a reduced keep-alive rate, so a low fps does not mean a problem",
+      `a source counts as live for ${SOURCE_TIMEOUT_MS} ms after its last packet; fps counts the packets of this window only`,
       "read-only and passive: no bridge request; the listener closes after a minute with no call",
     ],
   };

@@ -6,8 +6,9 @@
  * priority, without the bridge: it works while the bridge is down (a show load) and needs no grant read.
  *
  * Sockets bind on demand (SO_REUSEADDR, and on macOS SO_REUSEPORT through libuv, so another receiver on the
- * same port still gets multicast and broadcast) and close after an idle period, so nothing listens permanently.
- * Node built-ins only.
+ * same port still gets multicast and broadcast) and close after an idle period with no collection running, so nothing
+ * listens permanently. A protocol whose bind failed is bound again on the next call. sACN multicast groups are joined
+ * for a collection and left again when no running collection needs them. Node built-ins only.
  */
 import dgram from "node:dgram";
 import os from "node:os";
@@ -111,6 +112,19 @@ export function parseArtDmx(buf: Buffer): ParseResult {
   };
 }
 
+/**
+ * How long a source counts as live after its last packet: E1.31's network data loss timeout (2.5 s). A source that
+ * sends static data at a reduced keep-alive rate stays in the merge between its packets.
+ */
+export const SOURCE_TIMEOUT_MS = 2500;
+
+/** A multicast group that could not be joined on any interface. */
+export interface MembershipFailure {
+  universe: number;
+  group: string;
+  error: string;
+}
+
 /** sACN multicast group of a universe: 239.255.hi.lo. */
 export function sacnMulticastGroup(universe: number): string {
   return `239.255.${(universe >> 8) & 0xff}.${universe & 0xff}`;
@@ -178,7 +192,10 @@ export class NetOutputListener {
   private sockets = new Map<NetProtocol, dgram.Socket>();
   private status = new Map<NetProtocol, SocketStatus>();
   private sources = new Map<string, SourceState>();
-  private joined = new Set<number>();
+  /** Joined sACN universes: the interfaces each was joined on ("" = the default one) and how many collections need it. */
+  private memberships = new Map<number, { interfaces: string[]; users: number }>();
+  /** Collections running now: the sockets are never closed while one runs. */
+  private active = 0;
   private idleTimer?: NodeJS.Timeout;
   private opening?: Promise<void>;
   /** Packets that arrived on a port but were not DMX data (counts by reason, capped). */
@@ -190,11 +207,15 @@ export class NetOutputListener {
     return this.sockets.size > 0;
   }
 
-  /** Bind both sockets if they are not bound yet; restart the idle timer. Bind errors are kept in the status. */
+  /**
+   * Bind every socket that is not bound yet, each protocol on its own (one whose earlier bind failed is tried again);
+   * restart the idle timer. Bind errors are kept in the status.
+   */
   async ensure(): Promise<SocketStatus[]> {
     this.touch();
-    if (!this.open && !this.opening) {
-      this.opening = Promise.all([this.bind("sacn", this.options.sacnPort), this.bind("artnet", this.options.artnetPort)]).then(() => undefined);
+    const missing = (["sacn", "artnet"] as const).filter((p) => !this.sockets.has(p));
+    if (missing.length && !this.opening) {
+      this.opening = Promise.all(missing.map((p) => this.bind(p, p === "sacn" ? this.options.sacnPort : this.options.artnetPort))).then(() => undefined);
     }
     if (this.opening) {
       await this.opening;
@@ -207,38 +228,99 @@ export class NetOutputListener {
     return (["sacn", "artnet"] as const).map((p) => this.status.get(p) ?? { protocol: p, port: p === "sacn" ? this.options.sacnPort : this.options.artnetPort, listening: false });
   }
 
-  /** Restart the idle timer. */
+  /** Restart the idle timer; it does not run while a collection runs. */
   touch(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => this.close(), this.options.idleMs);
+    this.idleTimer = undefined;
+    if (this.active > 0) return;
+    this.idleTimer = setTimeout(() => {
+      if (this.active === 0) this.close();
+    }, this.options.idleMs);
     this.idleTimer.unref();
   }
 
-  /** Join the sACN multicast groups of these universes (every IPv4 interface, errors ignored). Returns the groups joined so far. */
-  joinUniverses(universes: number[]): string[] {
+  /** A collection starts: the idle timer stops until every running collection has ended. */
+  begin(): void {
+    this.active++;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
+  }
+
+  /** A collection ends: its multicast groups are released and, once none runs, the idle countdown starts. */
+  end(universes: number[] = []): void {
+    this.releaseUniverses(universes);
+    this.active = Math.max(0, this.active - 1);
+    this.touch();
+  }
+
+  /** Collections running now. */
+  get running(): number {
+    return this.active;
+  }
+
+  /** The sACN universes whose multicast groups are joined now. */
+  joinedUniverses(): number[] {
+    return [...this.memberships.keys()].sort((a, b) => a - b);
+  }
+
+  /**
+   * Join the sACN multicast groups of these universes for a collection (every IPv4 interface). Each call must be
+   * paired with releaseUniverses (end) for the same list. A group no interface could join is a failure, reported.
+   */
+  joinUniverses(universes: number[]): { groups: string[]; failures: MembershipFailure[] } {
+    const failures: MembershipFailure[] = [];
     const sock = this.sockets.get("sacn");
     if (sock && this.options.multicast) {
       const ifaces = Object.values(os.networkInterfaces())
         .flat()
         .filter((i): i is os.NetworkInterfaceInfo => !!i && i.family === "IPv4")
         .map((i) => i.address);
-      for (const u of universes) {
-        if (u < 1 || u > 63999 || this.joined.has(u)) continue;
+      for (const u of new Set(universes)) {
+        if (u < 1 || u > 63999) continue;
+        const held = this.memberships.get(u);
+        if (held) {
+          held.users++;
+          continue;
+        }
         const group = sacnMulticastGroup(u);
-        let any = false;
-        for (const iface of [undefined, ...ifaces]) {
+        const joined: string[] = [];
+        let firstError: string | undefined;
+        for (const iface of ["", ...ifaces]) {
           try {
             if (iface) sock.addMembership(group, iface);
             else sock.addMembership(group);
-            any = true;
-          } catch {
-            // Already joined on that interface, or the interface cannot do multicast: ignored.
+            joined.push(iface);
+          } catch (err) {
+            // The default interface and its own address are the same membership; an interface may not do multicast.
+            firstError ??= err instanceof Error ? err.message : String(err);
           }
         }
-        if (any) this.joined.add(u);
+        if (joined.length) this.memberships.set(u, { interfaces: joined, users: 1 });
+        else failures.push({ universe: u, group, error: firstError ?? "no IPv4 interface" });
       }
     }
-    return [...this.joined].sort((a, b) => a - b).map(sacnMulticastGroup);
+    return { groups: this.joinedUniverses().map(sacnMulticastGroup), failures };
+  }
+
+  /** Release a collection's groups: a group no running collection needs any more is left on every interface. */
+  releaseUniverses(universes: number[]): void {
+    const sock = this.sockets.get("sacn");
+    for (const u of new Set(universes)) {
+      const held = this.memberships.get(u);
+      if (!held) continue;
+      held.users--;
+      if (held.users > 0) continue;
+      this.memberships.delete(u);
+      if (!sock) continue;
+      for (const iface of held.interfaces) {
+        try {
+          if (iface) sock.dropMembership(sacnMulticastGroup(u), iface);
+          else sock.dropMembership(sacnMulticastGroup(u));
+        } catch {
+          // Already gone with the interface: nothing to release.
+        }
+      }
+    }
   }
 
   /** Every source seen since the sockets opened. */
@@ -281,7 +363,7 @@ export class NetOutputListener {
     this.sockets.clear();
     this.status.clear();
     this.sources.clear();
-    this.joined.clear();
+    this.memberships.clear();
     this.ignored.clear();
   }
 

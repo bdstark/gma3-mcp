@@ -233,3 +233,122 @@ test("the tool is registered and works over MCP with the bridge down", async () 
     await client.close().catch(() => {});
   }
 });
+
+// --- review of #135 ---------------------------------------------------------------------------------------------
+
+test("review: an idle timeout shorter than listen_ms does not close the sockets mid-collection; the countdown starts after", async () => {
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 300 });
+  const sockets = await l.ensure();
+  const sacnPort = sockets.find((s) => s.protocol === "sacn")!.boundPort!;
+  const timer = setInterval(() => void send(sacnPacket({ universe: 7, data: [0, 66] }), sacnPort).catch(() => {}), 20);
+  try {
+    const { result, isError } = await collectNetworkOutput(l, { listen_ms: 900, samples: 3 });
+    assert.equal(isError, false);
+    const r = result as { universes: Array<{ universe: number; values: Record<string, number> }>; samples: Array<{ values: Record<string, Record<string, number>> }> };
+    assert.deepEqual(r.universes.find((u) => u.universe === 7)?.values, { 2: 66 }, "the final result still holds the universe");
+    assert.ok(r.samples.every((s) => s.values["sACN 7"]?.["2"] === 66), JSON.stringify(r.samples));
+    assert.equal(l.running, 0);
+    assert.ok(l.open, "still open right after the collection");
+  } finally {
+    clearInterval(timer);
+  }
+  await new Promise((res) => setTimeout(res, 450));
+  assert.equal(l.open, false, "closed once the idle time passed after the collection");
+});
+
+test("review: a protocol whose bind failed is bound again on a later call, once its port is free", async () => {
+  const holder = dgram.createSocket({ type: "udp4", reuseAddr: false });
+  await new Promise<void>((res) => holder.bind(0, "127.0.0.1", () => res()));
+  const held = holder.address().port;
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: held, artnetPort: 0, multicast: false, idleMs: 5000 });
+  try {
+    const first = (await collectNetworkOutput(l, { listen_ms: 200 })).result as { sockets: Array<{ protocol: string; listening: boolean; error?: string }> };
+    assert.equal(first.sockets.find((s) => s.protocol === "sACN")?.listening, false);
+    assert.match(first.sockets.find((s) => s.protocol === "sACN")?.error ?? "", /held by another application/);
+    assert.equal(first.sockets.find((s) => s.protocol === "Art-Net")?.listening, true);
+    await new Promise<void>((res) => holder.close(() => res()));
+    const second = (await collectNetworkOutput(l, { listen_ms: 200 })).result as { sockets: Array<{ protocol: string; listening: boolean; error?: string }> };
+    assert.deepEqual(second.sockets.find((s) => s.protocol === "sACN"), { protocol: "sACN", port: held, listening: true });
+  } finally {
+    l.close();
+  }
+});
+
+test("review: a live high-priority keep-alive source quiet during a short window still wins the merge", async () => {
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  const sockets = await l.ensure();
+  const sacnPort = sockets.find((s) => s.protocol === "sacn")!.boundPort!;
+  // The priority-150 source's last keep-alive arrived 10 ms before the call; the priority-100 one sends during it.
+  l.ingest("sacn", sacnPacket({ universe: 3, cid: 1, priority: 150, data: [200, 0], name: "Main" }), { address: "10.0.0.1", port: 5568 }, Date.now() - 10);
+  const timer = setInterval(() => void send(sacnPacket({ universe: 3, cid: 2, priority: 100, data: [10, 10], name: "Backup" }), sacnPort).catch(() => {}), 20);
+  try {
+    const r = (await collectNetworkOutput(l, { listen_ms: 200, samples: 2, channels: "1-2" })).result as { universes: Array<{ universe: number; priority: number; merge: string; values: Record<string, number>; sources: Array<{ name: string; fps: number }> }>; samples: Array<{ values: Record<string, Record<string, number>> }> };
+    const u = r.universes.find((x) => x.universe === 3)!;
+    assert.equal(u.priority, 150, JSON.stringify(u));
+    assert.deepEqual(u.values, { 1: 200, 2: 0 });
+    assert.match(u.merge, /Main wins at priority 150/);
+    assert.ok(r.samples.every((s) => s.values["sACN 3"]?.["1"] === 200), JSON.stringify(r.samples));
+    assert.equal(u.sources.find((s) => s.name === "Main")?.fps, 0, "reception statistics count this window only");
+  } finally {
+    clearInterval(timer);
+    l.close();
+  }
+});
+
+test("review: multicast groups are left once no collection needs them, and a group no interface could join is reported", async () => {
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: true, idleMs: 5000 });
+  await l.ensure();
+  const sock = (l as unknown as { sockets: Map<string, dgram.Socket> }).sockets.get("sacn")!;
+  const added: string[] = [];
+  const dropped: string[] = [];
+  let full = false;
+  sock.addMembership = ((group: string, iface?: string) => {
+    if (full) throw new Error("addMembership ENOBUFS");
+    added.push(`${group}@${iface ?? ""}`);
+  }) as typeof sock.addMembership;
+  sock.dropMembership = ((group: string, iface?: string) => void dropped.push(`${group}@${iface ?? ""}`)) as typeof sock.dropMembership;
+  try {
+    for (let u = 1; u <= 3; u++) {
+      const r = (await collectNetworkOutput(l, { universes: [u], listen_ms: 200 })).result as { multicast_groups?: string[] };
+      assert.deepEqual(r.multicast_groups, [sacnMulticastGroup(u)], "joined for the call");
+      assert.deepEqual(l.joinedUniverses(), [], "left again after it");
+    }
+    assert.deepEqual(new Set(dropped), new Set(added), "every membership joined was dropped");
+    full = true;
+    const r = (await collectNetworkOutput(l, { universes: [11], listen_ms: 200 })).result as { multicast_failures?: Array<{ universe: number; group: string; error: string }>; hints?: string[] };
+    assert.deepEqual(r.multicast_failures?.map((f) => [f.universe, f.group]), [[11, "239.255.0.11"]]);
+    assert.match(r.multicast_failures![0].error, /ENOBUFS/);
+    assert.ok(r.hints?.some((h) => /multicast could not be joined for universe\(s\) 11/.test(h)), JSON.stringify(r.hints));
+  } finally {
+    l.close();
+  }
+});
+
+test("review: preview-only or terminated-only streams give no merged values and no contributing source", async () => {
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  try {
+    l.ingest("sacn", sacnPacket({ universe: 8, cid: 1, data: [255], options: 0x80 }), { address: "10.0.0.1", port: 5568 });
+    let m = mergeSources(l.allSources());
+    assert.deepEqual([...m.data], []);
+    assert.deepEqual(m.contributing, []);
+    assert.equal(m.priority, undefined);
+    assert.match(m.merge, /no active stream/);
+    l.close();
+    l.ingest("sacn", sacnPacket({ universe: 8, cid: 2, data: [255], options: 0x40 }), { address: "10.0.0.1", port: 5568 });
+    m = mergeSources(l.allSources());
+    assert.deepEqual([...m.data], []);
+    assert.deepEqual(m.contributing, []);
+    await l.ensure();
+    l.ingest("sacn", sacnPacket({ universe: 9, cid: 3, data: [255], options: 0x80 }), { address: "10.0.0.1", port: 5568 });
+    const r = (await collectNetworkOutput(l, { listen_ms: 200, samples: 2 })).result as { universes: Array<{ universe: number; values: Record<string, number>; nonzero: number; fps: number; priority?: number; sources: Array<{ preview?: boolean }> }>; samples: Array<{ values: Record<string, Record<string, number>> }> };
+    const u = r.universes.find((x) => x.universe === 9)!;
+    assert.deepEqual(u.values, {});
+    assert.equal(u.nonzero, 0);
+    assert.equal(u.fps, 0);
+    assert.equal(u.priority, undefined);
+    assert.equal(u.sources[0].preview, true, "the preview stream stays in the source diagnostics");
+    assert.ok(r.samples.every((s) => JSON.stringify(s.values["sACN 9"] ?? {}) === "{}"));
+  } finally {
+    l.close();
+  }
+});
