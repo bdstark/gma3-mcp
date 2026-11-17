@@ -6,6 +6,8 @@
  * an OperationResult with outcome `failed` and no steps.
  */
 
+import { compactSelection } from "./selection-batches.js";
+
 export class ValidationError extends Error {
   constructor(message: string, public readonly field?: string) {
     super(message);
@@ -226,8 +228,9 @@ export function fixtureSelection(field: string, value: unknown): string {
   for (const t of v.split(" ")) {
     if (!token.test(t)) throw new ValidationError(`${field} contains an unsupported token ${JSON.stringify(t)}; use fixture IDs, ranges with Thru/+/- and Group <n>`, field);
   }
-  if (/^\d/.test(v) || /^(Thru|\+|-)/i.test(v)) return `Fixture ${v}`;
-  return v.replace(/^(fixture|group|channel|subfixture)/i, (m) => m[0].toUpperCase() + m.slice(1).toLowerCase());
+  // Over the one-command bound, consecutive ids become ranges (selection-batches.ts); otherwise unchanged.
+  if (/^\d/.test(v) || /^(Thru|\+|-)/i.test(v)) return compactSelection(`Fixture ${v}`);
+  return compactSelection(v.replace(/^(fixture|group|channel|subfixture)/i, (m) => m[0].toUpperCase() + m.slice(1).toLowerCase()));
 }
 
 /** A command-line object reference restricted to safe characters (no quotes, no newlines). */

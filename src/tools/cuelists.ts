@@ -69,6 +69,7 @@ import { SEQUENCE_SETTINGS, configureSequence, findReferences, settingValue, typ
 import { HeldLock } from "../mutations.js";
 import { VarTracker, variablePresence, variableRefs } from "./variables.js";
 import { dataPoolShape, inDataPool } from "./datapool.js";
+import { compactSelection, splitSelection } from "../selection-batches.js";
 import { captureStoreExpectation, channelFilterWarning, readStorePreferences, verifyStoredValues, type StoreExpectation, type StoredCheck } from "./storeverify.js";
 
 export const MAX_CUES = 100;
@@ -102,6 +103,8 @@ export interface LookSpec {
   values: ValueSpec[];
   /** SU-14: a phaser built on the look's fixtures (steps and phaser layers, as gma3_build_phaser takes them). */
   phaser?: Effect;
+  /** Set when one look's selection was over the one-command bound and was split: this is part `index` of `of`. */
+  selectionPart?: { index: number; of: number };
 }
 export interface CueSpec {
   cue: string;
@@ -240,15 +243,28 @@ export function validateLooks(v: Validator, raw: Record<string, unknown>, path: 
       return [];
     }
     if (raw.looks.length > MAX_LOOKS) v.fail(`${path}: at most ${MAX_LOOKS} looks per cue`);
-    return raw.looks.slice(0, MAX_LOOKS).flatMap((l, i) => validateLook(v, l, `${path}.looks[${i}]`, defaultFixtures) ?? []);
+    return raw.looks.slice(0, MAX_LOOKS).flatMap((l, i) => splitLook(validateLook(v, l, `${path}.looks[${i}]`, defaultFixtures)));
   }
   if (!shorthand) {
     if (allowEmpty) return [];
     v.fail(`${path}: give its content (presets, intensity, values, phaser or looks), or a command`);
     return [];
   }
-  const look = validateLook(v, raw, path, defaultFixtures);
-  return look ? [look] : [];
+  return splitLook(validateLook(v, raw, path, defaultFixtures));
+}
+
+/**
+ * A look whose selection is over the bound for one grandMA3 command becomes one look per part of it
+ * (selection-batches.ts). Each part is built like any other look (ClearSelection, select, presets, values, releases,
+ * read-back), so every fixture still gets every value and every check; consecutive select commands are never relied on
+ * to add up. A phaser spreads across its whole selection, so a phaser look keeps one (compact) selection command, as
+ * before. Callers that take a single look must take every part (gma3_edit_cue_values does).
+ */
+function splitLook(look: LookSpec | undefined): LookSpec[] {
+  if (!look) return [];
+  const parts = look.phaser ? [compactSelection(look.fixtures)] : splitSelection(look.fixtures);
+  if (parts.length === 1) return [{ ...look, fixtures: parts[0] }];
+  return parts.map((fixtures, i) => ({ ...look, fixtures, selectionPart: { index: i + 1, of: parts.length } }));
 }
 
 /**
@@ -380,7 +396,7 @@ interface CueReport {
   /** The cue's look check (before the store) and property read-back (after), combined. */
   verification: Verification;
   name?: string | null;
-  looks?: Array<{ fixtures: string; presets: string[]; verification: string; detail?: string }>;
+  looks?: Array<{ fixtures: string; presets: string[]; verification: string; detail?: string; selectionPart?: string }>;
   error?: string;
   /** The stored-value check after the store: the preference followed and the counts. */
   storedValues?: StoredCheck["storedValues"];
@@ -507,7 +523,7 @@ export interface PreviewItemReport {
   status: PreviewItemStatus;
   /** The look checks in the programmer before the store (not_requested without verify). */
   verification: Verification;
-  looks?: Array<{ fixtures: string; presets: string[]; verification: string; detail?: string }>;
+  looks?: Array<{ fixtures: string; presets: string[]; verification: string; detail?: string; selectionPart?: string }>;
   error?: string;
   /** This item's steps (looks, store), in order. */
   steps: StepResult[];
@@ -538,7 +554,7 @@ export interface PreviewBuild {
  * stay), unless `continueAfterFailure`: then the next item starts again from a confirmed, cleared Preview programmer.
  * An item with an unknown step stops the build either way.
  */
-export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]; verify: boolean; noun: string; inspect?: Array<{ name: string; run: StepFn }>; prepare?: () => Array<{ name: string; run: StepFn }>; continueAfterFailure?: boolean }): Promise<PreviewBuild> {
+export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]; verify: boolean; noun: string; inspect?: Array<{ name: string; run: StepFn }>; prepare?: () => Array<{ name: string; run: StepFn }>; continueAfterFailure?: boolean; /** The store sends its own channel filter (gma3_store_preset: /Active), so ChannelFilter does not limit it to the selection. */ storeFilterExplicit?: string }): Promise<PreviewBuild> {
   const { bridge } = ctx;
   const t = ctx.requestTimeoutMs;
   const warnings: string[] = [];
@@ -580,6 +596,27 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
           if (e.exists === "unknown") warnings.push(`could not confirm that attribute ${JSON.stringify(a)} exists (${e.error}); the read-back of its look decides`);
         }
         return asRead({ name: "check_attributes", status: "succeeded", op: "objects", detail: { attributes: names.size } });
+      },
+    },
+    {
+      // A look split into selection parts leaves only its last part selected at the Store. With a ChannelFilter that
+      // stores only the selected fixtures ("Active For Selected", "All For Selected"), the cue or preset would get only
+      // that part, so split looks need a ChannelFilter that does not depend on the selection. Checked before anything
+      // is sent, with or without verify; the operator's preference is never overridden.
+      name: "check_store_scope",
+      run: async () => {
+        if (!allLooks.some((l) => l.selectionPart)) return asRead({ name: "check_store_scope", status: "succeeded", op: "preset.context", detail: "no look is split: the store takes the look's whole selection" });
+        if (o.storeFilterExplicit) return asRead({ name: "check_store_scope", status: "succeeded", op: "preset.context", detail: { storeOption: o.storeFilterExplicit, note: "the store command sets its own channel filter, so every part of a split look is stored whatever ChannelFilter is" } });
+        let context: { preferences?: Record<string, unknown>; preferencesReadable?: boolean };
+        try {
+          context = (await bridge.request("preset.context", {}, t)) as typeof context;
+        } catch (err) {
+          return asRead(stepFromError("check_store_scope", err, { op: "preset.context" }));
+        }
+        const filter = context.preferencesReadable ? context.preferences?.ChannelFilter : undefined;
+        if (typeof filter !== "string" || filter.trim() === "") return failedRead("check_store_scope", "a look's selection is too long for one command and is built in parts, but the store preference ChannelFilter could not be read, so whether the store would take every part is unknown; nothing was sent. Store the fixtures as a group and give the group instead");
+        if (/for\s*selected/i.test(filter)) return failedRead("check_store_scope", `a look's selection is too long for one command and is built in parts, and the store preference ChannelFilter is ${JSON.stringify(filter)}: the store would take only the last part's fixtures. Nothing was sent. Ask the operator to set ChannelFilter to Active, or store the fixtures as a group and give the group`);
+        return asRead({ name: "check_store_scope", status: "succeeded", op: "preset.context", detail: { ChannelFilter: filter, note: "the store takes every active value, whatever is selected, so every part of a split look is stored" } });
       },
     },
     {
@@ -696,10 +733,12 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
         plan.push({ name: `${pre}clear`, run: () => commandStep(bridge, `${pre}clear`, "ClearAll", t) });
       }
       item.looks.forEach((look, j) => {
-        const lp = `${pre}look ${j + 1} `;
+        // The look's number as given: the parts of a split look share it.
+        const shown = item.looks.slice(0, j + 1).filter((l) => (l.selectionPart?.index ?? 1) === 1).length;
+        const lp = `${pre}look ${shown}${look.selectionPart ? ` (selection part ${look.selectionPart.index}/${look.selectionPart.of})` : ""} `;
         plan.push({ name: `${lp}clear_selection`, run: () => commandStep(bridge, `${lp}clear_selection`, "ClearSelection", t) });
         plan.push({ name: `${lp}select`, run: () => commandStep(bridge, `${lp}select`, look.fixtures, t) });
-        const entry: NonNullable<PreviewItemReport["looks"]>[number] = { fixtures: look.fixtures, presets: look.presets.map((p) => p.ref), verification: o.verify ? "matched" : "not_requested" };
+        const entry: NonNullable<PreviewItemReport["looks"]>[number] = { fixtures: look.fixtures, presets: look.presets.map((p) => p.ref), verification: o.verify ? "matched" : "not_requested", ...(look.selectionPart ? { selectionPart: `${look.selectionPart.index}/${look.selectionPart.of}` } : {}) };
         report.looks!.push(entry);
         const parts: Verification[] = [];
         // A check right after the command it verifies: a later preset in the same look may take over an earlier one's
@@ -710,7 +749,7 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
             const v = await verifyIt();
             parts.push(v);
             lookChecks.push(v);
-            const all = worst(parts, `look ${j + 1} on ${look.fixtures} in the programmer`);
+            const all = worst(parts, `look ${shown}${look.selectionPart ? ` part ${look.selectionPart.index}/${look.selectionPart.of}` : ""} on ${look.fixtures} in the programmer`);
             entry.verification = all.status;
             if (all.detail) entry.detail = all.detail;
             if (v.status === "mismatched") return { name, kind: "read", status: "failed", op: "programmer", error: `${what} did not apply, so ${pre.replace(/: $/, "")} was not stored: ${v.detail}` };
