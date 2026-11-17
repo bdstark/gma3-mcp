@@ -19,7 +19,7 @@
 
 | Tool | What it does |
 | --- | --- |
-| `gma3_status` | Bridge reachability, software version, show file, user; whether this server build matches its source checkout (`server.build`, [below](#build-staleness)) |
+| `gma3_status` | Bridge reachability, software version, show file, user; `bridge.show` (`saveNeeded`: unsaved changes, `fileStatus`: ShowLoaded, ShowSaving, …) and `bridge.instance` (new on every bridge start), both from bridge 0.53.0; whether this server build matches its source checkout (`server.build`, [below](#build-staleness)) |
 | `gma3_command` | Execute a command line command, returns OK / Syntax Error / Illegal Command |
 | `gma3_lua` | Evaluate Lua inside onPC and return the result as JSON. Off until the operator [enables it on the console](lua.md); uses a best-effort execution budget |
 | `gma3_lua_api` | Search the live Lua API descriptor (names, arguments, returns) |

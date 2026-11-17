@@ -88,6 +88,11 @@ function Obj:Addr() return self.addr or ("obj " .. tostring(self.name)) end
 function Obj:PropertyCount() return #self.pn end
 function Obj:PropertyName(i) return self.pn[i + 1] end
 function Obj:Get(k, role)
+  -- onPC2.5.1.1: FIXTURE is raw-self, but Display can name the next sibling.
+  if k:upper() == "FIXTURE" and rawget(self, "FixtureReference") then
+    if role == nil then return rawget(self, "FixtureReference") end
+    return self.pv.FIXTURE
+  end
   -- A fixture's FixtureType is a reference: the type object raw, "<no> <name>" in the display role (SU-03).
   if k:upper() == "FIXTURETYPE" and rawget(self, "TypeRef") then
     local t = rawget(self, "TypeRef")
@@ -509,12 +514,55 @@ local function fpOf(side, exclude)
   return table.concat(parts, ",")
 end
 
+-- FIXTURE display alias regression (private onPC2.5.1.1,2026-10-30): the last
+-- existing scenery object reports raw self but Display changes from empty to the
+-- first newly appended light. Normalize only proven raw-self identity, not the field.
+do
+  local original = console.live.Stages.kids[1].Fixtures.kids[2]
+  original.addr = "14.9.7.1.2.2"
+  original:Set("GUID", "fixture-self-guid")
+  original:Set("FIXTURE", "")
+  original.FixtureReference = original
+  enter()
+  local copied = console.copy.Stages.kids[1].Fixtures.kids[2]
+  copied.addr = "14.10.7.1.2.2"
+  copied:Set("FIXTURE", "Stage 1.Fixtures.New Light")
+  check("FIXTURE raw self with matching GUID/address ignores its next-sibling Display alias", fpOf("copy") == fpOf("live"))
+  copied:Set("CID", "99")
+  check("FIXTURE self normalization does not hide another fixture property change", fpOf("copy") ~= fpOf("live"))
+  copied:Set("CID", "None")
+  copied:Set("GUID", "changed-self-guid")
+  check("FIXTURE self normalization still detects a changed fixture GUID", fpOf("copy") ~= fpOf("live"))
+  copied:Set("GUID", "fixture-self-guid")
+  local other = obj("Fixture", "Other", 999, { { "GUID", "fixture-self-guid" } })
+  other.addr = "14.10.7.1.2.999"
+  copied.FixtureReference = other
+  check("FIXTURE raw non-self with the same GUID retains Display fallback", fpOf("copy") ~= fpOf("live"))
+  other.addr = copied.addr; other:Set("GUID", "other-guid")
+  check("FIXTURE raw handle with same address but another GUID retains Display fallback", fpOf("copy") ~= fpOf("live"))
+  copied.FixtureReference = nil
+  check("FIXTURE without a raw handle retains Display fallback", fpOf("copy") ~= fpOf("live"))
+  copied.FixtureReference = copied
+  copied.Get = function(self, k, role) if k:upper() == "FIXTURE" and role == nil then error("raw FIXTURE unavailable") end return Obj.Get(self, k, role) end
+  check("FIXTURE with an unreadable raw reference retains Display fallback", fpOf("copy") ~= fpOf("live"))
+  copied.Get = nil
+  original:Set("GUID", ""); copied:Set("GUID", "")
+  check("FIXTURE without a nonempty GUID retains Display fallback", fpOf("copy") ~= fpOf("live"))
+  original:Set("GUID", "fixture-self-guid"); copied:Set("GUID", "fixture-self-guid")
+  local ls,cs = console.live.Stages.kids[1],console.copy.Stages.kids[1]
+  ls:Set("GUID", "stage-guid"); cs:Set("GUID", "stage-guid")
+  ls:Set("FIXTURE", "one"); cs:Set("FIXTURE", "two")
+  ls.FixtureReference = ls; cs.FixtureReference = cs
+  check("FIXTURE on a non-Fixture class remains fully compared", fpOf("copy") ~= fpOf("live"))
+  reset()
+end
+
 -------------------------------------------------------------------------------
 -- Reads
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.52.1", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.53.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
