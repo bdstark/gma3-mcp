@@ -172,7 +172,13 @@ export async function listCues(bridge: Gma3Bridge, sequence: number, t: number):
       continue;
     }
     if (it.class !== undefined && it.class !== "Cue") continue;
-    // OffCue has no No (its read may fail) and CueZero reads 0: neither is a numbered cue.
+    // The cue number decides first: an ordinary cue may be named OffCue or CueZero (review of #129). OffCue has no
+    // readable No (its read may fail) and CueZero reads 0: only without a usable number does the name mark them.
+    const no = it.fieldErrors?.No === undefined ? cueNo(it.fields?.No) : null;
+    if (no !== null && no > 0) {
+      cues.push({ no, cue: cueText(no), name: it.name ?? null });
+      continue;
+    }
     if (/^(offcue|cuezero)$/i.test(it.name ?? "")) {
       special++;
       continue;
@@ -181,9 +187,7 @@ export async function listCues(bridge: Gma3Bridge, sequence: number, t: number):
       unnumbered++;
       continue;
     }
-    const no = cueNo(it.fields?.No);
-    if (no === null || no <= 0) special++;
-    else cues.push({ no, cue: cueText(no), name: it.name ?? null });
+    special++;
   }
   cues.sort((a, b) => a.no - b.no);
   if (unnumbered && read.complete) return { cues, complete: false, reason: `${unnumbered} cue(s) of Sequence ${sequence} without a readable number`, special, answered: read.answered };

@@ -175,7 +175,7 @@ Three read-only tools (`src/tools/analysis.ts`) analyse what cues store. They us
 
 | Read | Gives |
 | --- | --- |
-| `children` on `DataPool.Sequences`, then on `Sequence N` (`No` with `asText: false`), page by page | the sequences and their cues in number order; CueZero (`No` 0) and OffCue (no `No`) are left out and the results say so |
+| `children` on `DataPool.Sequences`, then on `Sequence N` (`No` with `asText: false`), page by page | the sequences and their cues in number order; CueZero (`No` 0) and OffCue (no `No`) are left out and the results say so; a cue with a positive `No` is scanned whatever its name |
 | `cueContents` on `Sequence N Cue C` (what `gma3_cue_contents` reads) | cue properties (Release, Break, trigger, ...), the sequence's Tracking, each part's number, timing (TrackingDistance included), `OwnDataPresent` and recipe lines with their resolved preset |
 | `preset.read` on `Sequence N Cue C Part P` (bridge 0.24.0) | GetPresetData on the part: per fixture and attribute the stored value, phaser steps, fade/delay, `cooked`, and the preset each value references (`absPreset`, `relPreset`, a step's `integrated`) |
 | `children` on `DataPool.Pages` and each page (`findReferencesWhere`) | the executors whose object is a sequence with a usage |
@@ -199,7 +199,7 @@ covers hard values too; `gma3_cue_contents` returns them per part (`storedValues
 - **`gma3_cue_diff`** `{a: {sequence, cue}, b: {sequence?, cue}}` compares the stored data of two cues, keyed by
   fixture and attribute: `added`, `removed` and `changed` rows with the changed `fields` (`value`, `steps`,
   `stepValues`, `stepRelative`, `stepWidth`, `stepTransition`, `stepAccel`, `stepDecel`, `stepPresets` (the preset of
-  each step, in step order), `speed`, `phase`, `relative`, `preset`, `relPreset`, `fade`, `delay`, `cooked`, `part`),
+  each step, in step order), `speed`, `phase`, `measure`, `speedMaster`, `relative`, `preset`, `relPreset`, `fade`, `delay`, `cooked`, `part`),
   the presets only one cue references, the cue properties that differ and per part the timing, command, MIB and recipe
   lines that differ (every recipe property: selection, preset, values, FadeX, DelayX, SpeedX, PhaseX, MAtricks, filter,
   generator, enabled).

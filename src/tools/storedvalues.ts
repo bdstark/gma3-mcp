@@ -68,6 +68,9 @@ export function valueOf(r: PresetRow): Row {
     if (integrated.some((x) => x !== null)) put("stepPresets", integrated);
     put("speed", round(r.speed));
     put("phase", round(r.phase));
+    // Measure and the speed master change playback timing too (review of #129).
+    put("measure", round(r.measure));
+    put("speedMaster", round(r.speedMaster));
   } else {
     put("value", round(r.value));
   }

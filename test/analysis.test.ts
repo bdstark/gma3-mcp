@@ -573,3 +573,42 @@ test("tracking leaks: a TrackingDistance excludes only its own part's values; th
   assert.equal(sentinel.cutByBreak, 0);
   assert.deepEqual(sentinel.breaks, []);
 });
+
+// Review of #129, round 2: phaser measure and speed master are part of a stored value; a cue's number decides before
+// its name.
+
+test("cue diff: phasers that differ only in measure or speed master are not identical", async () => {
+  const ph = (measure: number | null, speedMaster: number | null) => ({
+    stepCount: 2,
+    steps: [{ step: 1, absolute: 0 }, { step: 2, absolute: 100 }],
+    speed: 1,
+    phase: 0,
+    ...(measure === null ? {} : { measure }),
+    ...(speedMaster === null ? {} : { speedMaster }),
+  });
+  const cue = (no: number, extra: Row) => ({ no, name: "Look", parts: [{ part: 0, rows: [row("101", "Dimmer", 0, extra)] }] });
+  show.sequences = [{ no: 1, name: "A", cues: [cue(1, ph(100, null)), cue(2, ph(200, null)), cue(3, ph(100, 2)), cue(4, ph(100, null))] }];
+  for (const [b, field] of [[2, "measure"], [3, "speedMaster"]] as const) {
+    const { result } = await h.callJson("gma3_cue_diff", { a: { sequence: 1, cue: 1 }, b: { cue: b } });
+    assert.equal(result.identical, false, `cue ${b}`);
+    assert.deepEqual(result.values.find((x: Row) => x.attribute === "Dimmer").fields, [field], `cue ${b}`);
+  }
+  assert.equal((await h.callJson("gma3_cue_diff", { a: { sequence: 1, cue: 1 }, b: { cue: 4 } })).result.identical, true);
+  onlyReads();
+});
+
+test("a numbered cue named OffCue or CueZero is scanned by preset usage and tracking leaks; the real ones are still left out", async () => {
+  usageShow();
+  show.sequences[0].cues[0].name = "OffCue";
+  show.sequences[0].cues[1].name = "CueZero";
+  const usage = await h.callJson("gma3_preset_usage", { preset: "4.12", sequences: [1] });
+  assert.equal(usage.result.complete, true);
+  const cuesFound = usage.result.usages.filter((u: Row) => u.sequence === 1).map((u: Row) => u.cue);
+  assert.deepEqual(cuesFound, ["1", "2", "2.5"], "cues 1 and 2 are scanned under their special names");
+  leakShow();
+  show.sequences[0].cues[0].name = "OffCue";
+  const { result } = await h.callJson("gma3_tracking_leaks", { sequence: 7 });
+  assert.equal(result.complete, true);
+  assert.equal(result.candidates.find((c: Row) => c.attribute === "Gobo1")?.storedIn, "1", "the value stored in cue 1 (named OffCue) is a candidate");
+  onlyReads();
+});
