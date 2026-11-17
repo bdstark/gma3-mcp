@@ -116,6 +116,11 @@ GetShowFileStatus = function() return "ShowLoaded" end
 r = request("ping", {})
 check("ping reports unsaved changes and the file status", r.ok and r.result.show.saveNeeded == true and r.result.show.fileStatus == "ShowLoaded", json.encode(r))
 NeedShowSave, GetShowFileStatus = nil, nil
+-- The harness never runs a start (serverMain would loop); a start sets state.instance, and ping reports it.
+state.instance = "1792146000-42"
+r = request("ping", {})
+check("ping names this start's instance", r.ok and r.result.instance == "1792146000-42", json.encode(r))
+state.instance = nil
 r = request("cmd", { command = "" })
 check("other ops unaffected by the gate", r.ok == false and r.error:find("args.command"), r.error)
 
@@ -1564,7 +1569,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.53.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.54.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1677,7 +1682,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.53.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.54.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
@@ -2719,6 +2724,32 @@ do
   GetTopModal = function() return nil end
   r = request("show.files", {})
   check("su20 review: no dialog is known absence", r.ok and r.result.modalKnown == true and r.result.modal == false, J(r))
+
+  -- 0.54.0: show.load queues LoadShow "name" for a file in the shows folder, under the file's own spelling.
+  nq = #queued
+  r = request("show.load", { name = "Other" })
+  check("show.load: without exclusive it is refused", r.ok == false and r.error:find("exclusive") and #queued == nq, J(r))
+  r = request("show.load", { name = 'bad"name', exclusive = true })
+  check("show.load: a name with a quote is refused before anything is queued", r.ok == false and r.error:find("bad%-name") and #queued == nq, J(r))
+  r = request("show.load", { name = "Missing", exclusive = true })
+  check("show.load: a show that is not in the shows folder is refused", r.ok == false and r.error:find("no%-file") and #queued == nq, J(r))
+  r = request("show.load", { name = "other.show", exclusive = true })
+  check("show.load: queues LoadShow with the file's own spelling (.show dropped, case-insensitive match) and reports the show it leaves", r.ok and r.result.command == 'LoadShow "Other"' and queued[nq + 1] == 'LoadShow "Other"' and r.result.from == "Show A", J({ r, queued }))
+  nq = #queued
+  GetTopModal = function() return modal end
+  modal = msgbox("Change show file name?")
+  r = request("show.load", { name = "Other", exclusive = true })
+  check("show.load: refuses while a dialog is open", r.ok == false and r.error:find("modal%-open") and #queued == nq, J(r))
+  modal = nil
+  GetTopModal = function() error("lookup broke") end
+  r = request("show.load", { name = "Other", exclusive = true })
+  check("show.load: refuses while the modal state is unknown", r.ok == false and r.error:find("modal%-unknown") and #queued == nq, J(r))
+  GetTopModal = function() return nil end
+  local savedList = DirList
+  DirList = function() error("no folder") end
+  r = request("show.load", { name = "Other", exclusive = true })
+  check("show.load: an unlistable shows folder is refused", r.ok == false and r.error:find("not%-listed") and #queued == nq, J(r))
+  DirList = savedList
 
   Root, GetPath, DirList, CmdIndirect, GetTopModal, Mouse = saved.Root, saved.GetPath, saved.DirList, saved.CmdIndirect, saved.GetTopModal, saved.Mouse
   Enums.PathType.Showfiles = saved.Showfiles

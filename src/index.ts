@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { Gma3Bridge, BridgeError, BridgeUnreachableError } from "./bridge.js";
 import { OscSender } from "./osc.js";
+import { KeystrokeSender } from "./keystroke.js";
 import { helpDir, helpVersion, listHelpPages, lookupHelp } from "./help.js";
 import { CHEATSHEET } from "./cheatsheet.js";
 import { MutationLock } from "./mutations.js";
@@ -93,6 +94,8 @@ const toolContext: ToolContext = {
   requestTimeoutMs: Number(env.GMA3_BRIDGE_TIMEOUT_MS ?? 15000),
   luaToolAllowed: allowLuaTool,
   osc: oscOptions,
+  oscCommand: osc,
+  keystroke: new KeystrokeSender(),
 };
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };

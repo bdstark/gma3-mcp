@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.53.0"
+local VERSION      = "0.54.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -6510,6 +6510,8 @@ GUARDED_OPS["tags.protect"] = "a tag protection change"
 --                 thread would stall the bridge, so the command lands on a later frame and the server polls
 --   show.answer   clicks OK or Cancel on one of SaveShow's own dialogs, only when the top modal's title is the one the
 --                 server expects ("Change show file name?" / "... and overwrite existing show file?")
+--   show.load     (0.54.0) queues LoadShow "name" with CmdIndirect for a file in the shows folder; the load unloads
+--                 this bridge, so the server restarts it and judges the result from the new bridge's answers
 -- Live (onPC 2.5.1): SaveShow under the current name writes with no dialog; a new name asks "Change show file name?";
 -- an existing other file asks "Change show file name and overwrite existing show file?". OK writes at once.
 -------------------------------------------------------------------------------
@@ -6651,6 +6653,30 @@ GUARDED_OPS["tags.protect"] = "a tag protection change"
     Mouse(md.display, "release", "Left")
     return { clicked = args.button, title = md.title, display = md.display }
   end
+
+  -- 0.54.0 (from silly82): args: { name, exclusive }. Queues LoadShow "name" with CmdIndirect, only for a .show file that is in the
+  -- shows folder. Loading unloads the show's plugins, this bridge included (live, onPC 2.5.1): the answer to this
+  -- request is the last one. A show with unsaved changes first asks "Warning" / "Show file '<current>' has changed!
+  -- Do you want to save the old show file first?" (Save / Do not save / Cancel); the server answers it with
+  -- dialog.press before the load goes on.
+  ops["show.load"] = function(args)
+    requireExclusive(args, "show.load")
+    local name = showName(args.name)
+    local open, _, modalError = topModal()
+    if modalError then raise("[modal-unknown] whether a dialog is open cannot be read (" .. modalError .. "); LoadShow was not sent") end
+    if open then raise("[modal-open] a dialog is open on the console; LoadShow was not sent") end
+    local ok, list = pcall(DirList, GetPath(Enums.PathType.Showfiles), "*.show")
+    if not ok or type(list) ~= "table" then raise("[not-listed] the shows folder cannot be listed; LoadShow was not sent") end
+    local file
+    for _, e in ipairs(list) do
+      if type(e) == "table" and type(e.name) == "string" and e.name:gsub("%.show$", ""):lower() == name:lower() then file = e.name:gsub("%.show$", "") break end
+    end
+    if not file then raise("[no-file] " .. name .. ".show is not in the shows folder; LoadShow was not sent") end
+    local command = 'LoadShow "' .. file .. '"'
+    CmdIndirect(command)
+    return { queued = true, command = command, from = currentShow(), now = os.time() }
+  end
+  GUARDED_OPS["show.load"] = "a show load"
 end)()
 
 -------------------------------------------------------------------------------

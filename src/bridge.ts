@@ -88,6 +88,11 @@ export class Gma3Bridge {
     return this.connections;
   }
 
+  /** The bridge port this client connects to (GMA3_BRIDGE_PORT). */
+  get port(): number {
+    return this.opts.port;
+  }
+
   get lastErrorMessage(): string | null {
     return this.lastError;
   }

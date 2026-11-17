@@ -29,7 +29,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "timecode shows", tools: ["gma3_build_timecode", "gma3_timecode_transport", "gma3_timecodes"] },
   { task: "DMX output (universes, grants, Art-Net, sACN; missing output)", tools: ["gma3_dmx_output", "gma3_configure_dmx_output", "gma3_dmx", "gma3_fixture_output"] },
   { task: "OSC input and output", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
-  { task: "save the show (current or new name), list show files", tools: ["gma3_save_show", "gma3_show_files"] },
+  { task: "save, load and list show files", tools: ["gma3_save_show", "gma3_load_show", "gma3_show_files"] },
   { task: "tempo-sync plugin: status, config, phaser ReSync", tools: ["gma3_tempo_sync_status", "gma3_configure_tempo_sync", "gma3_playback"] },
   { task: "show analysis: preset usage, cue diff, tracking leaks", tools: ["gma3_preset_usage", "gma3_cue_diff", "gma3_tracking_leaks"] },
   { task: "read show data and live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences", "gma3_pool_usage"] },
