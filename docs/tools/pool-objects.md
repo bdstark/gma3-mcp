@@ -37,7 +37,9 @@ an object of that pool. Move, delete and rename refuse a locked object (or one w
 - **rename**: the name is checked against the pool's names; the object's current name sends nothing.
 - **delete**: refused while the object is in use:
   - assigned to an executor: every page of the data pool is scanned (`children` of `DataPool.Pages`, as
-    `gma3_assign_to_executor` reads sharing executors); an incomplete scan refuses too;
+    `gma3_assign_to_executor` reads sharing executors). The scan fails closed: a listing the console could not
+    enumerate, a listing that stops before its total, a page without an address or number, an invalid executor, or
+    an executor whose No or Object read failed (`fieldErrors`) makes it incomplete, and an incomplete scan refuses;
   - referenced by other objects: the object's `References` property (a preset's is text `"<handle>:<count>,..."`,
     sb-03), counted; a property that cannot be read refuses, because a use by cues, recipes or MAtricks cannot be
     ruled out then;
@@ -62,13 +64,15 @@ says so.
 
 ## Read-back
 
-- copy: the destination exists, with the given name, or the source's name (a `"#2"` name the console gave a
-  duplicate is accepted and reported), and the source's child count (not compared for `merge`); the source is
-  unchanged. A copy that keeps the source's name gets a warning: two objects under one name make a lookup by name
+- copy: the destination exists with the given name, or else the source's name (a `"#2"` name the console gave a
+  duplicate is accepted and reported), for a free destination and for `overwrite` alike; only `merge` without a
+  name keeps the destination's own name, and its child count is not compared. Otherwise the destination holds the
+  source's child count. The source is unchanged. A copy that keeps the source's name gets a warning: two objects under one name make a lookup by name
   ambiguous.
 - move: the destination holds the object (name and child count), the source number is free.
 - delete: the number is free.
-- rename: the object reads the new name.
+- rename: the object reads the new name. With `on_name_taken: "allow_suffix"` a `"<name>#n"` the console gave a
+  taken name (rename, or copy with a name) is accepted and the actual name is a warning.
 
 ## Not verified on a console yet
 

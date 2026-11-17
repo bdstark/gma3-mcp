@@ -344,7 +344,7 @@ export async function poolObject(ctx0: ToolContext, raw: PoolObjectArgs): Promis
     if (action === "delete") {
       const uses: string[] = [];
       const unknowns: string[] = [];
-      const ex = await findReferencesWhere(bridge, (a) => a === before.addr, t);
+      const ex = await findReferencesWhere(bridge, (a) => a === before.addr, t, { failClosed: true });
       const execs = ex.executors.map((e) => e.ref);
       if (!before.addr) unknowns.push(`${src.ref} has no readable address, so the executors that hold it cannot be found`);
       else if (!ex.complete) unknowns.push(`the executor scan was incomplete (${ex.error ?? "unknown reason"})`);
@@ -397,6 +397,15 @@ export async function poolObject(ctx0: ToolContext, raw: PoolObjectArgs): Promis
     // Read back.
     const checks: string[] = [];
     const problems: string[] = [];
+    /** `got` is `want`, or with suffixOk the console's "#n" rename of a taken name (reported as a warning). */
+    const nameCheck = (ref: string, got: string | undefined, want: string, suffixOk: boolean) => {
+      if (got === want) return;
+      if (suffixOk && got && nameOrSuffixed(got, want)) {
+        warnings.push(`${ref} was named "${got}": the pool already had "${want}"`);
+        return;
+      }
+      problems.push(`${ref} reads the name "${got ?? ""}", not "${want}"`);
+    };
     let unavailable: string | undefined;
     try {
       if (action === "delete") {
@@ -406,23 +415,24 @@ export async function poolObject(ctx0: ToolContext, raw: PoolObjectArgs): Promis
         extra.after = present(after);
       } else if (action === "rename") {
         const after = await readState(bridge, src.ref, false);
-        checks.push(`${src.ref} is named "${name}"`);
+        checks.push(`${src.ref} is named "${name}"${onNameTaken === "allow_suffix" ? " (or a \"#n\" suffix of it, on_name_taken allow_suffix)" : ""}`);
         if (!after.exists) problems.push(`${src.ref} no longer exists`);
-        else if (after.name !== name) problems.push(`${src.ref} reads the name "${after.name ?? ""}"`);
+        else nameCheck(src.ref, after.name, name!, onNameTaken === "allow_suffix");
         extra.after = present(after);
       } else {
         const atDest = await readState(bridge, dest!.ref, false);
         const atSrc = await readState(bridge, src.ref, false);
         extra.after = { [dest!.ref]: present(atDest), [src.ref]: present(atSrc) };
-        const wantName = name ?? before.name;
-        checks.push(`${dest!.ref} exists${wantName ? ` named "${wantName}"` : ""}`);
+        // Only a merge keeps the destination's own name; a copy into a free number or an overwrite carries the source's
+        // name (a "#n" suffix the console gave a duplicate is accepted), and a move keeps it exactly (#155 review).
+        const keepsOwnName = action === "copy" && destBefore?.exists === true && onTaken === "merge" && name === undefined;
+        const wantName = name ?? (keepsOwnName ? undefined : before.name);
+        checks.push(`${dest!.ref} exists${wantName ? ` named "${wantName}"` : keepsOwnName ? " (a merge keeps its name)" : ""}`);
         if (!atDest.exists) problems.push(`${dest!.ref} does not exist`);
-        else if (name !== undefined && atDest.name !== name) problems.push(`${dest!.ref} reads the name "${atDest.name ?? ""}"`);
-        else if (name === undefined && before.name && atDest.name !== before.name) {
-          if (atDest.name && nameOrSuffixed(atDest.name, before.name)) warnings.push(`${dest!.ref} was named "${atDest.name}": the pool already had "${before.name}"`);
-          else if (action === "move" || !destBefore?.exists) problems.push(`${dest!.ref} reads the name "${atDest.name ?? ""}", not "${before.name}"`);
-        } else if (action === "copy" && name === undefined && before.name && atDest.name === before.name) {
-          warnings.push(`${dest!.ref} has the same name as ${src.ref} ("${before.name}"): two ${kind.plural} under one name make a lookup by name ambiguous; give name for the copy, or rename it`);
+        else if (name !== undefined) nameCheck(dest!.ref, atDest.name, name, onNameTaken === "allow_suffix");
+        else if (wantName) {
+          nameCheck(dest!.ref, atDest.name, wantName, action === "copy");
+          if (action === "copy" && atDest.name === wantName) warnings.push(`${dest!.ref} has the same name as ${src.ref} ("${wantName}"): two ${kind.plural} under one name make a lookup by name ambiguous; give name for the copy, or rename it`);
         }
         const mergeOrKeep = action === "copy" && destBefore?.exists && onTaken === "merge";
         if (atDest.exists && !mergeOrKeep && before.childCount !== undefined && atDest.childCount !== undefined) {
@@ -502,7 +512,7 @@ export const registerPoolObjectTools: RegisterTools = (server, ctx) => {
               listKey: "objects",
               identityKeys: ["object", "to", "name"],
               label: (it) => `${String(it.action ?? "?")} ${String(it.object)}${it.to !== undefined ? ` At ${String(it.to)}` : ""}`,
-              key: (it) => String(it.object).trim().replace(/\s+/g, " ").toLowerCase(),
+              key: (it) => canonicalRef(it.object),
               check: batchCheck,
               run: (it, c) => poolObject(c, it as PoolObjectArgs),
             })
@@ -511,10 +521,18 @@ export const registerPoolObjectTools: RegisterTools = (server, ctx) => {
   );
 };
 
-/** Across items: one delete, move or rename per object, and one copy or move per destination. */
+/** The object an item names, canonical ("Seq 05" and "Sequence 5" are one object); the raw text when it does not parse. */
+export function canonicalRef(object: unknown): string {
+  try {
+    return parsePoolObject("object", object).ref.toLowerCase();
+  } catch {
+    return String(object).trim().replace(/\s+/g, " ").toLowerCase();
+  }
+}
+
+/** Across items: one delete or move per object, and one copy or move per destination (canonical references). */
 export function batchCheck(items: Array<Record<string, unknown>>): string[] {
-  const norm = (x: unknown) => String(x).trim().replace(/\s+/g, " ").toLowerCase();
-  const changing = items.filter((it) => it.action === "delete" || it.action === "move").map((it) => norm(it.object));
+  const changing = items.filter((it) => it.action === "delete" || it.action === "move").map((it) => canonicalRef(it.object));
   const dests = items
     .filter((it) => (it.action === "copy" || it.action === "move") && it.to !== undefined)
     .map((it) => {

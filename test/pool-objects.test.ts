@@ -24,6 +24,9 @@ class Console {
   executors: Array<{ page: number; no: number; object: string }> = [];
   ignore?: RegExp;
   silent?: RegExp;
+  /** Extra raw executor items on page 1 (field errors, invalid handles). */
+  rawExecs: Array<Record<string, unknown>> = [];
+  pagesEnumerationError?: string;
 
   constructor() {
     this.objects.set("Group 1", { class: "Group", name: "Front", children: 0, references: "" });
@@ -65,9 +68,12 @@ class Console {
   children(ref: string, fields: string[]) {
     // A scoped bridge finds DataPool 2's pools by name; this fake answers them with the same objects.
     if (ref === "DataPool 2") return { total: 3, items: ["Groups", "Sequences", "Macros"].map((n) => ({ name: n, addr: `DataPool.${n}` })) };
-    if (ref === "DataPool.Pages") return { total: 1, items: [{ addr: "page1", index: 1, fields: { No: 1 } }] };
+    if (ref === "DataPool.Pages") {
+      if (this.pagesEnumerationError) return { total: 0, items: [], enumerationError: this.pagesEnumerationError };
+      return { total: 1, items: [{ addr: "page1", index: 1, fields: { No: 1 } }] };
+    }
     if (ref === "page1") {
-      const items = this.executors.map((e) => ({ fields: { No: e.no, Object: { class: "x", addr: this.addr(e.object) } } }));
+      const items = [...this.executors.map((e) => ({ fields: { No: e.no, Object: { class: "x", addr: this.addr(e.object) } } })), ...this.rawExecs];
       return { total: items.length, items };
     }
     const prefix = this.poolPrefix(ref);
@@ -104,7 +110,10 @@ class Console {
     if ((m = cmd.match(/^Label (\w+ [\d.]+) "([^"]*)"$/))) {
       const o = this.objects.get(m[1]);
       if (!o) return "Error: no object";
-      o.name = m[2];
+      // Names stay unique in a pool: a taken name gets "#2" (as presets do, #102).
+      const pool = m[1].replace(/[\d.]+$/, (x) => (x.includes(".") ? x.split(".")[0] + "." : ""));
+      const taken = [...this.objects].some(([k, v]) => k !== m![1] && k.startsWith(pool) && v.name === m![2]);
+      o.name = taken ? `${m[2]}#2` : m[2];
       return "OK";
     }
     return "Syntax Error";
@@ -292,4 +301,66 @@ test("batch: a default action, one line per item, and refused duplicates", async
   assert.match(r.text, /group 30 is the destination of more than one item/);
   assert.deepEqual(h.fake.commands, []);
   assert.deepEqual(batchCheck([{ action: "delete", object: "Group 1" }, { action: "move", object: "group  1", to: 4 }]), ["group 1 is deleted or moved by more than one item"]);
+});
+
+test("#155 review: the delete gate fails closed on an executor scan it could not read", async () => {
+  c.rawExecs.push({ fields: { No: 201 }, fieldErrors: { Object: "unreadable" } });
+  let r = await h.callJson("gma3_pool_objects", { action: "delete", object: "Group 1" });
+  assert.equal(r.result.outcome, "failed", r.text);
+  assert.match(r.text, /may be in use: the executor scan was incomplete \(executor 201 of page 1: Object could not be read \(unreadable\)\)/);
+  assert.deepEqual(h.fake.commands, []);
+  install();
+  c.pagesEnumerationError = "Children() failed";
+  r = await h.callJson("gma3_pool_objects", { action: "delete", object: "Group 1" });
+  assert.equal(r.result.outcome, "failed", r.text);
+  assert.match(r.text, /the pages could not be listed: Children\(\) failed/);
+  assert.deepEqual(h.fake.commands, []);
+  install();
+  c.rawExecs.push({ invalid: true });
+  r = await h.callJson("gma3_pool_objects", { action: "delete", object: "Group 1" });
+  assert.match(r.text, /invalid handle/);
+  assert.deepEqual(h.fake.commands, []);
+  r = await h.callJson("gma3_pool_objects", { action: "delete", object: "Group 1", force: true });
+  assert.equal(r.result.outcome, "succeeded", r.text);
+  assert.match(JSON.stringify(r.result.warnings), /deleted with force: the executor scan was incomplete/);
+});
+
+test("#155 review: an overwrite copy the console ignored is a mismatch (only a merge keeps the destination's name)", async () => {
+  c.ignore = /^Copy /;
+  let r = await h.callJson("gma3_pool_objects", { action: "copy", object: "Group 1", to: 2, on_taken: "overwrite" });
+  assert.equal(r.result.verification.status, "mismatched", r.text);
+  assert.match(r.text, /Group 2 reads the name \\"Back\\", not \\"Front\\"/);
+  install();
+  r = await h.callJson("gma3_pool_objects", { action: "copy", object: "Group 1", to: 2, on_taken: "merge" });
+  assert.equal(r.result.verification.status, "matched", r.text);
+  assert.match(r.result.verification.checked, /a merge keeps its name/);
+});
+
+test("#155 review: with on_name_taken allow_suffix a \"#2\" name reads back as matched, with the actual name in a warning", async () => {
+  let r = await h.callJson("gma3_pool_objects", { action: "rename", object: "Group 1", name: "Back", on_name_taken: "allow_suffix" });
+  assert.equal(r.result.outcome, "succeeded", r.text);
+  assert.equal(r.result.verification.status, "matched", r.text);
+  assert.match(JSON.stringify(r.result.warnings), /Group 1 was named \\"Back#2\\"/);
+  r = await h.callJson("gma3_pool_objects", { action: "copy", object: "Preset 4.1", to: 9, name: "Blue", on_name_taken: "allow_suffix" });
+  assert.equal(r.result.verification.status, "matched", r.text);
+  assert.match(JSON.stringify(r.result.warnings), /Preset 4.9 was named \\"Blue#2\\"/);
+  // Without allow_suffix the name check refuses before anything is sent; a suffixed read-back would be a mismatch.
+  install();
+  c.objects.set("Group 9", { class: "Group", name: "Spare", children: 0, references: "" });
+  r = await h.callJson("gma3_pool_objects", { action: "rename", object: "Group 9", name: "Back" });
+  assert.equal(r.result.outcome, "failed");
+  assert.deepEqual(h.fake.commands, []);
+});
+
+test("#155 review: batch keys and duplicates use the canonical object (Seq 5 = Sequence 5, Group 01 = Group 1)", async () => {
+  const r = await h.callJson("gma3_pool_objects", {
+    objects: [
+      { action: "rename", object: "Seq 5", name: "Other" },
+      { action: "delete", object: "Sequence 05", force: true },
+    ],
+  });
+  assert.equal(r.result.items[0].outcome, "failed", r.text);
+  assert.equal(r.result.items[1].outcome, "not_attempted", r.text);
+  assert.deepEqual(h.fake.commands, []);
+  assert.deepEqual(batchCheck([{ action: "delete", object: "Group 01" }, { action: "move", object: "Group 1", to: 4 }]), ["group 1 is deleted or moved by more than one item"]);
 });
