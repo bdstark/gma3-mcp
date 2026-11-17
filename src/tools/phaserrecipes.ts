@@ -654,8 +654,76 @@ const expectOf = (d: LineDetail): LineExpect => ({ class: d.class, group: d.grou
 
 type Row = PresetRead["rows"][number];
 const rowPairOf = (r: Row) => (r.stepCount === 2 ? [0, 1].map((i) => `${r.steps?.[i]?.integrated?.pool}.${r.steps?.[i]?.integrated?.no}`).join("/") : "?");
-const rowKey = (r: Row) => `${r.fixture}|${r.attribute}|${rowPairOf(r)}|${r.speed}|${r.cooked}|${(r.steps ?? []).map((s) => `${s.accel},${s.decel},${s.trans}`).join(";")}`;
-const counts = (rows: Row[]) => rows.reduce((m, r) => m.set(rowKey(r), (m.get(rowKey(r)) ?? 0) + 1), new Map<string, number>());
+/** Which cooked value a row is: fixture, cell, attribute, the line's step presets and whether it is cooked. */
+const rowId = (r: Row) => `${r.fixture}|${r.sfIndex ?? ""}|${r.attribute}|${rowPairOf(r)}|${r.cooked === true}`;
+/** Tolerances of the playback-significant fields: percent layers 0.5 (as gma3_store_cue's check), speed in Hz, phase in degrees. */
+const ROW_TOL = { percent: 0.5, speed: 0.001, phase: 0.01, measure: 0.01, time: 0.01 };
+const refOf = (o: { pool?: number; no?: number; addrNative?: string } | null | undefined) => (o ? `${o.addrNative ?? `${o.pool}.${o.no}`}` : "");
+/** A field that differs between two readings of one cooked value, or undefined when they agree (absent = absent). */
+function rowDifference(a: Row, b: Row): string | undefined {
+  const num = (field: string, x: number | null | undefined, y: number | null | undefined, tol: number) => {
+    const ax = typeof x === "number" ? x : undefined;
+    const by = typeof y === "number" ? y : undefined;
+    if (ax === undefined && by === undefined) return undefined;
+    if (ax === undefined || by === undefined || Math.abs(ax - by) > tol) return `${field} ${ax ?? "none"} -> ${by ?? "none"}`;
+    return undefined;
+  };
+  const top =
+    num("value", a.value, b.value, ROW_TOL.percent) ?? num("relative", a.relative, b.relative, ROW_TOL.percent) ??
+    num("fade", a.fade, b.fade, ROW_TOL.time) ?? num("delay", a.delay, b.delay, ROW_TOL.time) ??
+    num("speed", a.speed, b.speed, ROW_TOL.speed) ?? num("phase", a.phase, b.phase, ROW_TOL.phase) ??
+    num("measure", a.measure, b.measure, ROW_TOL.measure) ?? num("speedMaster", a.speedMaster, b.speedMaster, 0) ??
+    num("stepCount", a.stepCount, b.stepCount, 0) ??
+    (refOf(a.absPreset) !== refOf(b.absPreset) ? `absPreset ${refOf(a.absPreset) || "none"} -> ${refOf(b.absPreset) || "none"}` : undefined) ??
+    (refOf(a.relPreset) !== refOf(b.relPreset) ? `relPreset ${refOf(a.relPreset) || "none"} -> ${refOf(b.relPreset) || "none"}` : undefined);
+  if (top) return top;
+  const sa = a.steps ?? [];
+  const sb = b.steps ?? [];
+  if (sa.length !== sb.length) return `steps ${sa.length} -> ${sb.length}`;
+  for (let i = 0; i < sa.length; i++) {
+    const x = sa[i];
+    const y = sb[i];
+    for (const k of ["absolute", "relative", "accel", "decel", "trans", "width"] as const) {
+      const d = num(`step ${i + 1} ${k}`, x[k], y[k], ROW_TOL.percent);
+      if (d) return d;
+    }
+    if (refOf(x.integrated) !== refOf(y.integrated)) return `step ${i + 1} preset ${refOf(x.integrated) || "none"} -> ${refOf(y.integrated) || "none"}`;
+  }
+  return undefined;
+}
+/** A stable order for rows with the same id (a cell read twice), so equal readings pair up. */
+const rowOrder = (r: Row) => [r.value, r.relative, ...(r.steps ?? []).flatMap((x) => [x.absolute, x.relative])].map((n) => (typeof n === "number" ? n.toFixed(3) : "-")).join(",");
+/**
+ * The cooked values of the other lines, before and after: every playback-significant field (values, relative values,
+ * every step layer and preset, speed, phase, measure, speed master, fade, delay, preset references) is compared
+ * within ROW_TOL. Returns one line per changed value (id and the first field that differs).
+ */
+function changedRows(before: Row[], after: Row[]): string[] {
+  const group = (rows: Row[]) => {
+    const m = new Map<string, Row[]>();
+    for (const r of rows) m.set(rowId(r), [...(m.get(rowId(r)) ?? []), r]);
+    for (const list of m.values()) list.sort((x, y) => rowOrder(x).localeCompare(rowOrder(y)));
+    return m;
+  };
+  const b = group(before);
+  const a = group(after);
+  const out: string[] = [];
+  for (const id of new Set([...b.keys(), ...a.keys()])) {
+    const lb = b.get(id) ?? [];
+    const la = a.get(id) ?? [];
+    const [fixture, cell, attribute, pair, cooked] = id.split("|");
+    const label = `${fixture}${cell ? ` cell ${cell}` : ""} ${attribute} ${pair}${cooked === "true" ? "" : " (not cooked)"}`;
+    if (lb.length !== la.length) {
+      out.push(`${label}: ${lb.length} value(s) before, ${la.length} after`);
+      continue;
+    }
+    for (let i = 0; i < lb.length; i++) {
+      const d = rowDifference(lb[i], la[i]);
+      if (d) out.push(`${label}: ${d}`);
+    }
+  }
+  return out;
+}
 
 interface EditArgs extends CreateArgs {
   line?: unknown;
@@ -925,10 +993,8 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
       // (the later line wins), so another line's value may rightly appear or go.
       const covered = new Set([...rowsBefore.filter((r) => rowPairOf(r) === oldPair), ...rows.filter((r) => rowPairOf(r) === newPair)].map((r) => `${r.fixture}|${r.attribute}`));
       const mine = (r: Row) => rowPairOf(r) === oldPair || rowPairOf(r) === newPair || covered.has(`${r.fixture}|${r.attribute}`);
-      const othersBefore = counts(rowsBefore.filter((r) => !mine(r)));
-      const othersAfter = counts(rows.filter((r) => !mine(r)));
-      const changed = [...new Set([...othersBefore.keys(), ...othersAfter.keys()])].filter((key) => othersBefore.get(key) !== othersAfter.get(key));
-      if (changed.length) problems.push(`${changed.length} value(s) of the other lines changed (first: ${changed[0].split("|").slice(0, 3).join(" ")})`);
+      const changed = changedRows(rowsBefore.filter((r) => !mine(r)), rows.filter((r) => !mine(r)));
+      if (changed.length) problems.push(`${changed.length} value(s) of the other lines changed (first: ${changed[0]})`);
       const uncookedBefore = rowsBefore.filter((r) => r.cooked !== true).length;
       const uncooked = rows.filter((r) => r.cooked !== true).length;
       if (uncooked > uncookedBefore) problems.push(`${ref} holds ${uncooked} uncooked value(s), ${uncookedBefore} before`);

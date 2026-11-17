@@ -374,7 +374,7 @@ async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boole
   const h = await startHarness(registerPhaserRecipeTools);
   const lines: FLine[] = structuredClone(initial);
   const cmds: string[] = [];
-  const st = { name: "TEST PH EDIT", ignoreAssignPreset: false, assignGroupToLine1: false };
+  const st = { name: "TEST PH EDIT", ignoreAssignPreset: false, assignGroupToLine1: false, dimmerAbsolute: undefined as number | undefined, dimmerAbsoluteAfterCook: undefined as number | undefined };
   const P = "Preset 21.9005";
   const addr = (cls: string, n: number, pool?: number) => ({ class: cls, index: n, addr: `14.14.1.${cls === "Preset" ? `5.${pool}` : 6}.${n}` });
   h.fake.on("recipe.editState", () => ({ environment: "Normal", editing: o.editing === true, partZeroLines: [], partZero: false, modal: o.modal ? UPDATE : false, lastCommand: "OK" }));
@@ -405,7 +405,8 @@ async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boole
       if (l.cls === "StandardRecipe") return;
       for (const fixture of l.group === 9001 ? ["251", "252"] : ["101"]) {
         const attribute = l.steps[0].preset.startsWith("4.") ? "ColorRGB_R" : "Dimmer";
-        const steps = l.steps.map((x, n) => ({ step: n + 1, accel: x.accel, decel: x.decel, trans: x.trans, integrated: { valid: true, pool: Number(x.preset.split(".")[0]), no: Number(x.preset.split(".")[1]) } }));
+        const absolute = attribute === "Dimmer" && st.dimmerAbsolute !== undefined ? { absolute: st.dimmerAbsolute } : {};
+        const steps = l.steps.map((x, n) => ({ step: n + 1, ...absolute, accel: x.accel, decel: x.decel, trans: x.trans, integrated: { valid: true, pool: Number(x.preset.split(".")[0]), no: Number(x.preset.split(".")[1]) } }));
         out.set(`${fixture}|${attribute}`, { fixture, attribute, cooked: true, stepCount: 2, speed: l.speedHz, steps }); // the later line wins
       }
     });
@@ -450,6 +451,8 @@ async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boole
         next.accel = a;
         if (t !== undefined) own.trans = t;
       }
+    } else if (/^Cook Preset 21\.9005/.test(command) && st.dimmerAbsoluteAfterCook !== undefined) {
+      st.dimmerAbsolute = st.dimmerAbsoluteAfterCook;
     } else if ((m = command.match(/^Copy Preset 21\.9005\.1 At Preset 21\.9005\.(\d+) \/NoConfirmation$/))) lines.push(structuredClone(lines[0]));
     else if ((m = command.match(/^Delete Preset 21\.9005\.(\d+) \/NoConfirmation$/))) lines.splice(Number(m[1]) - 1, 1);
     return "OK";
@@ -471,6 +474,33 @@ test("set: step presets, curve and speed on one line, sent as Assign / Set witho
     assert.equal(lines[1].steps[1].decel, 100);
     assert.equal(lines[1].steps[0].accel, 100);
     assert.match(result.notes.join(" "), /cues that call Preset 21\.9005 .* follow the change/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("set: a change to an untouched line's cooked step values is a mismatch, even with the same presets, speed and curves (review of #130)", async () => {
+  const { h, st } = await editSetup(DIM_COUL);
+  try {
+    st.dimmerAbsolute = 100;
+    st.dimmerAbsoluteAfterCook = 0;
+    const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 2, speed_bpm: 45 });
+    assert.equal(isError, true, JSON.stringify(result, null, 1));
+    assert.notEqual(result.verification.status, "matched");
+    assert.match(JSON.stringify(result), /value\(s\) of the other lines changed \(first: 25[12] Dimmer 1\.9010\/1\.9011: step 1 absolute 100 -> 0\)/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("set: unchanged cooked step values of the other lines still match, within 0.5 %", async () => {
+  const { h, st } = await editSetup(DIM_COUL);
+  try {
+    st.dimmerAbsolute = 100;
+    st.dimmerAbsoluteAfterCook = 99.8;
+    const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 2, speed_bpm: 45 });
+    assert.equal(isError, false, JSON.stringify(result, null, 1));
+    assert.equal(result.verification.status, "matched");
   } finally {
     await h.close();
   }

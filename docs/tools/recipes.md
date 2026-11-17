@@ -299,7 +299,11 @@ Read back:
   ACCEL / DECEL / TRANS where they are known. After a new shape or a reset they are the shape's and are not compared;
 - the edited line's cooked values come from its 2 step presets at its speed, and no value is left from its old step
   presets;
-- every other cooked value unchanged, and nothing uncooked added. A fixture and attribute that the edited line
+- every other cooked value unchanged, and nothing uncooked added. Each value is matched by fixture, cell, attribute
+  and step presets, and compared field by field: value and relative value, every step's absolute, relative, accel,
+  decel, transition, width and preset, speed, phase, measure, speed master, fade, delay and preset references
+  (percent layers within 0.5, speed within 0.001 Hz, phase within 0.01°). The first changed value and field are
+  named in the mismatch. A fixture and attribute that the edited line
   outputs, before or after, is left out of that comparison: where two lines act on the same attribute of the same
   fixture, the later line's value wins, so another line's value may rightly appear or go.
 
