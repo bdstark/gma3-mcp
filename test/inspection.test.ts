@@ -1,6 +1,7 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { registerInspectionTools, fixtureRef, fixtureRange, withNulls } from "../src/tools/inspection.ts";
+import { fixtureMatcher } from "../src/tools/storedvalues.ts";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
 
@@ -37,7 +38,7 @@ test("tool descriptions state the essential facts", () => {
   assert.match(h.tools.get("gma3_programmer")!.description!, /NOT OUTPUT VALUES/);
   assert.match(h.tools.get("gma3_dmx")!.description!, /raw8.*percent/);
   assert.match(h.tools.get("gma3_fixture_output")!.description!, /per-attribute cooked output/);
-  assert.match(h.tools.get("gma3_cue_contents")!.description!, /hard \(non-recipe\) fixture values/);
+  assert.match(h.tools.get("gma3_cue_contents")!.description!, /STORED VALUES .*hard \(non-recipe\) values .*GetPresetData on the part/);
   assert.match(h.tools.get("gma3_cue_contents")!.description!, /Never sends Goto/);
 });
 
@@ -283,7 +284,7 @@ test("gma3_cue_contents validates sequence, cue and part", async () => {
   assert.equal(h.fake.requests.length, 0);
 });
 
-test("gma3_cue_contents forwards the target and marks unavailable data explicitly", async () => {
+test("gma3_cue_contents forwards the target and marks unavailable data explicitly (a bridge without preset.read on a part)", async () => {
   h.fake.on("cueContents", () => ({
     ref: "Sequence 900 Cue 2.5", source: "cue object tree (recipes and preset references only)", trackedValues: "not_reconstructed", expandPresets: false,
     cue: { no: "2.5", name: "Look", trigType: "Go", trigTime: "0.00" },
@@ -309,8 +310,76 @@ test("gma3_cue_contents forwards the target and marks unavailable data explicitl
   assert.equal(part.recipes[1].presetRef, null);
   assert.equal(result.presets, null, "presets not expanded");
   assert.equal(result.trackedValues, "not_reconstructed");
-  assert.match(result.limitations[0], /hard \(non-recipe\)/);
-  assert.match(result.supportedMode, /recipes and preset references/);
+  assert.ok(!result.limitations.some((l: string) => /not exposed by the 2.5.1 Lua API/.test(l)), "the plugin's pre-sb-05 wording is dropped");
+  assert.equal(part.storedValuesRead.status, "not_read");
+  assert.match(part.storedValuesRead.reason, /needs bridge 0\.24\.0/);
+  assert.match(result.limitations.join("\n"), /stored values not fully returned: part 0: .*needs bridge 0\.24\.0/);
+  assert.equal(result.storedValues.complete, false);
+  assert.match(result.supportedMode, /recipes, preset references and the values each part stores/);
+});
+
+test("gma3_cue_contents returns each part's stored values (hard and cooked) read with preset.read", async () => {
+  h.fake.on("cueContents", () => ({
+    ref: "Sequence 900 Cue 3", cue: { no: "3" },
+    parts: [
+      { part: 0, ownDataPresent: true, recipes: [] },
+      { part: 1, ownDataPresent: false, recipes: [] },
+      { part: 2, ownDataPresent: true, recipes: [{ index: 1, preset: "4.1", presetResolved: true }] },
+    ],
+    limitations: ["hard (non-recipe) fixture values stored in a cue part are not exposed by the 2.5.1 Lua API (no GetCueData); only recipe and preset references are readable"],
+  }));
+  h.fake.on("preset.read", (args) => {
+    if (args.ref === "Sequence 900 Cue 3 Part 0") {
+      return { byFixtures: true, rows: [
+        { fixture: "101", attribute: "Dimmer", value: 0 },
+        { fixture: "101", attribute: "Gobo1", value: 30, fade: 2, absPreset: { pool: 7, no: 3, name: "Spot", valid: true } },
+        { fixture: "501.2", attribute: "ColorRGB_R", value: 100 },
+        { fixture: "601", attribute: "Pan", value: 10 },
+      ] };
+    }
+    if (args.ref === "Sequence 900 Cue 3 Part 2") return { byFixtures: true, rows: [{ fixture: "101", attribute: "ColorRGB_R", value: 100, cooked: true }] };
+    throw new Error(`unexpected ${args.ref}`);
+  });
+  let { result, isError } = await h.callJson("gma3_cue_contents", { sequence: 900, cue: 3 });
+  assert.equal(isError, false);
+  assert.deepEqual(h.fake.requests.filter((r) => r.op === "preset.read").map((r) => r.args.ref), ["Sequence 900 Cue 3 Part 0", "Sequence 900 Cue 3 Part 2"], "a part with OwnDataPresent No is not read");
+  const [p0, p1, p2] = result.parts;
+  assert.deepEqual(p0.storedValues[0], { fixture: "101", attribute: "Dimmer", value: 0 }, "a zero value is kept");
+  assert.deepEqual(p0.storedValues[1], { fixture: "101", attribute: "Gobo1", value: 30, preset: 'Preset 7.3 "Spot"', fade: 2 });
+  assert.equal(p0.storedValuesRead.status, "complete");
+  assert.deepEqual(p1.storedValues, []);
+  assert.equal(p1.storedValuesRead.status, "complete");
+  assert.deepEqual(p2.storedValues, [{ fixture: "101", attribute: "ColorRGB_R", value: 100, cooked: true }]);
+  assert.equal(result.storedValues.complete, true);
+  assert.equal(result.storedValues.returned, 5);
+  assert.deepEqual(result.limitations, [], "the plugin's pre-sb-05 wording is dropped");
+  assert.match(result.supportedMode, /values each part stores/);
+
+  // fixtures filters the stored values (an id includes its subfixtures); values_limit cuts and says so.
+  h.fake.requests.length = 0;
+  ({ result } = await h.callJson("gma3_cue_contents", { sequence: 900, cue: 3, fixtures: "101 + 501", values_limit: 2 }));
+  assert.deepEqual(result.parts[0].storedValues.map((r: { fixture: string }) => r.fixture), ["101", "101"]);
+  assert.equal(result.parts[0].storedValuesRead.status, "incomplete");
+  assert.equal(result.parts[0].storedValuesRead.count, 3);
+  assert.equal(result.parts[0].storedValuesRead.filtered, 1);
+  assert.equal(result.parts[2].storedValuesRead.returned, 0);
+  assert.equal(result.storedValues.complete, false);
+  assert.match(result.limitations.join("\n"), /values_limit 2 reached/);
+
+  // stored_values: false reads no part.
+  h.fake.requests.length = 0;
+  ({ result } = await h.callJson("gma3_cue_contents", { sequence: 900, cue: 3, stored_values: false }));
+  assert.equal(h.fake.requests.filter((r) => r.op === "preset.read").length, 0);
+  assert.equal(result.parts[0].storedValues, null);
+  assert.equal(result.parts[0].storedValuesRead.status, "not_requested");
+});
+
+test("fixtureMatcher reads ids, Thru within one level, + and -", () => {
+  const m = fixtureMatcher("Fixture 1 Thru 5 + 501 - 3")!;
+  assert.deepEqual(["1", "3", "5", "6", "501", "501.2", "50"].filter(m), ["1", "5", "501", "501.2"]);
+  const c = fixtureMatcher("Fixture 501.1 Thru 501.3")!;
+  assert.deepEqual(["501.1", "501.3", "501.4", "502.1", "501"].filter(c), ["501.1", "501.3"]);
+  assert.equal(fixtureMatcher("Fixture 1 Thru 501.2"), undefined, "a range across levels is not guessed");
 });
 
 test("gma3_cue_contents forwards part, fixtures and expand_presets and keeps the preset data", async () => {

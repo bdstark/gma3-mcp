@@ -53,8 +53,20 @@ A look that did not apply is a mismatch, and **the batch stops before that cue i
 stay; nothing is undone or retried. A check that cannot be completed is `unavailable`; the cue is stored and its
 verification says so.
 
-**Not verified:** the values stored in a cue. 2.5.1 has no GetCueData, so the values cannot be read back from the
-cue. The look check is the evidence that the programmer held the right values at the store.
+**Stored values.** After each store, Part 0 is read with GetPresetData. It is compared with the values the
+operator's `ChannelFilter` store preference took from the Preview programmer, captured right before the store, as
+`gma3_store_cue` does ([cues.md](cues.md)). A missing or different value makes the cue `mismatched`; nothing is
+stored again. Each cue's `storedValues` (full result, or compact when the cue did not match) and the top-level
+`storedValues` give the counts.
+
+With **`Active For Selected`**, each look is selected in turn, so the console stores only the **last look's
+selection**. The values of the cue's other looks are counted as `leftOutByFilter` and the cue is `mismatched`: it
+does not hold what was asked. A cue with a single look on all its fixtures is not affected. Values are counted as left out
+only when both the selection's and the whole programmer's reads are complete; otherwise nothing is claimed and that
+check is `unavailable`.
+
+The plugin expects `ChannelFilter` `Active`. Any other value is reported once per call in `warnings`, even with
+`verify: false`.
 
 **Results.** `cues` lists every cue with:
 - `status`: `stored`, `failed`, `unknown` or `not_attempted`;

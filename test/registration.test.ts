@@ -138,6 +138,10 @@ const WORKFLOW_TOOLS = [
   "gma3_timecodes",
   "gma3_build_timecode",
   "gma3_timecode_transport",
+  // Show analysis (read-only)
+  "gma3_preset_usage",
+  "gma3_cue_diff",
+  "gma3_tracking_leaks",
 ];
 
 test("all pre-existing tools are still registered under their original names", async () => {

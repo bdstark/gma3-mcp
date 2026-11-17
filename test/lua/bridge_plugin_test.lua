@@ -109,6 +109,13 @@ local r = request("lua", { code = "1+1" })
 check("lua op disabled by default", r.ok == false and r.error:find("Lua execution is disabled"), r.error)
 r = request("ping", {})
 check("ping reports policy", r.ok and r.result.lua.enabled == false and r.result.lua.maxMs == 5000 and r.result.lua.bounded == true, json.encode(r))
+-- 0.53.0: the show file's state, read with NeedShowSave / GetShowFileStatus; absent functions leave it empty.
+check("ping without NeedShowSave / GetShowFileStatus leaves the show state out", r.ok and r.result.show == nil, json.encode(r))
+NeedShowSave = function() return true end
+GetShowFileStatus = function() return "ShowLoaded" end
+r = request("ping", {})
+check("ping reports unsaved changes and the file status", r.ok and r.result.show.saveNeeded == true and r.result.show.fileStatus == "ShowLoaded", json.encode(r))
+NeedShowSave, GetShowFileStatus = nil, nil
 r = request("cmd", { command = "" })
 check("other ops unaffected by the gate", r.ok == false and r.error:find("args.command"), r.error)
 
@@ -305,9 +312,11 @@ do
   end
   -- Pretend no chunk has inspected the thread yet (the plugin remembers the first observation).
   -- There is no setter for that, so re-load the policy section's view through a fresh start.
+  local instanceBefore = state.instance
   state.running = false
   Main(nil, "lua on")
   state.running = true
+  check("a fresh start gets a new instance id (0.53.0)", type(state.instance) == "string" and state.instance ~= instanceBefore, tostring(state.instance))
   setCalls = {}
   r = requestOn("lua", { code = "return 2" })
   check("preserve (default): a chunk runs without installing the budget hook over the console's hook",
@@ -1555,7 +1564,7 @@ do
   r = request("feedback.read", {}, nil, C)
   check("feedback.read without items is refused with a code", r.ok == false and r.code == "no-items", r.error)
   r = request("feedback.read", { readers = { "commandText", "lastCommand", "blind", "solo", "page", "freeze", "selectedSequence", "previewBar", "sequenceActive" }, displays = { 1, 2, 9 }, executors = { 201, 202 }, sequences = { 5, 6 } }, nil, C)
-  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.51.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
+  check("feedback.read answers with Lua disabled", r.ok and r.result.atomic == false and r.result.epoch == 1 and r.result.bridgeVersion == "0.53.0" and r.result.module.version == feedbackModule.VERSION and r.result.identity.showFile == "mcp-test-disposable", J(r))
   local by = {}
   if r.ok then for _, it in ipairs(r.result.items) do by[it.key] = it end end
   check("feedback.read: command text and last command are raw observations", by.commandText and by.commandText.value == "Store " and by.lastCommand.value == "Go+ Sequence 5 : OK" and by.lastCommand.note:find("not confirmation"), J(by.lastCommand))
@@ -1668,7 +1677,7 @@ do
   end
   local C = { id = 71 }
   r = request("feedback.context", { executors = { 201, 202 } }, nil, C)
-  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.51.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
+  check("feedback.context answers with Lua and input disabled", r.ok and r.result.bridgeVersion == "0.53.0" and r.result.module.version == feedbackModule.VERSION and r.result.atomic == false and r.result.generation == 1 and r.result.generationChanged == false and r.result.identity.showFile == "mcp-test-disposable" and r.result.identity.dataPool.name == "Default", J(r))
   check("feedback.context: authoritative display, bank/page, slots with availability and value", r.ok and r.result.authoritativeDisplay.rule == "configured" and r.result.encoder.value.bank.name == "Color" and r.result.encoder.value.page.name == "RGB" and r.result.slots.value.slots[1].name == "ColorRGB_R" and r.result.slots.value.slots[1].availability == "available" and r.result.slots.value.slots[1].absolute == 50 and r.result.slots.value.slots[1].unit == "None" and r.result.slots.value.slots[2].valueState == "empty" and r.result.executorPage.no == 1, J(r.result.slots))
   check("feedback.context: executor targets with functions, level and playback-target status", r.ok and #r.result.executors == 2 and r.result.executors[1].value.functions.keyPress == "Temp" and r.result.executors[1].value.level.value == 100 and r.result.executors[1].value.playbackTarget == true and r.result.executors[2].value.empty == true and r.result.executors[2].value.reserved == nil, J(r.result.executors))
   check("feedback.context: nested fields survive the serialiser depth bound", r.ok and type(r.result.slots.value.slots[1].feature) == "string" and type(r.result.executors[1].value.assigned.name) == "string")
