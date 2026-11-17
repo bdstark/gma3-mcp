@@ -53,6 +53,8 @@ Saving and loading the show (SU-20, bridge 0.35.0, loading 0.54.0; `exclusive: t
 Fixture-type data (SU-19, bridge 0.34.0): `cellOrder` and `wheels` in `gma3_patch_type_structure`
 ([patch.md](patch.md#cell-order-su-19)); `order: "dmx"` in `gma3_layout_cells`; `{cells_of, order}` in group lists.
 
+Undo of tool calls (#142, bridge 0.56.0, needs `GMA3_UNDO_GROUPS=1`): `gma3_undo` ([undo.md](undo.md)).
+
 OSC input and output (SU-18, bridge 0.33.0; changes need `exclusive: true`, a newly opened command port on a
 networked machine `network: true`): `gma3_osc`, `gma3_configure_osc`, `gma3_test_osc_input` ([osc.md](osc.md)).
 

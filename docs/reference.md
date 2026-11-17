@@ -18,7 +18,7 @@
 | `GMA3_NET_OUTPUT_MULTICAST` | `1` | `0`: the listener joins no sACN multicast groups |
 | `GMA3_NET_OUTPUT_IDLE_MS` | `60000` | The listener closes after this long with no call |
 | `GMA3_AFTER_SAVE_HOOK` | *(none)* | Program started after every verified `gma3_save_show`, with the saved show's name (for example to commit show files to git); see [show.md](tools/show.md) |
-| `GMA3_UNDO_GROUPS` / `GMA3_UNDO_EXCLUDE` | off / *(none)* | `1` makes each tool call's commands one console undo group, so one Oops reverts them (bridge 0.55.0). Only commands sent through the bridge's `cmd` op join; property writes, CmdIndirect sends and Lua do not, and `gma3_load_show`, `gma3_save_show` and `gma3_patch_*` are never grouped. While a call runs, an operator's Oops answers "Not possible at the moment". `GMA3_UNDO_EXCLUDE`: more tool names (or `prefix*`) to leave out |
+| `GMA3_UNDO_GROUPS` / `GMA3_UNDO_EXCLUDE` | off / *(none)* | `1` makes each tool call's commands one console undo group, so one Oops reverts them (bridge 0.55.0). Only commands sent through the bridge's `cmd` op join; property writes, CmdIndirect sends and Lua do not, and `gma3_load_show`, `gma3_save_show` and `gma3_patch_*` are never grouped. While a call runs, an operator's Oops answers "Not possible at the moment". `GMA3_UNDO_EXCLUDE`: more tool names (or `prefix*`) to leave out. `gma3_undo` (bridge 0.56.0) undoes the latest groups after checking they are the console's latest undo steps |
 
 ## Tools
 
@@ -42,6 +42,7 @@
 | `gma3_start_bridge` | Start the plugin over OSC when the bridge is down |
 | `gma3_tempo_sync_status`, `gma3_configure_tempo_sync` | The tempo-sync plugin (bdstark/gma3-beat-sync): whether it is imported and running, its readings, and its configuration, read back; `gma3_playback` `resync` realigns running phasers ([docs](tools/tempo-sync.md)) |
 | `gma3_show_files`, `gma3_save_show`, `gma3_load_show` | List the show files and save the show under the current or a new name; another show's file needs `overwrite: true`; SaveShow's own confirmation is answered. Load another show (unsaved changes refused, saved or discarded as asked) and restart the bridge the load unloaded ([docs](tools/show.md)) |
+| `gma3_undo` | Undo the last tool call(s) of this server, one console undo group each (`GMA3_UNDO_GROUPS=1`, bridge 0.56.0), after checking they are the console's latest undo steps; no blind Oops ([docs](tools/undo.md)) |
 | `gma3_tags`, `gma3_store_tag`, `gma3_delete_tag`, `gma3_assign_tag`, `gma3_configure_tag` | Tags: the pool and the objects that carry each tag (reverse lookup, paged), create, rename, delete, assign and unassign with protect and `data_pool`, kill type, forwarding, action, appearance and note; `gma3_playback` on a tag reads each tagged sequence back ([docs](tools/tags.md)) |
 | `gma3_osc`, `gma3_configure_osc`, `gma3_test_osc_input` | Read and configure OSC input and output (who can send commands, where output goes), and prove input works with a loopback test ([docs](tools/osc.md)) |
 
