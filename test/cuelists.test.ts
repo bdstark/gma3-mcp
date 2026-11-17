@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { registerCueListTools, expectedOrder, judgeCycle, planObservation } from "../src/tools/cuelists.ts";
+import { registerCueListTools, expectedOrder, judgeCycle, planObservation, buildInPreview, validateLooks } from "../src/tools/cuelists.ts";
+import { Validator } from "../src/validate.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 
@@ -422,6 +423,29 @@ test("store_cues: a 530-fixture look over the one-command bound is built in part
     assert(storeAt > c.commands.indexOf(selects[1]), "one store, after the last part");
     assert.equal(c.commands.filter((cmd) => cmd.startsWith("[P] Store Sequence 981")).length, 1);
     normalUntouched(c);
+  } finally {
+    await h.close();
+  }
+});
+
+test("buildInPreview: a store that sets its own channel filter (gma3_store_preset /Active) passes the split-look scope check under Active For Selected", async () => {
+  const { h, c } = await setup();
+  try {
+    c.channelFilter = "Active For Selected";
+    const ids = Array.from({ length: 530 }, (_, i) => String(10001 + 2 * i));
+    for (const id of ids) c.fixtures[id] = ["Dimmer"];
+    const v = new Validator();
+    const looks = validateLooks(v, { fixtures: ids.join(" + "), intensity: 70 }, "preset", undefined);
+    assert.ok(v.ok && looks.length === 2, "the look is split in two");
+    let stores = 0;
+    const store = async () => { stores++; return { name: "preset 4.9: store", status: "succeeded" as const, op: "test" }; };
+    const run = (storeFilterExplicit?: string) => buildInPreview(h.ctx, { items: [{ prefix: "preset 4.9: ", looks, store: [{ name: "preset 4.9: store", run: store }] }], verify: false, noun: "presets", inspect: [], ...(storeFilterExplicit ? { storeFilterExplicit } : {}) });
+    const refused = await run();
+    assert.equal(refused.sent, false);
+    assert.match(refused.steps.find((x) => x.name === "check_store_scope")!.error!, /Active For Selected/);
+    const explicit = await run("/Active");
+    assert.equal(explicit.steps.find((x) => x.name === "check_store_scope")!.status, "succeeded");
+    assert.equal(stores, 1, "the store ran");
   } finally {
     await h.close();
   }

@@ -548,7 +548,7 @@ export interface PreviewBuild {
  * stay), unless `continueAfterFailure`: then the next item starts again from a confirmed, cleared Preview programmer.
  * An item with an unknown step stops the build either way.
  */
-export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]; verify: boolean; noun: string; inspect?: Array<{ name: string; run: StepFn }>; prepare?: () => Array<{ name: string; run: StepFn }>; continueAfterFailure?: boolean }): Promise<PreviewBuild> {
+export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]; verify: boolean; noun: string; inspect?: Array<{ name: string; run: StepFn }>; prepare?: () => Array<{ name: string; run: StepFn }>; continueAfterFailure?: boolean; /** The store sends its own channel filter (gma3_store_preset: /Active), so ChannelFilter does not limit it to the selection. */ storeFilterExplicit?: string }): Promise<PreviewBuild> {
   const { bridge } = ctx;
   const t = ctx.requestTimeoutMs;
   const warnings: string[] = [];
@@ -600,6 +600,7 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
       name: "check_store_scope",
       run: async () => {
         if (!allLooks.some((l) => l.selectionPart)) return asRead({ name: "check_store_scope", status: "succeeded", op: "preset.context", detail: "no look is split: the store takes the look's whole selection" });
+        if (o.storeFilterExplicit) return asRead({ name: "check_store_scope", status: "succeeded", op: "preset.context", detail: { storeOption: o.storeFilterExplicit, note: "the store command sets its own channel filter, so every part of a split look is stored whatever ChannelFilter is" } });
         let context: { preferences?: Record<string, unknown>; preferencesReadable?: boolean };
         try {
           context = (await bridge.request("preset.context", {}, t)) as typeof context;
