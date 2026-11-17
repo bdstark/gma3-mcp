@@ -397,7 +397,7 @@ async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boole
   const h = await startHarness(registerPhaserRecipeTools);
   const lines: FLine[] = structuredClone(initial);
   const cmds: string[] = [];
-  const st = { name: "TEST PH EDIT", ignoreAssignPreset: false, assignGroupToLine1: false, dimmerAbsolute: undefined as number | undefined, dimmerAbsoluteAfterCook: undefined as number | undefined, dropDimmerAfterCook: false, dimmerDropped: false, presetRows: {} as Record<string, Array<{ fixture: string; attribute: string; sfIndex?: number }>> };
+  const st = { name: "TEST PH EDIT", ignoreAssignPreset: false, assignGroupToLine1: false, dimmerAbsolute: undefined as number | undefined, dimmerAbsoluteAfterCook: undefined as number | undefined, dropDimmerAfterCook: false, dimmerDropped: false, presetRows: {} as Record<string, Array<{ fixture: string; attribute: string; sfIndex?: number }>>, groups: {} as Record<number, Array<{ fixture: string; sfIndex: number }>> };
   const P = "Preset 21.9005";
   const addr = (cls: string, n: number, pool?: number) => ({ class: cls, index: n, addr: `14.14.1.${cls === "Preset" ? `5.${pool}` : 6}.${n}` });
   h.fake.on("recipe.editState", () => ({ environment: "Normal", editing: o.editing === true, partZeroLines: [], partZero: false, modal: o.modal ? UPDATE : false, lastCommand: "OK" }));
@@ -418,6 +418,12 @@ async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boole
       return list([{ class: "PhaserRecipeValueSource", index: 1, fields: { ACCELX: x.accel, DECELX: x.decel, TRANSX: x.trans, Preset: addr("Preset", no, pool) } }]);
     }
     throw new BridgeReplyError(`no object found for '${ref}'`);
+  });
+  h.fake.on("group.read", (args) => {
+    const n = Number(String(args.ref).replace(/^Group /, ""));
+    const members = st.groups[n];
+    if (!members) throw new BridgeReplyError(`no object found for '${args.ref}'`);
+    return { ref: args.ref, count: members.length, items: members.map((m) => ({ fixture: m.fixture, sfIndex: m.sfIndex })) };
   });
   h.fake.on("preset.read", (args) => {
     const ref = String(args.ref);
@@ -689,6 +695,48 @@ test("edit (review of #138): masking needs the cell too; unreadable step presets
       st.presetRows["Preset 1.9010"] = [];
       const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90 });
       assert.equal(result.verification.status, "mismatched", "an empty step preset proves no coverage");
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("edit (follow-up #138): masking coverage counts only the fixtures the line's group selects", async () => {
+  // Presets hold 101, 251 and 252; Group 9001 is 251 and 252. Line 2 (Dimmer on 251/252 only) masks line 1 on everything
+  // line 1 outputs, though its presets do not hold 101: matched.
+  const sel = [{ fixture: "251", sfIndex: 251 }, { fixture: "252", sfIndex: 252 }];
+  {
+    const { h, st } = await editSetup([fline(9001, "1.9010", "1.9011", 120), fline(9001, "1.9012", "1.9013", 60)]);
+    try {
+      st.groups[9001] = sel;
+      for (const ref of ["Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = ["251", "252"].map((fixture) => ({ fixture, attribute: "Dimmer" }));
+      const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90, detail: true });
+      assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+      assert.ok((result.notes ?? []).some((n: string) => /line 1 cooks no value: line 2 .* masks it/.test(n)), JSON.stringify(result.notes));
+    } finally {
+      await h.close();
+    }
+  }
+  {
+    // The group also holds 101, which line 2's presets do not: not masked.
+    const { h, st } = await editSetup([fline(9001, "1.9010", "1.9011", 120), fline(9001, "1.9012", "1.9013", 60)]);
+    try {
+      st.groups[9001] = [{ fixture: "101", sfIndex: 101 }, ...sel];
+      for (const ref of ["Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = ["251", "252"].map((fixture) => ({ fixture, attribute: "Dimmer" }));
+      const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90 });
+      assert.equal(result.verification.status, "mismatched", JSON.stringify(result.verification));
+      assert.match(result.verification.detail, /no cooked value comes from line 1/);
+    } finally {
+      await h.close();
+    }
+  }
+  {
+    // The group cannot be read: no cut, so the uncovered 101 keeps it a mismatch (as before).
+    const { h, st } = await editSetup([fline(9001, "1.9010", "1.9011", 120), fline(9001, "1.9012", "1.9013", 60)]);
+    try {
+      for (const ref of ["Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = ["251", "252"].map((fixture) => ({ fixture, attribute: "Dimmer" }));
+      const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90 });
+      assert.equal(result.verification.status, "mismatched", JSON.stringify(result.verification));
     } finally {
       await h.close();
     }

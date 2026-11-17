@@ -304,7 +304,9 @@ Read back:
   presets. When the edited line has no cooked value, a later line on the same group masks it only if that line has
   cooked values covering every value the edited line output before the edit, and its 2 step presets hold every
   fixture, cell and attribute the edited line's step presets hold (read with `preset.read`; a pool proves nothing,
-  since pool 4 holds RGB and ColorWheel presets alike). Then no cooked value is expected from the edited line (a note
+  since pool 4 holds RGB and ColorWheel presets alike). Both lines' preset coverage counts only the fixtures and
+  cells the edited line's group holds (`group.read`; a group that can't be read completely cuts nothing). Then no
+  cooked value is expected from the edited line (a note
   says so) and its definition is still checked. A step preset that is missing, empty or read in part proves no
   coverage: the edit is then a mismatch;
 - every other cooked value unchanged, and nothing uncooked added. Each value is matched by fixture, cell, attribute

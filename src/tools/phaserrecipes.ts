@@ -1027,21 +1027,35 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
         // inside the union of what the later line's step presets hold (a pool proves nothing: pool 4 holds RGB and
         // ColorWheel presets alike). The later line must also have cooked values, and cover every value this line
         // output before the edit. Coverage that cannot be read (a preset missing, empty or read in part) is no proof.
+        // Only what the line's selection holds counts (follow-up #138): a step preset may hold fixtures its group does
+        // not, and the line outputs only the group's fixtures and cells. Both lines' preset coverage is cut to the edited
+        // line's group (read with group.read); when the group cannot be read completely, nothing is cut (conservative).
         const keyOf = (r: { fixture?: unknown; sfIndex?: unknown; attribute?: unknown }) => `${r.fixture}|${r.sfIndex ?? ""}|${r.attribute}`;
-        const coverageCache = new Map<string, Set<string> | null>();
-        const coverage = async (pair: string): Promise<Set<string> | null> => {
+        type Cell = { fixture?: unknown; sfIndex?: unknown; attribute?: unknown };
+        let selection: Array<{ fixture: string | null; sfIndex: number }> | null = null;
+        try {
+          const g = (await bridge.request("group.read", { ref: `Group ${want!.group}` }, tm)) as { truncated?: boolean; items?: Array<{ fixture?: string | null; sfIndex?: number; unreadable?: boolean }> };
+          const items = g.items ?? [];
+          if (g.truncated !== true && items.length && items.every((x) => !x.unreadable && typeof x.sfIndex === "number")) selection = items.map((x) => ({ fixture: x.fixture ?? null, sfIndex: x.sfIndex! }));
+        } catch {
+          selection = null;
+        }
+        // A preset row is in the selection by its cell (sfIndex) when it has one, else by its fixture.
+        const selected = (r: Cell) => selection === null || selection.some((m) => (typeof r.sfIndex === "number" ? m.sfIndex === r.sfIndex : m.fixture !== null && m.fixture === String(r.fixture)));
+        const coverageCache = new Map<string, Cell[] | null>();
+        const coverage = async (pair: string): Promise<Cell[] | null> => {
           if (coverageCache.has(pair)) return coverageCache.get(pair)!;
-          let keys: Set<string> | null = new Set<string>();
+          let cells: Cell[] | null = [];
           for (const p of pair.split("/")) {
             const d = await readPreset(bridge, `Preset ${p}`, tm).catch(() => null);
             if (!d || d.truncated || !d.rows?.length || d.rows.some((r) => !r.attribute)) {
-              keys = null;
+              cells = null;
               break;
             }
-            for (const r of d.rows) keys.add(keyOf(r));
+            cells.push(...d.rows);
           }
-          coverageCache.set(pair, keys);
-          return keys;
+          coverageCache.set(pair, cells);
+          return cells;
         };
         const oldKeys = oldPair ? rowsBefore.filter((r) => rowPairOf(r) === oldPair).map(keyOf) : [];
         const masks = async (l: LineDetail): Promise<boolean> => {
@@ -1053,7 +1067,11 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
           if (!oldKeys.every((key) => cooked.has(key))) return false;
           const mine = await coverage(newPair!);
           const covers = await coverage(pair);
-          return mine !== null && covers !== null && [...mine].every((key) => covers.has(key));
+          if (mine === null || covers === null) return false;
+          const mineIn = mine.filter(selected).map(keyOf);
+          const coversIn = new Set(covers.filter(selected).map(keyOf));
+          // Nothing of the edited line's presets inside its selection: no output to mask, so no proof either.
+          return mineIn.length > 0 && mineIn.every((key) => coversIn.has(key));
         };
         let masker: LineDetail | undefined;
         if (!got.length && after) for (const l of after.slice(posAfter + 1)) if (await masks(l)) { masker = l; break; }
