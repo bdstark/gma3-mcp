@@ -508,3 +508,40 @@ test("follow-up: expired sources are evicted while the listener stays open, and 
     l.close();
   }
 });
+
+test("follow-up: a source that expires or is evicted and resumes within one window never gets a negative fps", async () => {
+  type Row = { protocol: string; universe: number; fps: number; sources: Array<{ ip: string; fps: number }> };
+  // Expire and resume: 100 packets before the window, then (simulated time) one packet after the sACN timeout.
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  try {
+    await l.ensure();
+    const rinfo = { address: "10.0.0.1", port: 5568 };
+    for (let i = 1; i <= 100; i++) l.ingest("sacn", sacnPacket({ universe: 3, cid: 1, data: [50], sequence: i }), rinfo);
+    const pending = collectNetworkOutput(l, { universes: [3], listen_ms: 300 });
+    await new Promise((res) => setTimeout(res, 50));
+    l.ingest("sacn", sacnPacket({ universe: 3, cid: 1, data: [60], sequence: 5 }), rinfo, Date.now() + SOURCE_TIMEOUT_MS.sacn + 100);
+    assert.equal(l.allSources(Date.now() + SOURCE_TIMEOUT_MS.sacn + 100)[0].packets, 1, "a new instance");
+    const u = ((await pending).result as { universes: Row[] }).universes.find((x) => x.universe === 3)!;
+    assert.ok(u.fps > 0 && u.sources[0].fps > 0, JSON.stringify(u));
+  } finally {
+    l.close();
+  }
+
+  // Evict and reinsert: a full cache during the window pushes the source out, then it is heard again.
+  const m = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  try {
+    await m.ensure();
+    const a = { address: "10.200.0.1", port: 6454 };
+    for (let i = 1; i <= 100; i++) m.ingest("artnet", artDmxPacket({ data: [9], sequence: (i % 255) + 1 }), a);
+    const pending = collectNetworkOutput(m, { universes: [0], listen_ms: 300 });
+    await new Promise((res) => setTimeout(res, 50));
+    for (let i = 0; i < MAX_SOURCES; i++) m.ingest("artnet", artDmxPacket({ sub: 1, data: [1], sequence: 1 }), { address: `10.3.${i >> 8}.${i & 255}`, port: 6454 });
+    assert.ok(!m.allSources().some((s) => s.address === a.address), "evicted");
+    m.ingest("artnet", artDmxPacket({ data: [9], sequence: 7 }), a);
+    const u = ((await pending).result as { universes: Row[] }).universes.find((x) => x.protocol === "Art-Net" && x.universe === 0)!;
+    assert.ok(u.fps > 0 && u.sources[0].fps > 0, JSON.stringify(u));
+    assert.ok(m.evicted >= 1);
+  } finally {
+    m.close();
+  }
+});

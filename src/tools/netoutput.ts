@@ -150,7 +150,9 @@ async function collectWindow(
   const liveAt = (t: number) => listener.allSources(t).filter((s) => t - s.lastSeen <= SOURCE_TIMEOUT_MS[s.protocol] && (!wanted || wanted.has(s.universe)));
 
   const start = Date.now();
-  const baseline = new Map(listener.allSources().map((s) => [`${s.protocol}|${s.universe}|${s.key}`, s.packets]));
+  // Keyed by the cached source object itself: a source that expired or was evicted and resumed during the window is a
+  // new object whose count starts at its first packet, so its window count is never taken against the old baseline.
+  const baseline = new Map<SourceState, number>(listener.allSources().map((s) => [s, s.packets]));
   const sampled: Array<{ t_ms: number; values: Record<string, Record<string, number>> }> = [];
   const step = listenMs / samples;
   for (let i = 1; i <= samples; i++) {
@@ -168,7 +170,7 @@ async function collectWindow(
   const seen = liveAt(now);
   const rows = [...groupByUniverse(seen).values()].map((srcs) => {
     const m = mergeSources(srcs);
-    const fpsOf = (s: SourceState) => Math.round(((s.packets - (baseline.get(`${s.protocol}|${s.universe}|${s.key}`) ?? 0)) / elapsed) * 10000) / 10;
+    const fpsOf = (s: SourceState) => Math.round(((s.packets - (baseline.get(s) ?? 0)) / elapsed) * 10000) / 10;
     const nonzero = m.data.reduce((n, x) => n + (x ? 1 : 0), 0);
     const p = srcs[0].protocol;
     const u = srcs[0].universe;

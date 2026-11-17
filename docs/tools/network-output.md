@@ -24,7 +24,7 @@ Per universe:
 | --- | --- |
 | `protocol`, `universe` | `sACN` or `Art-Net` and the protocol universe; Art-Net also as `{net, subnet, universe}` |
 | `priority` | sACN: the winning priority (absent when no active stream is left) |
-| `fps` | packets per second during the window from the contributing sources (a static universe may be sent at a reduced keep-alive rate; 0 when no active stream is left) |
+| `fps` | packets per second during the window from the contributing sources (a source that expired or was evicted and came back during the window counts only its packets since; a static universe may be sent at a reduced keep-alive rate; 0 when no active stream is left) |
 | `slots`, `nonzero` | slots in the frame, channels above 0 |
 | `merge` | `single source`, `<name> wins at priority N`, or `HTP of N sources`: the highest sACN priority wins, equal ones merge HTP. The participants are the sources that are live (a packet within the last 2.5 s for sACN, E1.31's data loss timeout; 5 s for Art-Net, which may resend static data only every 4 s), not only those that sent during the window, so a keep-alive source quiet for a short window keeps its universe. Preview and terminated streams never take part: when only they are left the merge is `no active stream` with no values |
 | `sources` | each live sender: name and CID (sACN), IP, priority, fps (this window), last sequence number, `preview` / `terminated` flags, `last_seen_ms_ago`, and `preview_stream` (packets, last seen) when sACN preview packets arrived while its live frame was kept |
