@@ -36,6 +36,7 @@ import { registerCueListTools } from "./tools/cuelists.js";
 import { registerTypeStructureTools } from "./tools/typestructure.js";
 import { registerCellLayoutTools } from "./tools/celllayout.js";
 import { registerDmxOutputTools } from "./tools/dmxoutput.js";
+import { registerNetOutputTools } from "./tools/netoutput.js";
 import { registerVariableTools } from "./tools/variables.js";
 import { registerOscTools } from "./tools/osc.js";
 import { registerShowTools } from "./tools/show.js";
@@ -704,6 +705,8 @@ registerCueListTools(server, toolContext);
 registerTypeStructureTools(server, toolContext);
 registerCellLayoutTools(server, toolContext);
 registerDmxOutputTools(server, toolContext);
+// Passive sACN / Art-Net listener: read-only, no bridge, no mutation lock.
+registerNetOutputTools(server, toolContext);
 registerVariableTools(server, toolContext);
 registerLiveStateTools(server, toolContext);
 registerOscTools(server, toolContext);
