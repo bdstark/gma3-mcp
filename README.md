@@ -4,6 +4,99 @@ An [MCP](https://modelcontextprotocol.io) server for **grandMA3 onPC**. Connect 
 show data, program fixtures, store and edit cues, control playback and faders, and search the manual
 installed with onPC. Arbitrary Lua execution is available as a separate, opt-in capability.
 
+## Examples
+
+The prompts below are what you might ask an MCP client such as Claude once it is connected to gma3-mcp. Most are
+paraphrased from a real build: a two-floor Halloween party rig (moving heads, pixel bars, pars, a festoon string and
+smart bulbs over Art-Net) programmed on the MA Show Start in onPC 2.5.1. Each example names what ends up on the console
+and the structured tools that do the work. Every tool that changes the show checks first, sends each step once
+(no retries) and, by default, reads the result back. The [tool pages](docs/tools/README.md) list each tool's
+parameters and checks.
+
+### Import fixture types and patch the rig
+
+> Import the two moving-head models from their GDTF files so we get their gobos, then patch the rig from this fixture
+> list with consecutive addresses on universe 1.
+
+New fixture types from GDTF files sent to the console's user library (`gma3_patch_library_add`), found in the libraries
+(`gma3_patch_library`) and imported into the show (`gma3_patch_import`). Fixtures added with their fixture IDs, names,
+modes and DMX addresses (`gma3_patch_add`), with fixture ID and address collisions refused before anything is patched.
+
+### Place the rig in 3D
+
+> Place every fixture in the 3D view from the plot coordinates, in feet. The festoon is strung in a square wave with six
+> bulbs per leg, starting at the centre.
+
+Fixture positions and rotations, with line, arc and mirror layouts for symmetric rows (`gma3_place_fixtures`). The
+festoon's bulbs placed along a square-wave path in DMX order (`gma3_layout_cells`).
+
+### Build groups and presets on the MA Show Start
+
+> Move the fixtures under the Show Start's slot fixtures and store the groups with the movers mirrored left and right.
+> Then run the Position Wizard and fill in the colour, beam and focus presets the rig is missing.
+
+Fixtures moved under the Show Start's grouping fixtures (`gma3_patch_move`). Groups stored with their selection-grid
+layout and checked by recalling them (`gma3_store_group`). The wizard macro run (`gma3_run_macro`) and its confirmation
+answered by button text (`gma3_dialog`). Presets stored with an explicit mode and content, then read back
+(`gma3_store_preset`).
+
+### Check the rig against the 3D view
+
+> Put both beam movers at pan 0, tilt 45 so I can compare where they land with the 3D view. Then clear the programmer.
+
+A look on both fixtures in one call, read back per fixture (`gma3_set_attributes`), and a cleared programmer
+(`gma3_clear_programmer`).
+
+### Build a cue list of moods
+
+> Build a Mood cue list from our groups and presets: Ambient, Groove, Build, Peak, Breakdown and Outro, plus a Fill and
+> a Riser. Put it on an executor so I can try it in the 3D view.
+
+Effects stored as presets, such as a dimmer chase across the pixel bars, alternating colours and pan/tilt figure-eights
+on the movers (`gma3_build_phaser`). A sequence of named cues with looks, fades and triggers (`gma3_store_cues`), short
+looping chases for Fill and Riser, observed for one cycle (`gma3_build_chase`), and the sequence assigned to a page
+executor (`gma3_assign_to_executor`).
+
+### Add variety with recipes and MAtricks
+
+> Add Halloween and carnival colour palettes with gradients that move while a cue plays, and fast gobo changes on the
+> beams for high-energy phrases. Remove the fixed position lines from the verse and chorus cues and re-cook them.
+
+MAtricks with wings, blocks and phase spreads (`gma3_configure_matricks`). Recipe cues that combine groups, presets and
+MAtricks, written in batches of cue parts (`gma3_store_recipe_cues`) or line by line (`gma3_edit_recipe`), then cooked
+with an explicit option after the affected cues are listed (`gma3_cook_recipes`).
+
+### Operator macros, variables and tags
+
+> Make operator macros that set the current genre and chapter, and tag the looks by phrase type so an external planner
+> can choose between them.
+
+Macros whose lines set console variables, stored without being run (`gma3_store_macro`), with starting values for the
+variables (`gma3_set_variable`). Tags created and put on the look sequences (`gma3_store_tag`, `gma3_assign_tag`).
+
+### Repack the DMX output
+
+> Put most lights on universe 1, the UV bars and panels on 2, the festoons on 3, and the smart bulbs on universe 4 over
+> Art-Net only.
+
+Fixtures readdressed with collisions refused first (`gma3_patch_set`). Local universes mapped to Art-Net universes,
+which needs an explicit `network: true` to send onto the network (`gma3_configure_dmx_output`), and the output
+checked (`gma3_dmx_output`).
+
+### Run looks from timecode
+
+> Build a timecode show for the opening track: Ambient at 0:00, the Riser at 0:28, Peak at 0:32 and Outro at 3:45.
+
+Not from the Halloween build. A timecode show with a track per sequence and cue events at those times, built without
+playing or recording (`gma3_build_timecode`); playing it reports the events it crossed (`gma3_timecode_transport`).
+
+### Save the show
+
+> Save the show file.
+
+The current show saved under its own name, or a new one, refusing to overwrite another show's file unless asked
+(`gma3_save_show`).
+
 ## Get started
 
 Choose the guide for the computer running grandMA3 onPC and your MCP client:
