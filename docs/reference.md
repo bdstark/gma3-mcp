@@ -261,6 +261,42 @@ instead of working around missing tools with `gma3_lua` or `gma3_command`. The s
 says the same. Changes outside the hashed inputs (docs, the Lua plugin) do not make the build stale. A
 build made before this check existed has no stamp and no check, so it cannot report itself.
 
+### Long calls: progress and client timeouts
+
+A big build call (100 recipe cue parts and their cook, a 256-fixture patch, a 64-preset phaser build, a long timecode
+show) can run for minutes while the console works. If the client gives up first, the console still finishes: the
+answer is lost, not the work (#145). Three things keep that from turning into a resend:
+
+- **Progress.** When the client sends a `progressToken` with `tools/call`, the server sends
+  `notifications/progress` while the call runs: one unit per finished batch item (`gma3_store_cues`,
+  `gma3_store_recipe_cues` and every list tool), per cooked cue part, per built phaser preset, per timecode track and
+  per cue stored in a Preview build, each with a message naming it; and between units a fraction for every bridge
+  request, and every 5 s while one request waits for the console (a cook, a patch edit). The value always increases;
+  `total` is sent while it is known (a call that writes 72 cue parts and cooks them reports 0..72 of 72, then 72..144
+  of 144). Without a token nothing is sent.
+- **Bounded requests.** A timecode track's events go to the bridge 100 per request (`TC_EVENTS_PER_REQUEST`), in time
+  order. Recipe lines are already a few requests each. A patch edit (`gma3_patch_add`, `_set`, `_remove`, at most 256
+  fixtures) stays one request on purpose: the bridge undoes a failed add in the copy and resolves address swaps within
+  one request, so it is not split; its reply wait scales with the fixtures and it beats while it waits.
+- **Already done.** `gma3_store_recipe_cues` in `replace` mode reads each cue part first; one whose lines (group,
+  values, MAtricks, Enabled, the name and selection mode when given, the per-line columns), cue name and note already
+  read as the call asks is answered `already done` and nothing is sent for it, so sending the same call again after a
+  lost answer does not rewrite it. `append` cannot tell a repeat from a wanted second copy and always writes: use
+  `replace` for a build that may be sent again. When an answer is lost on any other tool, read the result
+  (`gma3_cue_contents`, `gma3_recipes`, `gma3_patch_list`) before deciding to send again.
+
+Set the client's tool-call timeout for big builds to at least 10 minutes, and let it reset on progress where the
+client supports it:
+
+| Client | Setting |
+| --- | --- |
+| Claude Code | `MCP_TOOL_TIMEOUT=600000` (ms) in the environment the client starts with |
+| MCP TypeScript SDK | `client.callTool(params, undefined, { onprogress, resetTimeoutOnProgress: true, timeout: 120000, maxTotalTimeout: 1800000 })` |
+| Others | the client's per-tool or request timeout; check whether it resets on `notifications/progress` |
+
+Splitting a build over more, smaller calls (for example 20 cue parts per `gma3_store_recipe_cues` call) also keeps
+each answer short.
+
 ## Workflow tools
 
 The tools above are thin wrappers over single bridge requests and keep their original responses. The

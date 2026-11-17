@@ -4,6 +4,7 @@ import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
 import { registerRecipeTools, axisSelection, parseTarget, parseScope, targetRef, lineRef, coverageOf, verifyCoverage, setReplyMatches } from "../src/tools/recipes.ts";
 import { ValidationError } from "../src/validate.ts";
+import { withProgress } from "../src/progress.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -655,7 +656,7 @@ test("replace over several cues: the old lines are deleted from the last, the ne
   assert.equal(result.items.length, 2);
   assert.match(result.items[0].summary, /Sequence 9060 Cue 1 Part 0: 2 line\(s\) written in place of 2; 2 line\(s\) read back, matched/);
   assert.equal(result.items[0].result, undefined);
-  assert.deepEqual(result.steps.map((s: { name: string }) => s.name), ["read_cues", "check_references", "item 1: Sequence 9060 Cue 1 Part 0", "item 2: Sequence 9060 Cue 2 Part 0"]);
+  assert.deepEqual(result.steps.map((s: { name: string }) => s.name), ["read_cues", "check_references", "compare_existing", "item 1: Sequence 9060 Cue 1 Part 0", "item 2: Sequence 9060 Cue 2 Part 0"]);
   assert.equal(result.linesSent, 3);
   // The references were read once for the whole call: Group 908 and Preset 1.11 are used twice.
   assert.equal(h.fake.requests.filter((r) => r.op === "group.read" && r.args.ref === "Group 908").length, 1);
@@ -789,6 +790,74 @@ test("cook: every written cue part is cooked with gma3_cook_recipes afterwards",
   const allowed = await store({ mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4")] }], cook: "overwrite", replace_uncooked: true, verify_cook: false });
   assert.equal(allowed.result.outcome, "succeeded", JSON.stringify(allowed.result.summary));
   assert.ok(con.commands.includes("Cook Sequence 9060 Cue 1 Part 0 /Overwrite"));
+});
+
+test("already done (#145): replace sent again after a lost answer writes nothing for the cue parts that read as asked", async () => {
+  con.cue(9060, 1);
+  con.cue(9060, 2);
+  const cues = [
+    { cue: 1, name: "One", note: "n1", lines: [line(908, "4.4", { name: "a", x: { blocks: 2, select: 1 } }), line(910, "1.11", { matricks: 12 })] },
+    { cue: 2, lines: [line(908, "1.11")] },
+  ];
+  con.groups.set(910, [{ fixture: "403", sfIndex: 65 }]);
+  const first = await store({ mode: "replace", cues });
+  assert.equal(first.result.verification.status, "matched", JSON.stringify(first.result));
+  con.commands = [];
+  h.fake.requests.length = 0;
+  const again = await store({ mode: "replace", cues });
+  assert.equal(again.isError, false, JSON.stringify(again.result));
+  assert.equal(again.result.outcome, "succeeded");
+  assert.equal(again.result.verification.status, "matched");
+  assert.deepEqual(con.commands, [], "nothing is deleted or written again");
+  assert.deepEqual(sets(), []);
+  assert.deepEqual(again.result.items.map((i: { summary: string }) => i.summary), [
+    "Sequence 9060 Cue 1 Part 0: already done: its 2 line(s) already read as asked; nothing was sent.",
+    "Sequence 9060 Cue 2 Part 0: already done: its 1 line(s) already read as asked; nothing was sent.",
+  ]);
+  // One field different: that cue part is written in full again, the other is not.
+  con.commands = [];
+  const changed = await store({ mode: "replace", cues: [cues[0], { cue: 2, lines: [line(908, "4.4")] }] });
+  assert.equal(changed.result.verification.status, "matched", JSON.stringify(changed.result));
+  assert.deepEqual(con.commands, ["Delete Sequence 9060 Cue 2 Part 0.1 /NoConfirmation", "Assign Group 908 At Sequence 9060 Cue 2 Part 0.1", "Assign Preset 4.4 At Sequence 9060 Cue 2 Part 0.1"]);
+  // A disabled line, a MAtricks or an X column the request does not ask for, a different note: written again.
+  for (const tweak of [
+    () => (con.part(9060, 2).lines[0].enabled = false),
+    () => (con.part(9060, 2).lines[0].matricks = 12),
+    () => (con.part(9060, 2).lines[0].props = { X: "1" }),
+  ]) {
+    tweak();
+    con.commands = [];
+    await store({ mode: "replace", cues: [{ cue: 2, lines: [line(908, "4.4")] }] });
+    assert.equal(con.commands.length, 3, `rewritten after ${tweak}`);
+  }
+  con.commands = [];
+  await store({ mode: "replace", cues: [{ ...cues[0], note: "n2" }] });
+  assert.ok(con.commands.length > 0, "a different note is not already done");
+  // Append never treats a repeat as done: the lines are added again.
+  con.commands = [];
+  await store({ mode: "append", cues: [{ cue: 2, lines: [line(908, "4.4")] }] });
+  assert.equal(con.part(9060, 2).lines.length, 2);
+  // Preview says which cue parts would be skipped.
+  const preview = await store({ mode: "replace", preview: true, cues: [{ cue: 1, name: "One", note: "n2", lines: cues[0].lines }] });
+  assert.equal(preview.result.plan[0].alreadyDone, true, JSON.stringify(preview.result.plan));
+  assert.match(preview.result.summary, /1 cue part\(s\) already read as asked and would not be written again/);
+});
+
+test("progress (#145): one unit per written cue part, then one per cooked cue part; none without a token", async () => {
+  for (const c of [1, 2, 3]) con.cue(9060, c);
+  const seen: Array<{ progress: number; total?: number; message?: string }> = [];
+  const extra = { _meta: { progressToken: "p1" }, sendNotification: async (n: { params: Record<string, unknown> }) => void seen.push(n.params as never) };
+  const cues = [1, 2, 3].map((c) => ({ cue: c, lines: [line(908, "4.4")] }));
+  const { result } = await withProgress(extra, () => store({ mode: "append", cues, cook: "merge_low_priority" }));
+  assert.equal(result.outcome, "succeeded", JSON.stringify(result.summary));
+  const units = seen.filter((p) => Number.isInteger(p.progress));
+  assert.deepEqual(units.at(-1), { progressToken: "p1", progress: 6, total: 6, message: "store_recipe_cues: cooked Sequence 9060 Cue 3 Part 0 (succeeded)" });
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i].progress > seen[i - 1].progress, "progress always increases");
+  assert.ok(seen.every((p) => p.total === undefined || p.progress <= p.total));
+  // Without a token: nothing.
+  const before = seen.length;
+  await withProgress({ sendNotification: extra.sendNotification }, () => store({ mode: "append", cues: [{ cue: 1, lines: [line(908, "4.4")] }] }));
+  assert.equal(seen.length, before);
 });
 
 test("preview checks and plans without sending; detail lists every request", async () => {

@@ -47,6 +47,7 @@ import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFr
 import { registerPoolUsageTools, shapeListing } from "./tools/poolusage.js";
 import { registerAnalysisTools } from "./tools/analysis.js";
 import { UndoGroups, inToolScope } from "./undo.js";
+import { withProgress } from "./progress.js";
 
 const env = process.env;
 const bridge = new Gma3Bridge({
@@ -80,11 +81,13 @@ const server = new McpServer(
 );
 
 // Every tool handler runs in a scope that names its tool, so an undo group (GMA3_UNDO_GROUPS, src/undo.ts) can be
-// named after the tool call it covers and excluded tools can be recognised.
+// named after the tool call it covers and excluded tools can be recognised, and in the call's progress scope.
 {
   const register = server.registerTool.bind(server) as (...a: unknown[]) => unknown;
   (server as unknown as { registerTool: (...a: unknown[]) => unknown }).registerTool = (name: unknown, config: unknown, handler: unknown) =>
-    register(name, config, (...args: unknown[]) => inToolScope(String(name), () => (handler as (...a: unknown[]) => unknown)(...args)));
+    register(name, config, (...args: unknown[]) =>
+      // The SDK passes the request's `extra` last: its progressToken turns on progress notifications (src/progress.ts).
+      inToolScope(String(name), () => withProgress(args[args.length - 1], () => (handler as (...a: unknown[]) => unknown)(...args))));
 }
 
 // Arbitrary Lua execution is a separately gated capability. The console-side switch (the plugin's

@@ -1,4 +1,5 @@
 import net from "node:net";
+import { beatWhilePending, progressBeat } from "./progress.js";
 
 /**
  * JSON-lines over TCP client for the gma3_mcp_bridge Lua plugin running inside grandMA3 onPC.
@@ -201,7 +202,11 @@ export class Gma3Bridge {
     const id = String(this.nextId++);
     const payload = JSON.stringify({ id, op, args }) + "\n";
     const timeout = timeoutMs ?? this.opts.requestTimeoutMs ?? 15000;
-    return new Promise<T>((resolve, reject) => {
+    // Progress for the running tool call (src/progress.ts): a beat per request, and every few seconds while it waits.
+    progressBeat();
+    const sentAt = Date.now();
+    const stopBeats = beatWhilePending(() => `waiting for the console (${op}, ${Math.round((Date.now() - sentAt) / 1000)} s)`);
+    const reply = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new BridgeError(`timeout after ${timeout}ms waiting for '${op}'`, op, true));
@@ -216,5 +221,6 @@ export class Gma3Bridge {
         }
       });
     });
+    return reply.finally(stopBeats);
   }
 }

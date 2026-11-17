@@ -23,6 +23,7 @@
  *     last cue is followed by cue 1 only when cue 1 has a trigger too. `Goto Sequence N Cue C` from off starts the
  *     chase at C. CurrentCue keeps naming the last cue after Off; HasActivePlayback turns true a frame after a Go.
  */
+import { progressSteps, type ProgressSteps } from "../progress.js";
 import { z } from "zod";
 import type { Gma3Bridge } from "../bridge.js";
 import {
@@ -664,6 +665,7 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
     },
   ]);
   const steps: StepResult[] = [...inspect.steps];
+  let progress: ProgressSteps | undefined;
   if (inspect.outcome !== "succeeded") return { steps, readBack, warnings, items: reports, sent: false, backInNormal: true, normalProgrammer: "not_entered" };
 
   // 2. Build in Preview.
@@ -709,6 +711,7 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
       }
     } else stopped = true;
 
+    progress = progressSteps(o.items.length);
     for (let i = 0; i < o.items.length && !stopped; i++) {
       const item = o.items[i];
       const report = reports[i];
@@ -791,9 +794,11 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
       report.status = store?.status === "succeeded" ? (bad ? "failed" : "stored") : store?.status === "unknown" ? "unknown" : "failed";
       if (bad) report.error = `${bad.name}: ${bad.error ?? bad.status}`;
       report.verification = o.verify ? worst(lookChecks, "looks") : notRequested();
+      progress.step(`${o.noun} ${i + 1} of ${o.items.length}: ${report.status}`);
       if (bad && (!o.continueAfterFailure || bad.status === "unknown")) stopped = true;
     }
   } finally {
+    progress?.end();
     // Leave Preview whatever happened, once it may have been entered.
     if (entered) {
       let env: string | null | undefined;
