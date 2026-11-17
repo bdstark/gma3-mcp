@@ -38,7 +38,7 @@ import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
 import { presetId, STEP_DEFAULTS, type PresetRead } from "./presets.js";
-import { readLines } from "./recipes.js";
+import { listComplete, readLines } from "./recipes.js";
 import { asRead, buildResult, commandStep, notRequested, stepFromError, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { Validator, finiteNumber, objectName, objectNumber } from "../validate.js";
 
@@ -95,9 +95,9 @@ async function exists(bridge: Gma3Bridge, ref: string, t: number): Promise<boole
   }
 }
 
-async function readPreset(bridge: Gma3Bridge, ref: string, t: number): Promise<PresetRead | null> {
+async function readPreset(bridge: Gma3Bridge, ref: string, t: number, typesFor?: number[]): Promise<PresetRead | null> {
   try {
-    return (await bridge.request("preset.read", { ref }, t)) as PresetRead;
+    return (await bridge.request("preset.read", { ref, ...(typesFor ? { typesFor } : {}) }, t)) as PresetRead;
   } catch (err) {
     if (notFound(err)) return null;
     throw err;
@@ -1027,21 +1027,92 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
         // inside the union of what the later line's step presets hold (a pool proves nothing: pool 4 holds RGB and
         // ColorWheel presets alike). The later line must also have cooked values, and cover every value this line
         // output before the edit. Coverage that cannot be read (a preset missing, empty or read in part) is no proof.
+        // Only what the line's selection holds counts (follow-up #138): a step preset may hold fixtures its group does
+        // not, and the line outputs only the group's fixtures and cells. Both lines' preset coverage is cut to the edited
+        // line's group (read with group.read); when the group cannot be read completely, nothing is cut (conservative).
         const keyOf = (r: { fixture?: unknown; sfIndex?: unknown; attribute?: unknown }) => `${r.fixture}|${r.sfIndex ?? ""}|${r.attribute}`;
-        const coverageCache = new Map<string, Set<string> | null>();
-        const coverage = async (pair: string): Promise<Set<string> | null> => {
+        type Cell = { fixture?: unknown; sfIndex?: unknown; attribute?: unknown; mode?: unknown; fixtureType?: unknown };
+        let selection: Array<{ fixture: string | null; sfIndex: number }> | null = null;
+        try {
+          const g = (await bridge.request("group.read", { ref: `Group ${want!.group}` }, tm)) as { truncated?: boolean; items?: Array<{ fixture?: string | null; sfIndex?: number; unreadable?: boolean }> };
+          const items = g.items ?? [];
+          if (g.truncated !== true && items.length && items.every((x) => !x.unreadable && typeof x.sfIndex === "number")) selection = items.map((x) => ({ fixture: x.fixture ?? null, sfIndex: x.sfIndex! }));
+        } catch {
+          selection = null;
+        }
+        // What a preset row applies to inside the selection depends on its mode (follow-up #140, docs/tools/presets.md):
+        // a selective row to its own fixture or cell, a global row to every selected fixture of its fixture type (it
+        // sits on the lowest FID of that type, which may be outside the group), a universal row to every selected
+        // fixture that has its attribute. Inside the selection each row becomes the members it applies to
+        // (`m:<sfIndex>|<attribute>`). Fixture types come from preset.read's typesFor, in the same form as the rows'
+        // fixtureType ("6 Mega Hex Par"); a member's attributes from fixtureAttributes. A row whose type or attributes
+        // cannot be read stays as itself (`r:<row>`), matched only by the identical row of the other line. Without a
+        // readable selection every row stays as itself.
+        const memberTypes = new Map<number, string>();
+        const memberAttrs = new Map<string, Set<string> | null>();
+        const attrsOf = async (m: { fixture: string | null }): Promise<Set<string> | null> => {
+          if (m.fixture === null) return null;
+          if (memberAttrs.has(m.fixture)) return memberAttrs.get(m.fixture)!;
+          let attrs: Set<string> | null = null;
+          try {
+            const fa = (await bridge.request("fixtureAttributes", { ref: `Fixture ${m.fixture}`, limit: 500 }, tm)) as { total?: number; offset?: number; count?: number; attributes?: Array<{ attribute?: string }> };
+            if (Array.isArray(fa.attributes) && listComplete({ ...fa, items: fa.attributes })) attrs = new Set(fa.attributes.map((x) => String(x.attribute)));
+          } catch {
+            attrs = null;
+          }
+          memberAttrs.set(m.fixture, attrs);
+          return attrs;
+        };
+        type Applied = { fixture?: unknown; sfIndex?: unknown; attribute?: unknown; mode?: unknown; fixtureType?: unknown };
+        const appliesTo = async (r: Applied): Promise<string[]> => {
+          const literal = [`r:${keyOf(r)}`];
+          if (selection === null) return literal;
+          const attr = String(r.attribute);
+          const mode = String(r.mode ?? "selective").toLowerCase();
+          if (mode === "universal") {
+            // Universal data reaches every selected fixture that has the attribute (as gma3_cook_recipes predicts it).
+            const out: string[] = [];
+            for (const m of selection) {
+              const has = await attrsOf(m);
+              if (has === null) return literal;
+              if (has.has(attr)) out.push(`m:${m.sfIndex}|${attr}`);
+            }
+            return out;
+          }
+          if (mode === "global") {
+            if (typeof r.fixtureType !== "string" || r.fixtureType === "") return literal;
+            const out: string[] = [];
+            for (const m of selection) {
+              const t = memberTypes.get(m.sfIndex);
+              if (t === undefined) return literal;
+              if (t === r.fixtureType) out.push(`m:${m.sfIndex}|${attr}`);
+            }
+            return out;
+          }
+          // Selective: by its cell (sfIndex) when it has one, else by its fixture; outside the selection it applies to nothing.
+          return selection.filter((m) => (typeof r.sfIndex === "number" ? m.sfIndex === r.sfIndex : m.fixture !== null && m.fixture === String(r.fixture))).map((m) => `m:${m.sfIndex}|${attr}`);
+        };
+        const appliedKeys = async (cells: Applied[]): Promise<string[]> => {
+          const out: string[] = [];
+          for (const c of cells) out.push(...(await appliesTo(c)));
+          return out;
+        };
+        const coverageCache = new Map<string, Cell[] | null>();
+        const coverage = async (pair: string): Promise<Cell[] | null> => {
           if (coverageCache.has(pair)) return coverageCache.get(pair)!;
-          let keys: Set<string> | null = new Set<string>();
+          let cells: Cell[] | null = [];
           for (const p of pair.split("/")) {
-            const d = await readPreset(bridge, `Preset ${p}`, tm).catch(() => null);
+            const typesFor = selection?.map((m) => m.sfIndex);
+            const d = await readPreset(bridge, `Preset ${p}`, tm, typesFor).catch(() => null);
             if (!d || d.truncated || !d.rows?.length || d.rows.some((r) => !r.attribute)) {
-              keys = null;
+              cells = null;
               break;
             }
-            for (const r of d.rows) keys.add(keyOf(r));
+            for (const [sf, t] of Object.entries(d.types ?? {})) if (typeof t === "string" && t !== "") memberTypes.set(Number(sf), t);
+            cells.push(...d.rows);
           }
-          coverageCache.set(pair, keys);
-          return keys;
+          coverageCache.set(pair, cells);
+          return cells;
         };
         const oldKeys = oldPair ? rowsBefore.filter((r) => rowPairOf(r) === oldPair).map(keyOf) : [];
         const masks = async (l: LineDetail): Promise<boolean> => {
@@ -1053,7 +1124,11 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
           if (!oldKeys.every((key) => cooked.has(key))) return false;
           const mine = await coverage(newPair!);
           const covers = await coverage(pair);
-          return mine !== null && covers !== null && [...mine].every((key) => covers.has(key));
+          if (mine === null || covers === null) return false;
+          const mineIn = await appliedKeys(mine);
+          const coversIn = new Set(await appliedKeys(covers));
+          // Nothing of the edited line's presets inside its selection: no output to mask, so no proof either.
+          return mineIn.length > 0 && mineIn.every((key) => coversIn.has(key));
         };
         let masker: LineDetail | undefined;
         if (!got.length && after) for (const l of after.slice(posAfter + 1)) if (await masks(l)) { masker = l; break; }

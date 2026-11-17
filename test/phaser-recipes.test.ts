@@ -397,7 +397,7 @@ async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boole
   const h = await startHarness(registerPhaserRecipeTools);
   const lines: FLine[] = structuredClone(initial);
   const cmds: string[] = [];
-  const st = { name: "TEST PH EDIT", ignoreAssignPreset: false, assignGroupToLine1: false, dimmerAbsolute: undefined as number | undefined, dimmerAbsoluteAfterCook: undefined as number | undefined, dropDimmerAfterCook: false, dimmerDropped: false, presetRows: {} as Record<string, Array<{ fixture: string; attribute: string; sfIndex?: number }>> };
+  const st = { name: "TEST PH EDIT", ignoreAssignPreset: false, assignGroupToLine1: false, dimmerAbsolute: undefined as number | undefined, dimmerAbsoluteAfterCook: undefined as number | undefined, dropDimmerAfterCook: false, dimmerDropped: false, presetRows: {} as Record<string, Array<{ fixture: string; attribute: string; sfIndex?: number; mode?: string; fixtureType?: string }>>, groups: {} as Record<number, Array<{ fixture: string; sfIndex: number }>>, types: {} as Record<string, string>, typeText: {} as Record<number, string>, attrs: {} as Record<string, string[]> };
   const P = "Preset 21.9005";
   const addr = (cls: string, n: number, pool?: number) => ({ class: cls, index: n, addr: `14.14.1.${cls === "Preset" ? `5.${pool}` : 6}.${n}` });
   h.fake.on("recipe.editState", () => ({ environment: "Normal", editing: o.editing === true, partZeroLines: [], partZero: false, modal: o.modal ? UPDATE : false, lastCommand: "OK" }));
@@ -419,12 +419,27 @@ async function editSetup(initial: FLine[], o: { modal?: boolean; editing?: boole
     }
     throw new BridgeReplyError(`no object found for '${ref}'`);
   });
+  // As on the console: fixtureAttributes names the type ("LED"); preset.read's rows and typesFor use the display text ("6 LED").
+  h.fake.on("fixtureAttributes", (args) => {
+    const fid = String(args.ref).replace(/^Fixture /, "");
+    const attrs = st.attrs[fid];
+    if (!attrs && !st.types[fid]) throw new BridgeReplyError(`no object found for '${args.ref}'`);
+    const list = (attrs ?? []).map((attribute) => ({ attribute }));
+    return { fid, fixtureType: st.types[fid], total: list.length, offset: 0, count: list.length, attributes: list };
+  });
+  h.fake.on("group.read", (args) => {
+    const n = Number(String(args.ref).replace(/^Group /, ""));
+    const members = st.groups[n];
+    if (!members) throw new BridgeReplyError(`no object found for '${args.ref}'`);
+    return { ref: args.ref, count: members.length, items: members.map((m) => ({ fixture: m.fixture, sfIndex: m.sfIndex })) };
+  });
   h.fake.on("preset.read", (args) => {
     const ref = String(args.ref);
     // A step preset's own content (review of #138: masking is judged from it): pool 1 holds Dimmer, pool 4 ColorRGB_R
     // on every fixture of both groups, unless the test sets it.
     const content = st.presetRows[ref] ?? (/^Preset (1\.901[01]|4\.900[01])$/.test(ref) ? ["101", "251", "252"].map((fixture) => ({ fixture, attribute: ref.startsWith("Preset 4.") ? "ColorRGB_R" : "Dimmer" })) : undefined);
-    if (content) return { ref, rows: content.map((r) => ({ ...r, cooked: false, stepCount: 1 })), dependencies: [] };
+    const types = Array.isArray(args.typesFor) ? Object.fromEntries((args.typesFor as number[]).filter((sf) => st.typeText[sf]).map((sf) => [String(sf), st.typeText[sf]])) : undefined;
+    if (content) return { ref, rows: content.map((r) => ({ ...r, cooked: false, stepCount: 1 })), dependencies: [], ...(types ? { types } : {}) };
     if (ref !== P) throw new BridgeReplyError(`no object found for '${ref}'`);
     const out = new Map<string, unknown>();
     lines.forEach((l) => {
@@ -693,6 +708,109 @@ test("edit (review of #138): masking needs the cell too; unreadable step presets
       await h.close();
     }
   }
+});
+
+test("edit (follow-up #138): masking coverage counts only the fixtures the line's group selects", async () => {
+  // Presets hold 101, 251 and 252; Group 9001 is 251 and 252. Line 2 (Dimmer on 251/252 only) masks line 1 on everything
+  // line 1 outputs, though its presets do not hold 101: matched.
+  const sel = [{ fixture: "251", sfIndex: 251 }, { fixture: "252", sfIndex: 252 }];
+  {
+    const { h, st } = await editSetup([fline(9001, "1.9010", "1.9011", 120), fline(9001, "1.9012", "1.9013", 60)]);
+    try {
+      st.groups[9001] = sel;
+      for (const ref of ["Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = ["251", "252"].map((fixture) => ({ fixture, attribute: "Dimmer" }));
+      const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90, detail: true });
+      assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+      assert.ok((result.notes ?? []).some((n: string) => /line 1 cooks no value: line 2 .* masks it/.test(n)), JSON.stringify(result.notes));
+    } finally {
+      await h.close();
+    }
+  }
+  {
+    // The group also holds 101, which line 2's presets do not: not masked.
+    const { h, st } = await editSetup([fline(9001, "1.9010", "1.9011", 120), fline(9001, "1.9012", "1.9013", 60)]);
+    try {
+      st.groups[9001] = [{ fixture: "101", sfIndex: 101 }, ...sel];
+      for (const ref of ["Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = ["251", "252"].map((fixture) => ({ fixture, attribute: "Dimmer" }));
+      const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90 });
+      assert.equal(result.verification.status, "mismatched", JSON.stringify(result.verification));
+      assert.match(result.verification.detail, /no cooked value comes from line 1/);
+    } finally {
+      await h.close();
+    }
+  }
+  {
+    // The group cannot be read: no cut, so the uncovered 101 keeps it a mismatch (as before).
+    const { h, st } = await editSetup([fline(9001, "1.9010", "1.9011", 120), fline(9001, "1.9012", "1.9013", 60)]);
+    try {
+      for (const ref of ["Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = ["251", "252"].map((fixture) => ({ fixture, attribute: "Dimmer" }));
+      const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90 });
+      assert.equal(result.verification.status, "mismatched", JSON.stringify(result.verification));
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("edit (follow-up #140): global preset rows apply by fixture type, universal rows to every selected fixture with the attribute", async () => {
+  const sel = [{ fixture: "251", sfIndex: 251 }, { fixture: "252", sfIndex: 252 }];
+  // Rows and typesFor carry the display text "6 LED"; fixtureAttributes names the type "LED" (review of #140: the two
+  // forms must not be compared with each other).
+  const global = (fixture: string, fixtureType: string) => [{ fixture, attribute: "Dimmer", mode: "global", fixtureType }];
+  const run = async (setPresets: (st: any) => void, lines = [fline(9001, "1.9010", "1.9011", 120), fline(9001, "1.9012", "1.9013", 60)]) => {
+    const { h, st } = await editSetup(lines);
+    try {
+      st.groups[9001] = sel;
+      st.types = { "101": "LED", "251": "LED", "252": "LED" };
+      st.typeText = { 251: "6 LED", 252: "6 LED" };
+      st.attrs = { "251": ["Dimmer", "ColorRGB_R"], "252": ["Dimmer", "ColorRGB_R"] };
+      setPresets(st);
+      const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90 });
+      return result.verification.status;
+    } finally {
+      await h.close();
+    }
+  };
+  // Both lines' presets hold global Dimmer rows on 101 (the lowest FID of the type, outside Group 9001 = 251/252).
+  assert.equal(await run((st) => {
+    for (const ref of ["Preset 1.9010", "Preset 1.9011", "Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = global("101", "6 LED");
+  }), "matched");
+  // The edited line's global row on 101 applies to 251/252; the later line covers them selectively: matched.
+  assert.equal(await run((st) => {
+    for (const ref of ["Preset 1.9010", "Preset 1.9011"]) st.presetRows[ref] = global("101", "6 LED");
+    for (const ref of ["Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = ["251", "252"].map((fixture) => ({ fixture, attribute: "Dimmer" }));
+  }), "matched");
+  // A universal row covers every selected fixture that has the attribute.
+  assert.equal(await run((st) => {
+    for (const ref of ["Preset 1.9010", "Preset 1.9011"]) st.presetRows[ref] = ["251", "252"].map((fixture) => ({ fixture, attribute: "Dimmer" }));
+    for (const ref of ["Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = [{ fixture: "101", attribute: "Dimmer", mode: "universal" }];
+  }), "matched");
+  // The later line's global row is of another type: it covers none of Group 9001.
+  assert.equal(await run((st) => {
+    for (const ref of ["Preset 1.9010", "Preset 1.9011"]) st.presetRows[ref] = global("101", "6 LED");
+    for (const ref of ["Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = global("301", "4 Spot");
+  }), "mismatched");
+  // A member's type cannot be read: the global row stays as itself and the selective cover does not match it.
+  assert.equal(await run((st) => {
+    st.typeText = { 251: "6 LED" };
+    for (const ref of ["Preset 1.9010", "Preset 1.9011"]) st.presetRows[ref] = global("101", "6 LED");
+    for (const ref of ["Preset 1.9012", "Preset 1.9013"]) st.presetRows[ref] = ["251", "252"].map((fixture) => ({ fixture, attribute: "Dimmer" }));
+  }), "mismatched");
+  // Group 9001: 251 has RGB, 252 is dimmer-only. The edited line's universal ColorRGB_R (held on 251) reaches only 251,
+  // which the later line covers selectively: matched.
+  const rgb = [fline(9001, "4.9002", "4.9003", 120), fline(9001, "4.9004", "4.9005", 60)];
+  assert.equal(await run((st) => {
+    st.attrs = { "251": ["Dimmer", "ColorRGB_R"], "252": ["Dimmer"] };
+    for (const ref of ["Preset 4.9002", "Preset 4.9003"]) st.presetRows[ref] = [{ fixture: "251", attribute: "ColorRGB_R", mode: "universal" }];
+    for (const ref of ["Preset 4.9004", "Preset 4.9005"]) st.presetRows[ref] = [{ fixture: "251", attribute: "ColorRGB_R" }];
+  }, rgb), "matched");
+  // The same with 252's attributes unreadable: the universal row stays as itself, no proof.
+  assert.equal(await run((st) => {
+    st.attrs = { "251": ["Dimmer", "ColorRGB_R"] };
+    st.types = {};
+    for (const ref of ["Preset 4.9002", "Preset 4.9003"]) st.presetRows[ref] = [{ fixture: "251", attribute: "ColorRGB_R", mode: "universal" }];
+    for (const ref of ["Preset 4.9004", "Preset 4.9005"]) st.presetRows[ref] = [{ fixture: "251", attribute: "ColorRGB_R" }];
+  }, rgb), "mismatched");
 });
 
 test("edit: a step preset the console did not take, or another line changed, is a mismatch", async () => {
