@@ -37,7 +37,7 @@
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
-import { presetId, type PresetRead } from "./presets.js";
+import { presetId, STEP_DEFAULTS, type PresetRead } from "./presets.js";
 import { readLines } from "./recipes.js";
 import { asRead, buildResult, commandStep, notRequested, stepFromError, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { Validator, finiteNumber, objectName, objectNumber } from "../validate.js";
@@ -287,8 +287,19 @@ export async function createPhaserRecipe(ctx: ToolContext, raw: CreateArgs): Pro
       (await read("read_store_preferences", async () => {
         const c = (await bridge.request("preset.context", {}, tm)) as { preferencesReadable?: boolean; preferences?: Record<string, unknown> };
         if (!c.preferencesReadable) return "the store preferences cannot be read";
-        const m = String(c.preferences?.RecipeStoreMode ?? "");
-        return m === "Normal" ? null : `the store preference RecipeStoreMode is ${JSON.stringify(m)}, not Normal`;
+        const pref = (k: string) => String(c.preferences?.[k] ?? "").trim();
+        const m = pref("RecipeStoreMode");
+        if (m !== "Normal") return `the store preference RecipeStoreMode is ${JSON.stringify(m)}, not Normal`;
+        // The first Store into the free slot must create an empty preset, and the /Merge store must take only the line
+        // from the programmer: playback output (StoreSource Output), inactive values (ChannelFilter All) or open dimmers
+        // (StoreLook) would be stored as uncooked data (probe SB-03, docs/probes/sb-03-presets-macos-2.5.1.md).
+        const src = pref("StoreSource");
+        if (src !== "Programmer") return `the store preference StoreSource is ${JSON.stringify(src)}, not Programmer: the store would take values from elsewhere. Ask the operator to set it to Programmer`;
+        const filter = pref("ChannelFilter");
+        if (!filter || /^all/i.test(filter)) return `the store preference ChannelFilter is ${JSON.stringify(filter)}: the store would take inactive programmer values too. Ask the operator to set it to Active`;
+        const look = pref("StoreLook").toLowerCase();
+        if (look !== "no" && look !== "off") return `the store preference StoreLook is ${JSON.stringify(pref("StoreLook"))}: the store would take every fixture with an open dimmer, and no store option turns Look off. Ask the operator to set Look off`;
+        return null;
       }, "preset.context"));
     if (!ok) return fail(`${op} was not performed; nothing was sent: ${steps_.find((s) => s.status !== "succeeded")?.error ?? "a check failed"}`);
     if (preview) return buildResult({ operation: op, target: tgt, steps: steps_, summary: "Preview only; nothing was sent.", ...(advice.length ? { warnings: advice } : {}), extra: { plan, preview: true } });
@@ -509,7 +520,9 @@ export async function createPhaserRecipe(ctx: ToolContext, raw: CreateArgs): Pro
           const off = mine.filter((r) => {
             const own = r.steps?.[n];
             const next = r.steps?.[(n + 1) % 2];
-            return !near(own?.decel, c.decel) || !near(next?.accel, c.nextAccel) || ("trans" in c && !near(own?.trans, c.trans));
+            // preset.read leaves out a layer at its default (accel and decel 0, trans 100): read it as that default.
+            if (!own || !next) return true;
+            return !near(own.decel ?? STEP_DEFAULTS.decel, c.decel) || !near(next.accel ?? STEP_DEFAULTS.accel, c.nextAccel) || ("trans" in c && !near(own.trans ?? STEP_DEFAULTS.trans, c.trans));
           });
           if (off.length) problems.push(`line ${k} step ${n + 1}: ${off.length} value(s) do not have the ${c.console} curve (first: fixture ${off[0].fixture} ${off[0].attribute})`);
         });
@@ -970,6 +983,7 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
     // ---- Read back: the edited line as asked, every other line and its cooked values unchanged.
     let verification: Verification = notRequested();
     let after: LineDetail[] | null = null;
+    let maskedNote: string | undefined;
     try {
       after = (await readLineDetails(bridge, ref, tm)) ?? [];
       const data = await readPreset(bridge, ref, tm);
@@ -1005,7 +1019,46 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
       }
       if (newPair && want) {
         const got = rows.filter((r) => rowPairOf(r) === newPair);
-        if (!got.length) problems.push(`no cooked value comes from line ${k} (Preset ${newPair.replace("/", " / Preset ")})`);
+        // A later line on the same group masks this line's cooked values (the later line wins on each fixture and
+        // attribute both output): then no cooked value from this line is expected; its definition is still checked.
+        const posAfter = action === "remove_line" ? -1 : k - 1;
+        // A later line masks this one only where it outputs every fixture, cell and attribute this line would (review of
+        // #138). That is read from the step presets themselves: the union of what this line's 2 step presets hold must be
+        // inside the union of what the later line's step presets hold (a pool proves nothing: pool 4 holds RGB and
+        // ColorWheel presets alike). The later line must also have cooked values, and cover every value this line
+        // output before the edit. Coverage that cannot be read (a preset missing, empty or read in part) is no proof.
+        const keyOf = (r: { fixture?: unknown; sfIndex?: unknown; attribute?: unknown }) => `${r.fixture}|${r.sfIndex ?? ""}|${r.attribute}`;
+        const coverageCache = new Map<string, Set<string> | null>();
+        const coverage = async (pair: string): Promise<Set<string> | null> => {
+          if (coverageCache.has(pair)) return coverageCache.get(pair)!;
+          let keys: Set<string> | null = new Set<string>();
+          for (const p of pair.split("/")) {
+            const d = await readPreset(bridge, `Preset ${p}`, tm).catch(() => null);
+            if (!d || d.truncated || !d.rows?.length || d.rows.some((r) => !r.attribute)) {
+              keys = null;
+              break;
+            }
+            for (const r of d.rows) keys.add(keyOf(r));
+          }
+          coverageCache.set(pair, keys);
+          return keys;
+        };
+        const oldKeys = oldPair ? rowsBefore.filter((r) => rowPairOf(r) === oldPair).map(keyOf) : [];
+        const masks = async (l: LineDetail): Promise<boolean> => {
+          const pair = stepPair(l);
+          if (l.group === null || l.group !== want!.group || pair === null) return false;
+          const theirs = rows.filter((r) => rowPairOf(r) === pair);
+          if (!theirs.length) return false;
+          const cooked = new Set(theirs.map(keyOf));
+          if (!oldKeys.every((key) => cooked.has(key))) return false;
+          const mine = await coverage(newPair!);
+          const covers = await coverage(pair);
+          return mine !== null && covers !== null && [...mine].every((key) => covers.has(key));
+        };
+        let masker: LineDetail | undefined;
+        if (!got.length && after) for (const l of after.slice(posAfter + 1)) if (await masks(l)) { masker = l; break; }
+        if (masker) maskedNote = `line ${k} cooks no value: line ${masker.line} on the same group (Group ${want!.group}) masks it; its definition was checked`;
+        else if (!got.length) problems.push(`no cooked value comes from line ${k} (Preset ${newPair.replace("/", " / Preset ")})`);
         else if (want.speedHz !== undefined && !shared(newPair)) {
           const off = got.filter((r) => typeof r.speed !== "number" || Math.abs(r.speed - want!.speedHz!) > 0.001);
           if (off.length) problems.push(`line ${k}: ${off.length} cooked value(s) do not run at ${+(want.speedHz * 60).toFixed(3)} BPM`);
@@ -1021,7 +1074,7 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
     const warnings: string[] = [];
     if (notDone.length) warnings.push(`not done as asked: ${notDone.join(", ")} (nothing was undone)`);
     if (want && action === "set" && change.shape !== undefined) warnings.push("a new shape recomputes the curves of steps without a custom curve; a custom curve stays (give curve: reset to go back to the shape's)");
-    const notes = [`cues that call ${ref} with a standard line follow the change without being re-cooked${referencedBy ? ` (${referencedBy} object(s) reference it)` : ""}; a cue line with its own Speed X keeps that speed`];
+    const notes = [`cues that call ${ref} with a standard line follow the change without being re-cooked${referencedBy ? ` (${referencedBy} object(s) reference it)` : ""}; a cue line with its own Speed X keeps that speed`, ...(maskedNote ? [maskedNote] : [])];
     return buildResult({ operation: op, target: tgt, steps: steps_, verification, ...(warnings.length ? { warnings } : {}), extra: { plan, notes, before: action === "add_line" ? null : before[k - 1] ?? null, lines: after } });
   };
   return preview ? body() : ctx.mutations.run(body);

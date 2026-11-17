@@ -231,8 +231,10 @@ writes its own DECEL and the next step's ACCEL:
 The read-back checks those values in the cooked steps.
 
 1. Checks, nothing sent otherwise: the slot is free; group, shape, step presets and MAtricks exist; the mode is off,
-   Part Zero empty, no dialog open (`recipe.editState`); the programmer read completely and empty; RecipeStoreMode
-   is Normal.
+   Part Zero empty, no dialog open (`recipe.editState`); the programmer read completely and empty; the store
+   preferences RecipeStoreMode Normal, StoreSource Programmer, ChannelFilter not All / All For Selected and StoreLook
+   off. With StoreSource Output, ChannelFilter All or StoreLook on, the empty store and the `/Merge` store would take
+   playback output, inactive values or open dimmers as uncooked data (probe SB-03).
 2. `Store Preset P.N /NoConfirmation` with the empty programmer: creates the preset and **clears the pending Edit
    Recipe target**. A store made in Edit Recipe mode leaves its target pending, and the next `EditRecipe <other
    target>` opens "Update last object?" (OK overwrites that pending target with the programmer; an empty programmer
@@ -254,7 +256,8 @@ The read-back checks those values in the cooked steps.
    - every value cooked and integrating, in order, the 2 step presets of one line, each line with at least one value,
      and nothing uncooked;
    - the cooked speed of each line's values is its `speed_bpm` / 60 Hz (the phase is spread per fixture by the
-     MAtricks: only its set reply is compared), and each curve's DECEL / ACCEL / TRANS in the cooked steps;
+     MAtricks: only its set reply is compared), and each curve's DECEL / ACCEL / TRANS in the cooked steps (a layer
+     `preset.read` leaves out is at its default: ACCEL and DECEL 0, TRANS 100);
    - the mode off, Part Zero and the programmer empty.
 
 A failure before the store switches the mode off, clears the programmer and deletes the preset the call created (its
@@ -298,7 +301,12 @@ Read back:
 - every line as expected: group, MAtricks, shape, speed (SPEEDX raw, in Hz), phase, step presets, and each step's
   ACCEL / DECEL / TRANS where they are known. After a new shape or a reset they are the shape's and are not compared;
 - the edited line's cooked values come from its 2 step presets at its speed, and no value is left from its old step
-  presets;
+  presets. When the edited line has no cooked value, a later line on the same group masks it only if that line has
+  cooked values covering every value the edited line output before the edit, and its 2 step presets hold every
+  fixture, cell and attribute the edited line's step presets hold (read with `preset.read`; a pool proves nothing,
+  since pool 4 holds RGB and ColorWheel presets alike). Then no cooked value is expected from the edited line (a note
+  says so) and its definition is still checked. A step preset that is missing, empty or read in part proves no
+  coverage: the edit is then a mismatch;
 - every other cooked value unchanged, and nothing uncooked added. Each value is matched by fixture, cell, attribute
   and step presets, and compared field by field: value and relative value, every step's absolute, relative, accel,
   decel, transition, width and preset, speed, phase, measure, speed master, fade, delay and preset references
