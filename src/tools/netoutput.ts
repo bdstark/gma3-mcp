@@ -147,7 +147,12 @@ async function collectWindow(
   const wanted = universes?.length ? new Set(universes) : undefined;
   // Merge participants are the sources live at that moment (a packet within SOURCE_TIMEOUT_MS), not only those that
   // happened to send during the window: a keep-alive source between two packets still holds its universe.
-  const liveAt = (t: number) => listener.allSources(t).filter((s) => t - s.lastSeen <= SOURCE_TIMEOUT_MS[s.protocol] && (!wanted || wanted.has(s.universe)));
+  // A source's frame takes part in the merge only while it is live. A source whose live frame expired but whose
+  // preview packets are recent is still reported (diagnostics), never merged: no values, not contributing.
+  const frameLive = (s: SourceState, t: number) => t - s.lastSeen <= SOURCE_TIMEOUT_MS[s.protocol];
+  const previewLive = (s: SourceState, t: number) => !!s.preview && t - s.preview.lastSeen <= SOURCE_TIMEOUT_MS[s.protocol];
+  const liveAt = (t: number) => listener.allSources(t).filter((s) => (frameLive(s, t) || previewLive(s, t)) && (!wanted || wanted.has(s.universe)));
+  const mergeAt = (srcs: SourceState[], t: number) => mergeSources(srcs.filter((s) => frameLive(s, t)));
 
   const start = Date.now();
   // Keyed by the cached source object itself: a source that expired or was evicted and resumed during the window is a
@@ -160,7 +165,8 @@ async function collectWindow(
     if (wait > 0) await sleep(wait);
     if (samples > 1) {
       const values: Record<string, Record<string, number>> = {};
-      for (const [, srcs] of groupByUniverse(liveAt(Date.now()))) values[universeLabel(srcs[0].protocol, srcs[0].universe)] = pickValues(mergeSources(srcs).data, channels);
+      const t = Date.now();
+      for (const [, srcs] of groupByUniverse(liveAt(t))) values[universeLabel(srcs[0].protocol, srcs[0].universe)] = pickValues(mergeAt(srcs, t).data, channels);
       sampled.push({ t_ms: Date.now() - start, values });
     }
   }
@@ -169,7 +175,7 @@ async function collectWindow(
 
   const seen = liveAt(now);
   const rows = [...groupByUniverse(seen).values()].map((srcs) => {
-    const m = mergeSources(srcs);
+    const m = mergeAt(srcs, now);
     const fpsOf = (s: SourceState) => Math.round(((s.packets - (baseline.get(s) ?? 0)) / elapsed) * 10000) / 10;
     const nonzero = m.data.reduce((n, x) => n + (x ? 1 : 0), 0);
     const p = srcs[0].protocol;
@@ -194,6 +200,7 @@ async function collectWindow(
         ...(s.frame.preview ? { preview: true } : {}),
         ...(s.frame.terminated ? { terminated: true } : {}),
         last_seen_ms_ago: now - s.lastSeen,
+        ...(!frameLive(s, now) ? { live_frame_expired: true } : {}),
         ...(s.preview ? { preview_stream: { packets: s.preview.packets, last_seen_ms_ago: now - s.preview.lastSeen } } : {}),
       })),
       values: pickValues(m.data, channels),

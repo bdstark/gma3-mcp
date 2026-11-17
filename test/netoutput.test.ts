@@ -545,3 +545,32 @@ test("follow-up: a source that expires or is evicted and resumes within one wind
     m.close();
   }
 });
+
+test("follow-up: a source whose live frame expired but whose preview packets are recent is reported, never merged", async () => {
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  try {
+    await l.ensure();
+    const rinfo = { address: "10.0.0.1", port: 5568 };
+    const t0 = Date.now() - 3000; // live at t0, preview at t0 + 2 s, read at t0 + 3 s (sACN timeout 2.5 s)
+    l.ingest("sacn", sacnPacket({ universe: 4, cid: 1, data: [200, 0], sequence: 10 }), rinfo, t0);
+    l.ingest("sacn", sacnPacket({ universe: 4, cid: 1, data: [5, 5], sequence: 11, options: 0x80 }), rinfo, t0 + 2000);
+    const r = (await collectNetworkOutput(l, { universes: [4], listen_ms: 200, samples: 2, channels: "1-2" })).result as {
+      universes: Array<{ universe: number; values: Record<string, number>; nonzero: number; fps: number; priority?: number; merge: string; sources: Array<{ live_frame_expired?: boolean; preview_stream?: { packets: number } }> }>;
+      hints?: string[];
+      samples: Array<{ values: Record<string, Record<string, number>> }>;
+    };
+    const u = r.universes.find((x) => x.universe === 4);
+    assert.ok(u, `the universe is reported: ${JSON.stringify(r)}`);
+    assert.deepEqual(u.values, {}, "no merged values: the live frame expired and preview never merges");
+    assert.equal(u.nonzero, 0);
+    assert.equal(u.fps, 0);
+    assert.equal(u.priority, undefined);
+    assert.match(u.merge, /no active stream/);
+    assert.equal(u.sources[0].live_frame_expired, true);
+    assert.equal(u.sources[0].preview_stream?.packets, 1);
+    assert.equal(r.hints, undefined, "not a nothing-received case");
+    assert.ok(r.samples.every((s) => JSON.stringify(s.values["sACN 4"]) === "{}"), JSON.stringify(r.samples));
+  } finally {
+    l.close();
+  }
+});

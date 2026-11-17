@@ -70,7 +70,8 @@ The hints cover the usual causes:
   next frame is accepted whatever its sequence.
 - sACN preview packets (E1.31 6.2.6) never replace a source's live frame while that frame is within its liveness
   timeout: they are kept apart as `preview_stream` diagnostics, and the live values and liveness stay. A source
-  whose live frame has expired and that sends only preview data has no merged values.
+  whose live frame has expired but whose preview packets are recent is still reported (`live_frame_expired`,
+  `preview_stream`), with no merged values and no "nothing received" hint.
 - Sources not heard within their liveness timeout are dropped from the cache on every packet and every call, not
   only when the listener closes. The cache holds at most 2,048 sources; past that the least recently heard one is
   evicted first, reported as `evicted_sources`.
