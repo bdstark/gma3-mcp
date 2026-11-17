@@ -390,6 +390,40 @@ test("store_cues: three cues built in Preview, each from its looks, named, timed
   }
 });
 
+test("store_cues: a 530-fixture look over the one-command bound is built in parts, each selected, valued and checked", async () => {
+  const { h, c } = await setup();
+  try {
+    // Odd 5-digit ids, so no run collapses into a range: 4,245 characters, over the 4,096 one command may hold.
+    const ids = Array.from({ length: 530 }, (_, i) => String(10001 + 2 * i));
+    for (const id of ids) c.fixtures[id] = ["Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"];
+    const { result, isError } = await h.callJson("gma3_store_cues", {
+      sequence: 981, mode: "create", exclusive: true, detail: true,
+      cues: [{ cue: 1, fixtures: ids.join(" + "), presets: [{ pool: 4, preset: 1 }], intensity: 70 }],
+    });
+    assert.equal(isError, false, JSON.stringify(result, null, 2));
+    assert.equal(result.verification.status, "matched");
+    const stored = c.seqs.get(981)!.cues[0].data;
+    assert.equal(Object.keys(stored).length, 530, "every fixture is in the cue");
+    for (const id of ids) assert.deepEqual(stored[id], { ColorRGB_R: 100, ColorRGB_G: 0, ColorRGB_B: 0, Dimmer: 70 }, `fixture ${id}`);
+    const selects = c.commands.filter((cmd) => cmd.startsWith("[P] Fixture "));
+    assert.equal(selects.length, 2);
+    for (const cmd of selects) {
+      const selection = cmd.slice(4);
+      assert(selection.length <= 4096, `${selection.length} characters`);
+      const at = c.commands.indexOf(cmd);
+      assert.deepEqual(c.commands.slice(at - 1, at + 3), ["[P] ClearSelection", cmd, "[P] At Preset 4.1", "[P] At 70"], "each part gets its own ClearSelection and the look's whole content");
+    }
+    assert.deepEqual(selects.flatMap((cmd) => cmd.slice("[P] Fixture ".length).split(" + ")), ids, "the parts select every fixture once, in order");
+    assert.deepEqual(result.cues[0].looks.map((l: any) => [l.selectionPart, l.verification]), ["1/2", "2/2"].map((part) => [part, "matched"]), "each part is reported and checked");
+    const storeAt = c.commands.indexOf("[P] Store Sequence 981 Cue 1 /NoConfirmation");
+    assert(storeAt > c.commands.indexOf(selects[1]), "one store, after the last part");
+    assert.equal(c.commands.filter((cmd) => cmd.startsWith("[P] Store Sequence 981")).length, 1);
+    normalUntouched(c);
+  } finally {
+    await h.close();
+  }
+});
+
 test("store_cues: a trigger time from a minute up reads back in the console's form (\"1m04.00\") and matches (#103)", async () => {
   const { h, c } = await setup();
   try {

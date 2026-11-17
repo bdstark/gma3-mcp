@@ -66,6 +66,7 @@ import { SEQUENCE_SETTINGS, configureSequence, findReferences, settingValue, typ
 import { HeldLock } from "../mutations.js";
 import { VarTracker, variablePresence, variableRefs } from "./variables.js";
 import { dataPoolShape, inDataPool } from "./datapool.js";
+import { compactSelection, splitSelection } from "../selection-batches.js";
 
 export const MAX_CUES = 100;
 export const MAX_LOOKS = 16;
@@ -98,6 +99,8 @@ export interface LookSpec {
   values: ValueSpec[];
   /** SU-14: a phaser built on the look's fixtures (steps and phaser layers, as gma3_build_phaser takes them). */
   phaser?: Effect;
+  /** Set when one look's selection was over the one-command bound and was split: this is part `index` of `of`. */
+  selectionPart?: { index: number; of: number };
 }
 export interface CueSpec {
   cue: string;
@@ -236,15 +239,28 @@ export function validateLooks(v: Validator, raw: Record<string, unknown>, path: 
       return [];
     }
     if (raw.looks.length > MAX_LOOKS) v.fail(`${path}: at most ${MAX_LOOKS} looks per cue`);
-    return raw.looks.slice(0, MAX_LOOKS).flatMap((l, i) => validateLook(v, l, `${path}.looks[${i}]`, defaultFixtures) ?? []);
+    return raw.looks.slice(0, MAX_LOOKS).flatMap((l, i) => splitLook(validateLook(v, l, `${path}.looks[${i}]`, defaultFixtures)));
   }
   if (!shorthand) {
     if (allowEmpty) return [];
     v.fail(`${path}: give its content (presets, intensity, values, phaser or looks), or a command`);
     return [];
   }
-  const look = validateLook(v, raw, path, defaultFixtures);
-  return look ? [look] : [];
+  return splitLook(validateLook(v, raw, path, defaultFixtures));
+}
+
+/**
+ * A look whose selection is over the bound for one grandMA3 command becomes one look per part of it
+ * (selection-batches.ts). Each part is built like any other look (ClearSelection, select, presets, values, releases,
+ * read-back), so every fixture still gets every value and every check; consecutive select commands are never relied on
+ * to add up. A phaser spreads across its whole selection, so a phaser look keeps one (compact) selection command, as
+ * before. Callers that take a single look must take every part (gma3_edit_cue_values does).
+ */
+function splitLook(look: LookSpec | undefined): LookSpec[] {
+  if (!look) return [];
+  const parts = look.phaser ? [compactSelection(look.fixtures)] : splitSelection(look.fixtures);
+  if (parts.length === 1) return [{ ...look, fixtures: parts[0] }];
+  return parts.map((fixtures, i) => ({ ...look, fixtures, selectionPart: { index: i + 1, of: parts.length } }));
 }
 
 /**
@@ -376,7 +392,7 @@ interface CueReport {
   /** The cue's look check (before the store) and property read-back (after), combined. */
   verification: Verification;
   name?: string | null;
-  looks?: Array<{ fixtures: string; presets: string[]; verification: string; detail?: string }>;
+  looks?: Array<{ fixtures: string; presets: string[]; verification: string; detail?: string; selectionPart?: string }>;
   error?: string;
 }
 
@@ -501,7 +517,7 @@ export interface PreviewItemReport {
   status: PreviewItemStatus;
   /** The look checks in the programmer before the store (not_requested without verify). */
   verification: Verification;
-  looks?: Array<{ fixtures: string; presets: string[]; verification: string; detail?: string }>;
+  looks?: Array<{ fixtures: string; presets: string[]; verification: string; detail?: string; selectionPart?: string }>;
   error?: string;
   /** This item's steps (looks, store), in order. */
   steps: StepResult[];
@@ -690,10 +706,12 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
         plan.push({ name: `${pre}clear`, run: () => commandStep(bridge, `${pre}clear`, "ClearAll", t) });
       }
       item.looks.forEach((look, j) => {
-        const lp = `${pre}look ${j + 1} `;
+        // The look's number as given: the parts of a split look share it.
+        const shown = item.looks.slice(0, j + 1).filter((l) => (l.selectionPart?.index ?? 1) === 1).length;
+        const lp = `${pre}look ${shown}${look.selectionPart ? ` (selection part ${look.selectionPart.index}/${look.selectionPart.of})` : ""} `;
         plan.push({ name: `${lp}clear_selection`, run: () => commandStep(bridge, `${lp}clear_selection`, "ClearSelection", t) });
         plan.push({ name: `${lp}select`, run: () => commandStep(bridge, `${lp}select`, look.fixtures, t) });
-        const entry: NonNullable<PreviewItemReport["looks"]>[number] = { fixtures: look.fixtures, presets: look.presets.map((p) => p.ref), verification: o.verify ? "matched" : "not_requested" };
+        const entry: NonNullable<PreviewItemReport["looks"]>[number] = { fixtures: look.fixtures, presets: look.presets.map((p) => p.ref), verification: o.verify ? "matched" : "not_requested", ...(look.selectionPart ? { selectionPart: `${look.selectionPart.index}/${look.selectionPart.of}` } : {}) };
         report.looks!.push(entry);
         const parts: Verification[] = [];
         // A check right after the command it verifies: a later preset in the same look may take over an earlier one's
@@ -704,7 +722,7 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
             const v = await verifyIt();
             parts.push(v);
             lookChecks.push(v);
-            const all = worst(parts, `look ${j + 1} on ${look.fixtures} in the programmer`);
+            const all = worst(parts, `look ${shown}${look.selectionPart ? ` part ${look.selectionPart.index}/${look.selectionPart.of}` : ""} on ${look.fixtures} in the programmer`);
             entry.verification = all.status;
             if (all.detail) entry.detail = all.detail;
             if (v.status === "mismatched") return { name, kind: "read", status: "failed", op: "programmer", error: `${what} did not apply, so ${pre.replace(/: $/, "")} was not stored: ${v.detail}` };

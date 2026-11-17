@@ -23,6 +23,7 @@ import { json, type RegisterTools, type ToolContext } from "./context.js";
 import type { ToolResult } from "../results.js";
 import { Validator, ValidationError, cueNumber, describe, finiteNumber, objectNumber, oneOf, partNumber, safeRef } from "../validate.js";
 import { explainUniverses } from "./dmxoutput.js";
+import { compactSelection } from "../selection-batches.js";
 
 // ---------------------------------------------------------------------------
 // Local helpers
@@ -163,7 +164,7 @@ export function fixtureRange(field: string, value: unknown): string {
   if (!/\d/.test(v)) throw new ValidationError(`${field} must name at least one fixture ID`, field);
   const body = v.replace(/^Fixture\s+/i, "");
   if (/\bFixture\b/i.test(body)) throw new ValidationError(`${field} may use the Fixture keyword only once, at the start`, field);
-  return `Fixture ${body}`;
+  return compactSelection(`Fixture ${body}`);
 }
 
 function pageShape(defaultLimit: number, maxLimit: number) {
