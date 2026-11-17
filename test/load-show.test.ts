@@ -336,6 +336,28 @@ test("review: one silent read while the old bridge lives is not a load; reloadin
   assert.match(same.result.verification.detail, /the bridge that was running before still answers/);
 });
 
+test("review of #133: an old-bridge answer during a slow load does not stop the restart once the load unloads it", async () => {
+  const queue = h.fake.handlerFor("show.load")!;
+  h.fake.on("show.load", (args, req) => {
+    const r = queue(args, req);
+    con.stallReads = 2; // two silent reads: the tool sees the bridge as gone, but the load has not run yet
+    return r;
+  });
+  const ping = h.fake.handlerFor("ping")!;
+  h.fake.on("ping", (args, req) => {
+    const r = ping(args, req);
+    // The old bridge answers once more after it looked gone, then the slow load unloads it.
+    if (con.pendingLoad && con.stallReads === 0 && con.running) con.load(con.pendingLoad);
+    return r;
+  });
+  const r = await h.callJson("gma3_load_show", { name: "Other", exclusive: true, timeout_ms: 5000 });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.result.verification.status, "matched");
+  assert.ok(r.result.restart.oldBridgeAnswers >= 1, JSON.stringify(r.result.restart));
+  assert.ok(r.result.restart.sends >= 1, "the start command was sent once the old bridge was silent");
+  assert.deepEqual(con.loads, ["Other"]);
+});
+
 test("review: the answered question still visible for a moment is not a foreign dialog", async () => {
   con.unsavedChanges = true;
   con.pressReplies = true;

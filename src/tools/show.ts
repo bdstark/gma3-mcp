@@ -501,6 +501,9 @@ export async function loadShow(ctx: ToolContext, raw: Record<string, unknown>): 
     let sendErrors = 0;
     let sendError: string | undefined;
     let oldAnswers = 0;
+    // Whether the latest probe was answered by the bridge that was running before. The start command is sent only while
+    // that one is silent: once it stops answering (a slow load unloads it late), sending resumes (review of #133).
+    let oldAnsweredLast = false;
     ctx.bridge.close();
     await sleep(LOAD_TIMING.settleMs);
     while (Date.now() - t0 < timeoutMs) {
@@ -511,10 +514,12 @@ export async function loadShow(ctx: ToolContext, raw: Record<string, unknown>): 
           break;
         }
         oldAnswers++;
+        oldAnsweredLast = true;
       } catch {
         ctx.bridge.close();
+        oldAnsweredLast = false;
       }
-      if (sender && oldAnswers === 0) {
+      if (sender && !oldAnsweredLast) {
         try {
           await sender.sendCommand(startCommand);
           sends++;
@@ -532,7 +537,7 @@ export async function loadShow(ctx: ToolContext, raw: Record<string, unknown>): 
     if (!ping) {
       steps.push({ name: "bridge_restart", status: "unknown", error: `no new bridge answered within ${timeoutMs} ms`, detail: restartDetail });
       const why =
-        oldAnswers > 0
+        oldAnsweredLast
           ? "the bridge that was running before still answers: the load may not have happened"
           : via === "none"
             ? "nothing was sent to start it (restart: none)"
