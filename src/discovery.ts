@@ -25,7 +25,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "recipes, many cues per call", tools: ["gma3_recipes", "gma3_edit_recipe", "gma3_store_recipe_cues", "gma3_cook_recipes"] },
   { task: "macros and their dialogs", tools: ["gma3_store_macro", "gma3_edit_macro_line", "gma3_run_macro", "gma3_macros", "gma3_dialog"] },
   { task: "console variables ($name in macros and cue commands)", tools: ["gma3_variables", "gma3_set_variable"] },
-  { task: "tags: tag sequences, groups, macros and cues, kill types, which objects carry a tag", tools: ["gma3_tags", "gma3_assign_tag", "gma3_store_tag", "gma3_delete_tag", "gma3_configure_tag", "gma3_playback"] },
+  { task: "tags: tagging objects, kill types, which objects carry a tag", tools: ["gma3_tags", "gma3_assign_tag", "gma3_store_tag", "gma3_delete_tag", "gma3_configure_tag", "gma3_playback"] },
   { task: "timecode shows", tools: ["gma3_build_timecode", "gma3_timecode_transport", "gma3_timecodes"] },
   { task: "DMX output: universes, grants, Art-Net, sACN (why output is missing)", tools: ["gma3_dmx_output", "gma3_configure_dmx_output", "gma3_dmx", "gma3_fixture_output", "gma3_network_output"] },
   { task: "OSC input and output", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
