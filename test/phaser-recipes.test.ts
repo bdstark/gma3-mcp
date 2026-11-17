@@ -12,7 +12,7 @@ import { registerPhaserRecipeTools, numberMatches } from "../src/tools/phaserrec
  */
 const UPDATE = { class: "MessageBox", name: "MsgBox", title: "Update last object?", text: "FeatureGroup 1 'Dimmer'.Preset 9006 'TEST PH'", buttons: [{ text: "OK", enabled: true }, { text: "Cancel", enabled: true }] };
 
-async function setup(o: { pending?: boolean; programmer?: number; shapeFails?: boolean; slotTaken?: boolean } = {}) {
+async function setup(o: { pending?: boolean; programmer?: number; shapeFails?: boolean; slotTaken?: boolean; prefs?: Record<string, string> } = {}) {
   const h = await startHarness(registerPhaserRecipeTools);
   const c = { editing: false, pz: [] as Array<{ index: number; class: string; name: string }>, modal: false as false | typeof UPDATE, preset: o.slotTaken === true, lines: 0, values: o.programmer ?? 0, pending: o.pending === true, name: "", speed: "60.00" };
   const cmds: string[] = [];
@@ -56,7 +56,7 @@ async function setup(o: { pending?: boolean; programmer?: number; shapeFails?: b
     return { clicked: args.button };
   });
   h.fake.on("programmer", () => ({ environment: "Normal", total: c.values, count: 0, coverage: { complete: true }, rows: [] }));
-  h.fake.on("preset.context", () => ({ preferencesReadable: true, preferences: { RecipeStoreMode: "Normal" } }));
+  h.fake.on("preset.context", () => ({ preferencesReadable: true, preferences: { RecipeStoreMode: "Normal", StoreSource: "Programmer", ChannelFilter: "Active", StoreLook: "No", ...o.prefs } }));
   h.fake.on("objects", (args) => {
     const known = ["Group 9000", "Shape 1", "MAtricks 9000"].includes(String(args.ref));
     return { total: known ? 1 : 0, items: known ? [{ name: "x" }] : [], offset: 0, count: known ? 1 : 0 };
@@ -98,7 +98,7 @@ test("create: empty store first, the build one command at a time, mode off, Clea
   }
 });
 
-test("create: refused before anything is sent (programmer not empty, slot taken, wrong pool, 3 steps, no exclusive)", async () => {
+test("create: refused before anything is sent (programmer not empty, slot taken, wrong pool, 3 steps, no exclusive, store preferences)", async () => {
   for (const [opts, args, re] of [
     [{ programmer: 4 }, ARGS, /programmer holds 4 value/],
     [{ slotTaken: true }, ARGS, /Preset 1\.9010 exists/],
@@ -106,8 +106,13 @@ test("create: refused before anything is sent (programmer not empty, slot taken,
     [{}, { ...ARGS, steps: [{ preset: "1.9001" }, { preset: "1.9000" }, { preset: "1.9000" }] }, /exactly 2/],
     [{}, { ...ARGS, exclusive: undefined }, /exclusive must be true/],
     [{}, { ...ARGS, selection: 9999 }, /not in the show: Group 9999/],
+    // Review of #130: store preferences that would put more than the recipe line into the preset (probe SB-03).
+    [{ prefs: { StoreSource: "Output" } }, ARGS, /StoreSource is \\?"Output\\?", not Programmer/],
+    [{ prefs: { ChannelFilter: "All" } }, ARGS, /ChannelFilter is \\?"All\\?": the store would take inactive/],
+    [{ prefs: { ChannelFilter: "All For Selected" } }, ARGS, /ChannelFilter is \\?"All For Selected\\?"/],
+    [{ prefs: { StoreLook: "Yes" } }, ARGS, /StoreLook is \\?"Yes\\?"/],
   ] as const) {
-    const { h, cmds } = await setup(opts);
+    const { h, cmds } = await setup(opts as Parameters<typeof setup>[0]);
     try {
       const { result, isError, text } = await h.callJson("gma3_edit_phaser_recipe", args as Record<string, unknown>);
       assert.equal(isError, true);
@@ -334,6 +339,24 @@ test("create with lines: a curve the console did not apply is a mismatch", async
     const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", MULTI);
     assert.equal(isError, true);
     assert.match(result.verification.detail, /line 1 step 2: 2 value\(s\) do not have the Snap curve/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("create with lines (review of #130): step layers preset.read leaves out at their default still match the curve", async () => {
+  const { h } = await multiSetup();
+  const prev = h.fake.handlerFor("preset.read")!;
+  h.fake.on("preset.read", async (args, req) => {
+    const r = (await prev(args, req)) as { rows?: Array<{ steps?: Array<Record<string, unknown>> }> };
+    // As the bridge reports a layer at its default: absent (accel and decel 0, trans 100).
+    for (const row of r.rows ?? []) for (const st of row.steps ?? []) for (const [k, d] of [["accel", 0], ["decel", 0], ["trans", 100]] as const) if (st[k] === d) delete st[k];
+    return r;
+  });
+  try {
+    const { result, isError } = await h.callJson("gma3_edit_phaser_recipe", MULTI);
+    assert.equal(isError, false, JSON.stringify(result.verification));
+    assert.equal(result.verification.status, "matched");
   } finally {
     await h.close();
   }
@@ -570,6 +593,18 @@ test("edit: a line masked on the same fixtures by the edited line may change; ot
   try {
     const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 2, steps: [{ preset: "4.9000" }, { preset: "4.9001" }] });
     assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  } finally {
+    await h.close();
+  }
+});
+
+test("edit (review of #130): editing a line a later line fully masks matches; its definition is still checked", async () => {
+  // Line 2 masks every cooked value of line 1 (same group, same Dimmer attribute, later wins): line 1 cooks nothing.
+  const { h } = await editSetup([fline(9001, "1.9010", "1.9011", 120), fline(9001, "1.9011", "1.9010", 60)]);
+  try {
+    const { result } = await h.callJson("gma3_edit_phaser_recipe", { action: "set", preset: "21.9005", line: 1, speed_bpm: 90, detail: true });
+    assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+    assert.ok((result.notes ?? []).some((n: string) => /line 1 cooks no value: line 2 .* masks it/.test(n)), JSON.stringify(result.notes));
   } finally {
     await h.close();
   }
