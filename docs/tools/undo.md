@@ -25,12 +25,16 @@ Then the bridge (`undo.undo {ids, preview?}`):
 3. Reads the console's undo list through the group handle's parent and checks that the groups are its latest steps, in
    order. Anything done at the console since (an operator, another connection, a property write or Lua of a tool call)
    is on top and refuses the call, naming that step.
-4. With `preview`, stops here. Otherwise sends one `Oops` per group, newest first, and reads back after each that the
-   group left the undo list before sending the next.
+4. With `preview`, stops here. Otherwise refuses (`busy`) while input ownership is active (an interaction, a held key,
+   an input sequence or a surface gesture), the same admission `cmd` has, then sends one `Oops` per group, newest first,
+   and reads back after each that the group left the undo list before sending the next. Every step of the list must be
+   identified (handle text) for a read to count: a step that cannot be identified makes the check `unreadable`, and
+   after an Oops it stops the run (`readback-unreadable`) with the group kept, since it may or may not have been undone.
 
 Results: `succeeded` with `verification: matched` when every group left the list; `partial` when an Oops did not take
-after earlier ones did (the remaining groups stay undoable); `failed` with a read step when the bridge refused before
-any Oops (codes `group-open`, `unknown-group`, `group-gone`, `unreadable`, `not-latest`).
+after earlier ones did (the remaining groups stay undoable); `unknown` for an Oops whose read-back could not be done;
+`failed` with a read step when the bridge refused before any Oops (codes `busy`, `group-open`, `unknown-group`,
+`group-gone`, `unreadable`, `not-latest`).
 
 Not undone: property writes (`set`), commands queued with CmdIndirect (patch sessions, show load and save, recipe
 editing, library import) and Lua. A tool that used them leaves steps outside its group: the latest-step check then

@@ -20,6 +20,8 @@ import type { UndoEntry, UndoGroups } from "../undo.js";
 
 export const UNDO_NEEDS_BRIDGE = "the console runs an older bridge plugin without undo.undo (gma3_undo needs bridge 0.56.0); update the plugin";
 const MAX_COUNT = 20;
+/** Bridge codes sent after at least one Oops went out; every other code is a refusal before any Oops. */
+const OOPS_SENT = new Set(["oops-failed", "readback-unreadable"]);
 
 type GroupEntry = Extract<UndoEntry, { kind: "group" }>;
 
@@ -59,6 +61,8 @@ interface BridgeUndone {
   feedback?: unknown;
   error?: string;
   gone?: boolean;
+  /** The read-back after this Oops could not identify every step left in the undo list. */
+  unreadable?: boolean;
 }
 
 export async function undoTool(ctx: ToolContext, args: UndoArgs): Promise<OperationResult> {
@@ -96,11 +100,11 @@ export async function undoTool(ctx: ToolContext, args: UndoArgs): Promise<Operat
       if (err instanceof BridgeError) {
         if (/unknown op/i.test(err.message)) {
           step = { ...step, status: "failed", kind: "read", error: UNDO_NEEDS_BRIDGE };
-        } else if (err.code && err.code !== "oops-failed") {
+        } else if (err.code && !OOPS_SENT.has(err.code)) {
           // A refusal before any Oops was sent: nothing changed.
           step = { ...step, kind: "read", detail: err.detail };
           if ((err.code === "group-gone" || err.code === "unknown-group") && typeof err.detail?.id === "string") undo.forget([err.detail.id]);
-        } else if (err.code === "oops-failed") {
+        } else if (OOPS_SENT.has(err.code ?? "")) {
           reply = { undone: Array.isArray(err.detail?.undone) ? (err.detail!.undone as BridgeUndone[]) : [] };
           step = { ...step, detail: err.detail };
         }
@@ -111,7 +115,8 @@ export async function undoTool(ctx: ToolContext, args: UndoArgs): Promise<Operat
       !preview && reply?.undone?.length
         ? reply.undone.map((u) => ({
             name: `oops ${u.name ?? u.id}`,
-            status: u.gone === true ? ("succeeded" as const) : ("failed" as const),
+            // An Oops whose read-back could not be done may have undone the group: unknown, never succeeded.
+            status: u.gone === true ? ("succeeded" as const) : u.unreadable === true ? ("unknown" as const) : ("failed" as const),
             op: "undo.undo",
             command: "Oops",
             feedback: typeof u.feedback === "string" ? u.feedback : null,
@@ -137,7 +142,13 @@ export async function undoTool(ctx: ToolContext, args: UndoArgs): Promise<Operat
     const goneIds = undone.filter((u) => u.gone === true && typeof u.id === "string").map((u) => u.id!);
     undo.forget(goneIds);
     let verification: Verification;
-    if (step.status === "succeeded" || undone.length) {
+    if (undone.some((u) => u.unreadable === true)) {
+      verification = {
+        status: "unavailable",
+        checked: "each group left the console's undo list after its Oops",
+        detail: `the undo list could not be read in full after an Oops: ${goneIds.length} of ${ids.length} group(s) read back undone; the unread one stays remembered and no further Oops was sent`,
+      };
+    } else if (step.status === "succeeded" || undone.length) {
       const allGone = goneIds.length === ids.length;
       verification = {
         status: allGone ? "matched" : "mismatched",

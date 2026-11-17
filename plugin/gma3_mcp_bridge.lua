@@ -2934,7 +2934,10 @@ end
     local out = {}
     for i = #kids, n and math.max(1, #kids - n + 1) or 1, -1 do
       local k = kids[i]
-      out[#out + 1] = { hex = hexOf(k), name = safeProp(k, "name") }
+      local hex = hexOf(k)
+      -- An identity that cannot be read proves nothing: the whole read is unreadable (review of #154).
+      if not hex then return nil, "undo step " .. (#kids - i + 1) .. " from the top of the console's undo list cannot be identified" end
+      out[#out + 1] = { hex = hex, name = safeProp(k, "name") }
     end
     return out
   end
@@ -2993,22 +2996,37 @@ end
     local groups = {}
     for i, rec in ipairs(recs) do groups[i] = brief(rec) end
     if args.preview then return { preview = true, groups = emptyArray(groups), latest = emptyArray(top) } end
+    -- Interaction admission (KB-05), as handleLine applies it to cmd: no Oops while input ownership is active. Only
+    -- here, after the read-only checks, so preview stays available like every other read (review of #154).
+    local busy = inputBusy()
+    if busy then
+      raise({ code = "busy", message = "an Oops is refused while input ownership is active: " .. tostring(busy.description) ..
+                ". Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first; nothing was undone",
+              reason = busy.reason, owner = busy.owner, interaction = busy.interaction, sequence = busy.sequence, hold = busy.hold,
+              remainingMs = busy.remainingMs, module = busy.module, device = busy.device, control = busy.control })
+    end
     local undone = {}
     for i, rec in ipairs(recs) do
       local okC, feedback = pcall(Cmd, "Oops")
-      -- Read back: the group's handle is invalid, or no longer anywhere in the list.
-      local gone = isValid(rec.handle) == false
+      -- Read back: the group's handle is invalid, or every step left in the list is identified and none is the group.
+      -- A list that cannot be read in full proves nothing: the group stays remembered and no further Oops is sent.
+      local gone, unreadable = isValid(rec.handle) == false, nil
       if not gone then
-        local after = latest(list)
+        local after, why = latest(list)
         if after then
           gone = true
           for _, t in ipairs(after) do if t.hex == rec.hex then gone = false end end
+        else
+          unreadable = why
         end
       end
-      undone[#undone + 1] = { id = rec.id, name = rec.name, feedback = okC and feedback or nil, error = (not okC) and tostring(feedback) or nil, gone = gone }
+      undone[#undone + 1] = { id = rec.id, name = rec.name, feedback = okC and feedback or nil, error = (not okC) and tostring(feedback) or unreadable, gone = gone, unreadable = unreadable and true or nil }
       if gone then forget(rec.id) end
       if not okC or not gone then
-        raise({ code = "oops-failed", message = "Oops for undo group " .. rec.id .. " (" .. tostring(rec.name) .. ") " .. (okC and "ran, but the group is still the latest undo step" or ("failed: " .. tostring(feedback))) .. "; " .. (i - 1) .. " group(s) were undone before it", undone = emptyArray(undone) })
+        local what = not okC and ("failed: " .. tostring(feedback))
+          or unreadable and ("ran, but the read-back failed (" .. unreadable .. "): whether the group was undone is unknown, so it stays remembered")
+          or "ran, but the group is still in the console's undo list"
+        raise({ code = unreadable and "readback-unreadable" or "oops-failed", message = "Oops for undo group " .. rec.id .. " (" .. tostring(rec.name) .. ") " .. what .. "; " .. (i - 1) .. " group(s) were undone before it and no further Oops was sent", undone = emptyArray(undone) })
       end
     end
     local now = latest(list, 1)

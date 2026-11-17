@@ -157,3 +157,31 @@ test("an Oops that does not take: partial when an earlier group was undone, mism
   assert.deepEqual(r.steps.map((x) => x.status), ["succeeded", "failed"]);
   assert.deepEqual(s.undo.history.map((e) => (e.kind === "group" ? e.id : "")), ["i:1"], "the group still on the console stays remembered");
 });
+
+test("an Oops whose read-back is unreadable is unknown, not undone: the group stays remembered (review of #154)", async () => {
+  const s = setup({
+    undoReply: (a) => {
+      const ids = a.ids as string[];
+      return new BridgeError("[readback-unreadable] Oops for undo group ran, but the read-back failed", "undo.undo", false, "readback-unreadable", {
+        undone: [{ id: ids[0], gone: false, unreadable: true, feedback: "OK", error: "cannot be identified" }],
+      });
+    },
+  });
+  await s.call("gma3_store_macro");
+  await s.call("gma3_store_group");
+  const r = await undoTool(s.ctx, { count: 2 });
+  assert.equal(r.outcome, "unknown");
+  assert.equal(r.verification.status, "unavailable");
+  assert.deepEqual(r.steps.map((x) => x.status), ["unknown"]);
+  assert.equal(s.undo.history.length, 2, "nothing is forgotten");
+});
+
+test("busy (input ownership) is a refusal before any Oops: failed, nothing forgotten (review of #154)", async () => {
+  const s = setup({ undoReply: () => new BridgeError("[busy] an Oops is refused while input ownership is active", "undo.undo", false, "busy", { owner: "conn-9" }) });
+  await s.call("gma3_store_macro");
+  const r = await undoTool(s.ctx, {});
+  assert.equal(r.outcome, "failed");
+  assert.equal(r.steps[0].kind, "read");
+  assert.match(r.summary, /input ownership/);
+  assert.equal(s.undo.history.length, 1);
+});

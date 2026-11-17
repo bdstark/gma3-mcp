@@ -2873,6 +2873,48 @@ do
   check("an unreadable undo list refuses: no blind Oops", r.ok == false and r.error:find("unreadable") and cmds[#cmds] ~= "Oops", J(r))
   r = request("undo.undo", { ids = {} }, nil, a)
   check("undo.undo needs ids", r.ok == false and r.error:find("args.ids"), J(r))
+  list.kids = {}; state.undoHistory = {}
+
+  -- Review of #154: HandleToStr fails only after an ignored Oops while IsObjectValid stays true. The read-back cannot
+  -- identify the steps left, so it proves nothing: the group stays remembered, no further Oops, partial/unreadable.
+  local c5 = toolCall("gma3_store_macro", 1)
+  local c6 = toolCall("gma3_store_group", 1)
+  local hexBroken = false
+  local savedHex = HandleToStr
+  HandleToStr = function(h) if hexBroken then error("no handle text") end return savedHex(h) end
+  local cmdsBefore = #cmds
+  oopsWorks = false
+  local savedCmd2 = Cmd
+  Cmd = function(c, h) local fb = savedCmd2(c, h); if c == "Oops" then hexBroken = true end; return fb end
+  r = request("undo.undo", { ids = { c6.id, c5.id } }, nil, a)
+  local oopsSent = 0
+  for i = cmdsBefore + 1, #cmds do if cmds[i] == "Oops" then oopsSent = oopsSent + 1 end end
+  check("an unreadable read-back after an ignored Oops is not proof: readback-unreadable, group kept, no second Oops",
+    r.ok == false and r.error:find("readback%-unreadable") and r.detail.undone[1].gone == false and r.detail.undone[1].unreadable == true
+      and #state.undoHistory == 2 and oopsSent == 1, J({ r, oopsSent, #state.undoHistory }))
+  Cmd, HandleToStr, hexBroken, oopsWorks = savedCmd2, savedHex, false, true
+  -- A child with an empty handle text makes the pre-check unreadable too (never a list with a missing identity).
+  local savedHex2 = HandleToStr
+  HandleToStr = function(h) if h == list.kids[#list.kids] then return "" end return savedHex2(h) end
+  r = request("undo.undo", { ids = { c6.id } }, nil, a)
+  check("a step with no identity in the checked range refuses as unreadable", r.ok == false and r.error:find("unreadable"), J(r))
+  HandleToStr = savedHex2
+  r = request("undo.undo", { ids = { c6.id, c5.id } }, nil, a)
+  check("after the read-back failure both groups are still undoable", r.ok and #r.result.undone == 2 and #state.undoHistory == 0, J(r))
+
+  -- Review of #154: undo.undo goes through input admission like cmd before any Oops; preview stays a read.
+  local c7 = toolCall("gma3_store_preset", 1)
+  local savedRunning, savedControl, savedCtlEnabled = state.running, state.modules.control, state.control.enabled
+  state.running, state.control.enabled = true, true
+  state.modules.control = { instance = { admission = function() return { description = "a surface gesture of conn-9", reason = "gesture", owner = "conn-9" } end } }
+  cmdsBefore = #cmds
+  r = request("undo.undo", { ids = { c7.id } }, nil, a)
+  check("undo.undo is refused as busy while input ownership is active, before any Oops", r.ok == false and r.code == "busy" and r.error:find("conn%-9") and #cmds == cmdsBefore and #state.undoHistory == 1, J(r))
+  r = request("undo.undo", { ids = { c7.id }, preview = true }, nil, a)
+  check("preview stays available while input is owned", r.ok and r.result.preview == true, J(r))
+  state.running, state.modules.control, state.control.enabled = savedRunning, savedControl, savedCtlEnabled
+  r = request("undo.undo", { ids = { c7.id } }, nil, a)
+  check("once the owner is gone the Oops goes out", r.ok and r.result.undone[1].gone == true, J(r))
   Cmd, CreateUndo, CloseUndo, HandleToStr, IsObjectValid = saved.Cmd, saved.CreateUndo, saved.CloseUndo, saved.HandleToStr, saved.IsObjectValid
   state.undo, state.undoHistory = nil, {}
 end
