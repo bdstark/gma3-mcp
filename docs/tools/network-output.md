@@ -24,10 +24,10 @@ Per universe:
 | --- | --- |
 | `protocol`, `universe` | `sACN` or `Art-Net` and the protocol universe; Art-Net also as `{net, subnet, universe}` |
 | `priority` | sACN: the winning priority (absent when no active stream is left) |
-| `fps` | packets per second during the window from the contributing sources (a static universe may be sent at a reduced keep-alive rate; 0 when no active stream is left) |
+| `fps` | packets per second during the window from the contributing sources (a source that expired or was evicted and came back during the window counts only its packets since; a static universe may be sent at a reduced keep-alive rate; 0 when no active stream is left) |
 | `slots`, `nonzero` | slots in the frame, channels above 0 |
 | `merge` | `single source`, `<name> wins at priority N`, or `HTP of N sources`: the highest sACN priority wins, equal ones merge HTP. The participants are the sources that are live (a packet within the last 2.5 s for sACN, E1.31's data loss timeout; 5 s for Art-Net, which may resend static data only every 4 s), not only those that sent during the window, so a keep-alive source quiet for a short window keeps its universe. Preview and terminated streams never take part: when only they are left the merge is `no active stream` with no values |
-| `sources` | each live sender: name and CID (sACN), IP, priority, fps (this window), last sequence number, `preview` / `terminated` flags, `last_seen_ms_ago` |
+| `sources` | each live sender: name and CID (sACN), IP, priority, fps (this window), last sequence number, `preview` / `terminated` flags, `last_seen_ms_ago`, and `preview_stream` (packets, last seen) when sACN preview packets arrived while its live frame was kept |
 | `values` | `{channel: value}` (0..255) |
 
 Also: `sockets` (each protocol's port, whether it listens, and a bind error in words), `multicast_groups` joined,
@@ -68,6 +68,13 @@ The hints cover the usual causes:
   E1.31's rule (a difference of -20..0, wrapping at 256), Art-Net the same over 1..255, where sequence 0 means
   unsequenced and is always accepted. A source silent for longer than its liveness timeout has restarted, and its
   next frame is accepted whatever its sequence.
+- sACN preview packets (E1.31 6.2.6) never replace a source's live frame while that frame is within its liveness
+  timeout: they are kept apart as `preview_stream` diagnostics, and the live values and liveness stay. A source
+  whose live frame has expired but whose preview packets are recent is still reported (`live_frame_expired`,
+  `preview_stream`), with no merged values and no "nothing received" hint.
+- Sources not heard within their liveness timeout are dropped from the cache on every packet and every call, not
+  only when the listener closes. The cache holds at most 2,048 sources; past that the least recently heard one is
+  evicted first, reported as `evicted_sources`.
 - The sockets close after `GMA3_NET_OUTPUT_IDLE_MS` (default 60 s) with no call, and the frames are dropped. The
   countdown does not run while a call is collecting; it starts when the last one ends. Nothing listens permanently.
 

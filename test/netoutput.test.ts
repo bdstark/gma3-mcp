@@ -2,7 +2,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import dgram from "node:dgram";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { ACN_PACKET_ID, NetOutputListener, SOURCE_TIMEOUT_MS, isOutOfOrder, listenerOptionsFromEnv, parseArtDmx, parseSacn, sacnMulticastGroup } from "../src/netoutput.ts";
+import { ACN_PACKET_ID, MAX_SOURCES, NetOutputListener, SOURCE_TIMEOUT_MS, isOutOfOrder, listenerOptionsFromEnv, parseArtDmx, parseSacn, sacnMulticastGroup } from "../src/netoutput.ts";
 import { collectNetworkOutput, mergeSources, parseChannels } from "../src/tools/netoutput.ts";
 import { startMcpServer, mcpText, mcpIsError } from "./helpers/mcp-server.ts";
 
@@ -441,6 +441,135 @@ test("review 2: a collection releases only the memberships it acquired, never on
     l.end(b.acquired);
     assert.deepEqual(l.joinedUniverses(), []);
     assert.deepEqual(dropped.length > 0 && dropped.every((g) => g === "239.255.0.5"), true);
+  } finally {
+    l.close();
+  }
+});
+
+// --- follow-up review of #135 ----------------------------------------------------------------------------------------
+
+test("follow-up: an sACN preview packet does not replace the live frame of the same CID and universe (E1.31 6.2.6)", async () => {
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  const rinfo = { address: "10.0.0.1", port: 5568 };
+  try {
+    const t = Date.now();
+    l.ingest("sacn", sacnPacket({ universe: 6, cid: 1, data: [200, 0], sequence: 10 }), rinfo, t);
+    l.ingest("sacn", sacnPacket({ universe: 6, cid: 1, data: [5, 5], sequence: 11, options: 0x80 }), rinfo, t + 5);
+    let src = l.allSources(t + 10)[0];
+    assert.deepEqual([...mergeSources([src]).data], [200, 0], "the live values stay");
+    assert.equal(src.frame.preview, false);
+    assert.equal(src.lastSeen, t, "the live frame's liveness is its own");
+    assert.equal(src.preview?.packets, 1);
+    // The preview frame took its sequence: an older live frame is still refused.
+    assert.equal(l.ingest("sacn", sacnPacket({ universe: 6, cid: 1, data: [1, 1], sequence: 11 }), rinfo, t + 15).ok, false);
+    l.ingest("sacn", sacnPacket({ universe: 6, cid: 1, data: [100, 0], sequence: 12 }), rinfo, t + 20);
+    src = l.allSources(t + 25)[0];
+    assert.deepEqual([...mergeSources([src]).data], [100, 0]);
+    assert.equal(src.preview, undefined, "a new live frame clears the preview diagnostics");
+    // Once the live frame has expired, a preview stream is all that is left: no merged values.
+    l.ingest("sacn", sacnPacket({ universe: 6, cid: 1, data: [9, 9], sequence: 13, options: 0x80 }), rinfo, t + 20 + SOURCE_TIMEOUT_MS.sacn + 100);
+    assert.deepEqual([...mergeSources(l.allSources(t + 20 + SOURCE_TIMEOUT_MS.sacn + 110)).data], []);
+
+    // Through the tool: the live value is reported, the preview stream only as a diagnostic.
+    await l.ensure();
+    l.ingest("sacn", sacnPacket({ universe: 12, cid: 2, data: [200, 0], sequence: 10 }), rinfo);
+    l.ingest("sacn", sacnPacket({ universe: 12, cid: 2, data: [5, 5], sequence: 11, options: 0x80 }), rinfo);
+    const r = (await collectNetworkOutput(l, { universes: [12], listen_ms: 200, channels: "1-2" })).result as { universes: Array<{ values: Record<string, number>; sources: Array<{ preview?: boolean; preview_stream?: { packets: number } }> }> };
+    assert.deepEqual(r.universes[0].values, { 1: 200, 2: 0 });
+    assert.equal(r.universes[0].sources[0].preview, undefined);
+    assert.equal(r.universes[0].sources[0].preview_stream?.packets, 1);
+  } finally {
+    l.close();
+  }
+});
+
+test("follow-up: expired sources are evicted while the listener stays open, and the cache is capped oldest-first", () => {
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  try {
+    const t = Date.now();
+    for (let i = 0; i < 50_000; i++) l.ingest("artnet", artDmxPacket({ data: [1], sequence: 1 }), { address: `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`, port: 6454 }, t);
+    assert.equal(l.sourceCount, MAX_SOURCES, "never more than the cap");
+    assert.equal(l.evicted, 50_000 - MAX_SOURCES);
+    const kept = l.allSources(t).map((s) => s.address);
+    assert.ok(kept.includes("10.0.195.79") && !kept.includes("10.0.0.0"), "the oldest were evicted first");
+    // One live source later: every expired one is gone from the cache, not only filtered.
+    l.ingest("sacn", sacnPacket({ universe: 1, cid: 9, data: [7] }), { address: "10.9.9.9", port: 5568 }, t + SOURCE_TIMEOUT_MS.artnet + 100);
+    assert.equal(l.sourceCount, 1);
+    assert.equal(l.allSources(t + SOURCE_TIMEOUT_MS.artnet + 200)[0].address, "10.9.9.9");
+    // A recently heard source moves to the back and survives the cap.
+    l.close();
+    for (let i = 0; i < MAX_SOURCES; i++) l.ingest("artnet", artDmxPacket({ data: [1], sequence: 1 }), { address: `10.1.${i >> 8}.${i & 255}`, port: 6454 }, t);
+    l.ingest("artnet", artDmxPacket({ data: [2], sequence: 2 }), { address: "10.1.0.0", port: 6454 }, t + 1);
+    l.ingest("artnet", artDmxPacket({ data: [3], sequence: 1 }), { address: "10.2.0.0", port: 6454 }, t + 2);
+    const after = l.allSources(t + 3).map((s) => s.address);
+    assert.ok(after.includes("10.1.0.0"), "refreshed, so not the oldest");
+    assert.ok(!after.includes("10.1.0.1"), "the least recently heard was evicted");
+  } finally {
+    l.close();
+  }
+});
+
+test("follow-up: a source that expires or is evicted and resumes within one window never gets a negative fps", async () => {
+  type Row = { protocol: string; universe: number; fps: number; sources: Array<{ ip: string; fps: number }> };
+  // Expire and resume: 100 packets before the window, then (simulated time) one packet after the sACN timeout.
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  try {
+    await l.ensure();
+    const rinfo = { address: "10.0.0.1", port: 5568 };
+    for (let i = 1; i <= 100; i++) l.ingest("sacn", sacnPacket({ universe: 3, cid: 1, data: [50], sequence: i }), rinfo);
+    const pending = collectNetworkOutput(l, { universes: [3], listen_ms: 300 });
+    await new Promise((res) => setTimeout(res, 50));
+    l.ingest("sacn", sacnPacket({ universe: 3, cid: 1, data: [60], sequence: 5 }), rinfo, Date.now() + SOURCE_TIMEOUT_MS.sacn + 100);
+    assert.equal(l.allSources(Date.now() + SOURCE_TIMEOUT_MS.sacn + 100)[0].packets, 1, "a new instance");
+    const u = ((await pending).result as { universes: Row[] }).universes.find((x) => x.universe === 3)!;
+    assert.ok(u.fps > 0 && u.sources[0].fps > 0, JSON.stringify(u));
+  } finally {
+    l.close();
+  }
+
+  // Evict and reinsert: a full cache during the window pushes the source out, then it is heard again.
+  const m = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  try {
+    await m.ensure();
+    const a = { address: "10.200.0.1", port: 6454 };
+    for (let i = 1; i <= 100; i++) m.ingest("artnet", artDmxPacket({ data: [9], sequence: (i % 255) + 1 }), a);
+    const pending = collectNetworkOutput(m, { universes: [0], listen_ms: 300 });
+    await new Promise((res) => setTimeout(res, 50));
+    for (let i = 0; i < MAX_SOURCES; i++) m.ingest("artnet", artDmxPacket({ sub: 1, data: [1], sequence: 1 }), { address: `10.3.${i >> 8}.${i & 255}`, port: 6454 });
+    assert.ok(!m.allSources().some((s) => s.address === a.address), "evicted");
+    m.ingest("artnet", artDmxPacket({ data: [9], sequence: 7 }), a);
+    const u = ((await pending).result as { universes: Row[] }).universes.find((x) => x.protocol === "Art-Net" && x.universe === 0)!;
+    assert.ok(u.fps > 0 && u.sources[0].fps > 0, JSON.stringify(u));
+    assert.ok(m.evicted >= 1);
+  } finally {
+    m.close();
+  }
+});
+
+test("follow-up: a source whose live frame expired but whose preview packets are recent is reported, never merged", async () => {
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  try {
+    await l.ensure();
+    const rinfo = { address: "10.0.0.1", port: 5568 };
+    const t0 = Date.now() - 3000; // live at t0, preview at t0 + 2 s, read at t0 + 3 s (sACN timeout 2.5 s)
+    l.ingest("sacn", sacnPacket({ universe: 4, cid: 1, data: [200, 0], sequence: 10 }), rinfo, t0);
+    l.ingest("sacn", sacnPacket({ universe: 4, cid: 1, data: [5, 5], sequence: 11, options: 0x80 }), rinfo, t0 + 2000);
+    const r = (await collectNetworkOutput(l, { universes: [4], listen_ms: 200, samples: 2, channels: "1-2" })).result as {
+      universes: Array<{ universe: number; values: Record<string, number>; nonzero: number; fps: number; priority?: number; merge: string; sources: Array<{ live_frame_expired?: boolean; preview_stream?: { packets: number } }> }>;
+      hints?: string[];
+      samples: Array<{ values: Record<string, Record<string, number>> }>;
+    };
+    const u = r.universes.find((x) => x.universe === 4);
+    assert.ok(u, `the universe is reported: ${JSON.stringify(r)}`);
+    assert.deepEqual(u.values, {}, "no merged values: the live frame expired and preview never merges");
+    assert.equal(u.nonzero, 0);
+    assert.equal(u.fps, 0);
+    assert.equal(u.priority, undefined);
+    assert.match(u.merge, /no active stream/);
+    assert.equal(u.sources[0].live_frame_expired, true);
+    assert.equal(u.sources[0].preview_stream?.packets, 1);
+    assert.equal(r.hints, undefined, "not a nothing-received case");
+    assert.ok(r.samples.every((s) => JSON.stringify(s.values["sACN 4"]) === "{}"), JSON.stringify(r.samples));
   } finally {
     l.close();
   }
