@@ -1022,25 +1022,41 @@ export async function editPhaserRecipe(ctx: ToolContext, raw: EditArgs): Promise
         // A later line on the same group masks this line's cooked values (the later line wins on each fixture and
         // attribute both output): then no cooked value from this line is expected; its definition is still checked.
         const posAfter = action === "remove_line" ? -1 : k - 1;
-        // A later line masks this one only where it outputs the same fixtures and attributes (review of #138): its
-        // cooked rows must cover every fixture and attribute this line output before the edit, or, when this line
-        // output none before (already masked, or just added), its step presets must come from the same single-family
-        // pool (1-20; an All pool may mix families, so it proves nothing).
-        const poolOf = (pair: string) => Number(pair.split(".")[0]);
-        const oldKeys = oldPair ? rowsBefore.filter((r) => rowPairOf(r) === oldPair).map((r) => `${r.fixture}|${r.attribute}`) : [];
-        const masks = (l: LineDetail) => {
+        // A later line masks this one only where it outputs every fixture, cell and attribute this line would (review of
+        // #138). That is read from the step presets themselves: the union of what this line's 2 step presets hold must be
+        // inside the union of what the later line's step presets hold (a pool proves nothing: pool 4 holds RGB and
+        // ColorWheel presets alike). The later line must also have cooked values, and cover every value this line
+        // output before the edit. Coverage that cannot be read (a preset missing, empty or read in part) is no proof.
+        const keyOf = (r: { fixture?: unknown; sfIndex?: unknown; attribute?: unknown }) => `${r.fixture}|${r.sfIndex ?? ""}|${r.attribute}`;
+        const coverageCache = new Map<string, Set<string> | null>();
+        const coverage = async (pair: string): Promise<Set<string> | null> => {
+          if (coverageCache.has(pair)) return coverageCache.get(pair)!;
+          let keys: Set<string> | null = new Set<string>();
+          for (const p of pair.split("/")) {
+            const d = await readPreset(bridge, `Preset ${p}`, tm).catch(() => null);
+            if (!d || d.truncated || !d.rows?.length || d.rows.some((r) => !r.attribute)) {
+              keys = null;
+              break;
+            }
+            for (const r of d.rows) keys.add(keyOf(r));
+          }
+          coverageCache.set(pair, keys);
+          return keys;
+        };
+        const oldKeys = oldPair ? rowsBefore.filter((r) => rowPairOf(r) === oldPair).map(keyOf) : [];
+        const masks = async (l: LineDetail): Promise<boolean> => {
           const pair = stepPair(l);
           if (l.group === null || l.group !== want!.group || pair === null) return false;
           const theirs = rows.filter((r) => rowPairOf(r) === pair);
           if (!theirs.length) return false;
-          if (oldKeys.length) {
-            const keys = new Set(theirs.map((r) => `${r.fixture}|${r.attribute}`));
-            return oldKeys.every((key) => keys.has(key));
-          }
-          const mine = poolOf(newPair!);
-          return mine >= 1 && mine <= 20 && poolOf(pair) === mine;
+          const cooked = new Set(theirs.map(keyOf));
+          if (!oldKeys.every((key) => cooked.has(key))) return false;
+          const mine = await coverage(newPair!);
+          const covers = await coverage(pair);
+          return mine !== null && covers !== null && [...mine].every((key) => covers.has(key));
         };
-        const masker = !got.length && after ? after.slice(posAfter + 1).find(masks) : undefined;
+        let masker: LineDetail | undefined;
+        if (!got.length && after) for (const l of after.slice(posAfter + 1)) if (await masks(l)) { masker = l; break; }
         if (masker) maskedNote = `line ${k} cooks no value: line ${masker.line} on the same group (Group ${want!.group}) masks it; its definition was checked`;
         else if (!got.length) problems.push(`no cooked value comes from line ${k} (Preset ${newPair.replace("/", " / Preset ")})`);
         else if (want.speedHz !== undefined && !shared(newPair)) {

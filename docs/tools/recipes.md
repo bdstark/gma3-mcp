@@ -301,8 +301,12 @@ Read back:
 - every line as expected: group, MAtricks, shape, speed (SPEEDX raw, in Hz), phase, step presets, and each step's
   ACCEL / DECEL / TRANS where they are known. After a new shape or a reset they are the shape's and are not compared;
 - the edited line's cooked values come from its 2 step presets at its speed, and no value is left from its old step
-  presets. When a later line on the same group has cooked values and the edited line has none, the later line masks
-  it: no cooked value is expected from it (a note says so), and its definition is still checked;
+  presets. When the edited line has no cooked value, a later line on the same group masks it only if that line has
+  cooked values covering every value the edited line output before the edit, and its 2 step presets hold every
+  fixture, cell and attribute the edited line's step presets hold (read with `preset.read`; a pool proves nothing,
+  since pool 4 holds RGB and ColorWheel presets alike). Then no cooked value is expected from the edited line (a note
+  says so) and its definition is still checked. A step preset that is missing, empty or read in part proves no
+  coverage: the edit is then a mismatch;
 - every other cooked value unchanged, and nothing uncooked added. Each value is matched by fixture, cell, attribute
   and step presets, and compared field by field: value and relative value, every step's absolute, relative, accel,
   decel, transition, width and preset, speed, phase, measure, speed master, fade, delay and preset references
