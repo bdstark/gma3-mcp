@@ -414,7 +414,8 @@ test("after-save hook: only a matched save starts it, with the console's spellin
     assert.equal(ok.result.verification.status, "matched", ok.text);
     assert.deepEqual(ok.result.afterSave, { hook, started: true });
     const t0 = Date.now();
-    while (!existsSync(out) && Date.now() - t0 < 5000) await new Promise((r) => setTimeout(r, 50));
+    // The shell creates the file before printf writes to it: wait for a whole line, not just the file.
+    while (!(existsSync(out) && readFileSync(out, "utf8").endsWith("\n")) && Date.now() - t0 < 5000) await new Promise((r) => setTimeout(r, 50));
     assert.equal(readFileSync(out, "utf8").split("|")[0], "Show A", "the hook gets the file the console wrote");
 
     const refused = await h.callJson("gma3_save_show", { name: "Other", exclusive: true }); // another show's file: refused

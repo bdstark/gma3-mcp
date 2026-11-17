@@ -16,6 +16,10 @@ export interface ToolContext {
   luaToolAllowed: boolean;
   /** The server's own OSC sender (GMA3_OSC_HOST / _PORT / _PREFIX), for gma3_osc's report. */
   osc?: OscOptions;
+  /** Sends a command over OSC (/cmd): gma3_load_show restarts the bridge with it after the load unloaded it. */
+  oscCommand?: { sendCommand(command: string): Promise<void>; readonly description: string };
+  /** Types a command into onPC on this Mac (src/keystroke.ts): gma3_load_show's restart without OSC. */
+  keystroke?: { available(): Promise<boolean>; sendCommand(command: string): Promise<void>; readonly description: string };
 }
 
 export type RegisterTools = (server: McpServer, ctx: ToolContext) => void;

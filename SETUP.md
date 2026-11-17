@@ -840,6 +840,10 @@ dialog (KB-25 handles dialogs). This time it answered `OK`, and the bridge kept 
   name?" and, with `overwrite: true`, "... and overwrite existing show file?" dialogs. It refuses another show's file
   without `overwrite`, never answers another dialog, and reports the file written.
 - SaveShow is queued with CmdIndirect, so a dialog cannot stall the bridge.
+- `gma3_load_show` (bridge 0.54.0) loads a show from the shows folder. It answers the unsaved-changes question as
+  `unsaved` says (default refuse) and restarts the bridge the load unloaded: over OSC when this server has an OSC
+  sender, otherwise it waits for an operator (`restart: keystroke` types the start command into onPC on a Mac, opt-in). Probe record [load-show-macos-2.5.1.md](docs/probes/load-show-macos-2.5.1.md); live test
+  `test/live/load-show.live.ts` 3/3 on macOS in the silly82 fork (keystroke restart; the OSC restart is not live-tested).
 
 ## SU-21 — Tags
 

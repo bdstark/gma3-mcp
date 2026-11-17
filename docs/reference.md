@@ -40,7 +40,7 @@
 | `gma3_help` | Read a page of the grandMA3 manual shipped with onPC |
 | `gma3_start_bridge` | Start the plugin over OSC when the bridge is down |
 | `gma3_tempo_sync_status`, `gma3_configure_tempo_sync` | The tempo-sync plugin (bdstark/gma3-beat-sync): whether it is imported and running, its readings, and its configuration, read back; `gma3_playback` `resync` realigns running phasers ([docs](tools/tempo-sync.md)) |
-| `gma3_show_files`, `gma3_save_show` | List the show files and save the show under the current or a new name; another show's file needs `overwrite: true`; SaveShow's own confirmation is answered ([docs](tools/show.md)) |
+| `gma3_show_files`, `gma3_save_show`, `gma3_load_show` | List the show files and save the show under the current or a new name; another show's file needs `overwrite: true`; SaveShow's own confirmation is answered. Load another show (unsaved changes refused, saved or discarded as asked) and restart the bridge the load unloaded ([docs](tools/show.md)) |
 | `gma3_tags`, `gma3_store_tag`, `gma3_delete_tag`, `gma3_assign_tag`, `gma3_configure_tag` | Tags: the pool and the objects that carry each tag (reverse lookup, paged), create, rename, delete, assign and unassign with protect and `data_pool`, kill type, forwarding, action, appearance and note; `gma3_playback` on a tag reads each tagged sequence back ([docs](tools/tags.md)) |
 | `gma3_osc`, `gma3_configure_osc`, `gma3_test_osc_input` | Read and configure OSC input and output (who can send commands, where output goes), and prove input works with a loopback test ([docs](tools/osc.md)) |
 
