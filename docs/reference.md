@@ -13,6 +13,10 @@
 | `GMA3_OSC_PREFIX` | *(none)* | OSC prefix configured in onPC, without slashes |
 | `GMA3_INSTALL_DIR` | `~/MALightingTechnology` | Base folder containing versioned `gma3_<version>` directories; set explicitly on Windows |
 | `GMA3_HELP_DIR` | *(auto-detected)* | Override with the exact manual HTML directory (`gma3_<version>/shared/language/HTML`) |
+| `GMA3_NET_OUTPUT_HOST` | `0.0.0.0` | Bind address of the `gma3_network_output` listener ([docs](tools/network-output.md#configuration)) |
+| `GMA3_NET_OUTPUT_SACN_PORT` / `GMA3_NET_OUTPUT_ARTNET_PORT` | `5568` / `6454` | Ports the listener binds (`0`: ephemeral) |
+| `GMA3_NET_OUTPUT_MULTICAST` | `1` | `0`: the listener joins no sACN multicast groups |
+| `GMA3_NET_OUTPUT_IDLE_MS` | `60000` | The listener closes after this long with no call |
 | `GMA3_AFTER_SAVE_HOOK` | *(none)* | Program started after every verified `gma3_save_show`, with the saved show's name (for example to commit show files to git); see [show.md](tools/show.md) |
 
 ## Tools
@@ -70,6 +74,7 @@ Structured inspection tools (read-only; work with Lua execution disabled; need p
 | `gma3_dmx` | Raw or percent DMX values of a universe and channel range, with `granted` and optional patch lookup ([docs](tools/inspection.md)) |
 | `gma3_dmx_output` | Read-only: universes in use with grant, request and ports, the Art-Net / sACN entries that send each one, the protocols and output stations; each universe explained (not granted, not sent, sent as) (bridge 0.30.0, [docs](tools/dmx-output.md)) |
 | `gma3_configure_dmx_output` | Art-Net / sACN output on or off, data entries added, edited or removed, universes' grant request; validated, previewed, read back; `network: true` required before DMX goes onto the network (bridge 0.30.0, [docs](tools/dmx-output.md)) |
+| `gma3_network_output` | Read-only, passive: listens to the sACN (UDP 5568) and Art-Net (UDP 6454) DMX the console sends to this machine; per universe protocol, source, priority, fps and values after the console's merge; `samples` for fades; needs no bridge, hints when nothing arrives ([docs](tools/network-output.md)) |
 | `gma3_cue_contents` | Stored cue and part data without Goto or Load: timing, command, recipes and preset references (optionally expanded); and the values each part stores, hard and cooked (GetPresetData on the part) ([docs](tools/inspection.md)) |
 
 Structured input tools (KB-05; need plugin v0.7.0 and the operator's `Plugin "gma3_mcp_bridge" "input=keyboard"`;

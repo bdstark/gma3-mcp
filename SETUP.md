@@ -964,6 +964,35 @@ record [su-22-library-add-macos-2.5.1.md](docs/probes/su-22-library-add-macos-2.
   a bridge older than 0.38.1. Every other property, mode and name of the type is still compared.
 - Slot colours with a slightly negative component (CIE colours outside sRGB) are read; SU-19's reader refused them.
 
+## SU-23 — Network DMX output on the wire
+
+**Request:** See what the console actually sends as sACN and Art-Net, including while the bridge is down (a show load).
+
+**Depends on:** SU-09.
+
+**Repository:** gma3-mcp.
+
+**Lua changes:** No. The server listens passively on UDP; no bridge request.
+
+**Evidence:** `gma3_dmx` reads values through the bridge, which is gone during `gma3_load_show`, and returns nothing for a
+universe that is not granted. Nothing showed what reached the network after the console's merge and priority.
+
+### Acceptance criteria
+
+- `gma3_network_output` parses E1.31 data packets (root, framing and DMP layers checked) and ArtDmx packets, and
+  reports per universe the protocol, source name and IP, priority, fps, nonzero channels and values (a channel range,
+  or the nonzero ones), with optional timestamped samples.
+- The listener binds on demand with address reuse, joins sACN multicast groups for the universes asked for, and closes
+  after an idle minute. A port held by another application is reported in words.
+- When nothing arrives, the result says why it may be: protocol output off, the universe not granted (onPC without MA
+  hardware may output only a limited number of universes), the sACN or Art-Net destination.
+- Environment: `GMA3_NET_OUTPUT_HOST` (default `0.0.0.0`), `GMA3_NET_OUTPUT_SACN_PORT` (5568),
+  `GMA3_NET_OUTPUT_ARTNET_PORT` (6454), `GMA3_NET_OUTPUT_MULTICAST` (`0` turns joining off), `GMA3_NET_OUTPUT_IDLE_MS`
+  (60000).
+
+**Status:** implemented ([docs/tools/network-output.md](docs/tools/network-output.md), `test/netoutput.test.ts`). Not
+yet verified against a live console.
+
 ## Recommended delivery order
 
 SU-01 and SU-02 first (bridges 0.25.1 and 0.25.2). Then SU-03: without import, a new show cannot be set up without Lua or a
