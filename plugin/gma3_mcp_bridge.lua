@@ -2896,7 +2896,14 @@ ops.cmd = function(args, ctx)
   if type(command) ~= "string" or command == "" then error("args.command (string) is required") end
   local g = state.undo
   if g and ctx and g.client == ctx.client then
-    if command:lower():find("%f[%a]oops%f[%A]") then
+    -- An executable Oops (review of #136): quoted text is data ("Label Macro 5 "Oops"" is a label), so it is removed
+    -- first; then any command of the line (separated by ";") whose first word is Oops counts.
+    local bare = command:gsub('"[^"]*"', '""'):lower()
+    local runsOops = false
+    for part in (bare .. ";"):gmatch("([^;]*);") do
+      if part:match("^%s*oops%f[%A]") then runsOops = true; break end
+    end
+    if runsOops then
       -- Oops acts on the steps before it, as typed: the group is closed first.
       state.undo = nil
       pcall(CloseUndo, g.handle)
