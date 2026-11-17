@@ -2,7 +2,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import dgram from "node:dgram";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { ACN_PACKET_ID, NetOutputListener, listenerOptionsFromEnv, parseArtDmx, parseSacn, sacnMulticastGroup } from "../src/netoutput.ts";
+import { ACN_PACKET_ID, NetOutputListener, SOURCE_TIMEOUT_MS, isOutOfOrder, listenerOptionsFromEnv, parseArtDmx, parseSacn, sacnMulticastGroup } from "../src/netoutput.ts";
 import { collectNetworkOutput, mergeSources, parseChannels } from "../src/tools/netoutput.ts";
 import { startMcpServer, mcpText, mcpIsError } from "./helpers/mcp-server.ts";
 
@@ -127,13 +127,16 @@ test("merge: highest sACN priority wins, equal priorities merge HTP, terminated 
   m = mergeSources(l.allSources());
   assert.deepEqual([...m.data], [1, 1]);
   assert.match(m.merge, /Backup wins at priority 120/);
-  l.ingest("sacn", sacnPacket({ cid: 3, priority: 120, data: [1, 1], options: 0x40 }), rinfo);
+  l.ingest("sacn", sacnPacket({ cid: 3, priority: 120, data: [1, 1], options: 0x40, sequence: 8 }), rinfo);
   assert.deepEqual([...mergeSources(l.allSources()).data], [50, 200]);
   l.close();
 });
 
 const sender = dgram.createSocket("udp4");
 after(() => sender.close());
+/** Incrementing 1..255 sequence numbers, as a real sender uses (equal or older ones are dropped as out of order). */
+let seqCounter = 0;
+const nextSeq = () => (seqCounter = (seqCounter % 255) + 1);
 const send = (buf: Buffer, port: number) => new Promise<void>((res, rej) => sender.send(buf, port, "127.0.0.1", (e) => (e ? rej(e) : res())));
 
 test("end to end: the listener binds ephemeral ports, receives sACN and Art-Net, samples a fade, closes after idle", async () => {
@@ -143,10 +146,12 @@ test("end to end: the listener binds ephemeral ports, receives sACN and Art-Net,
   const artPort = sockets.find((s) => s.protocol === "artnet")!.boundPort!;
   assert.ok(sacnPort > 0 && artPort > 0);
   let level = 0;
+  let seq = 0;
   const timer = setInterval(() => {
     level = Math.min(255, level + 10);
-    void send(sacnPacket({ universe: 1, data: [level, 0, 77] }), sacnPort);
-    void send(artDmxPacket({ sub: 1, data: [0, 33] }), artPort);
+    seq = (seq % 255) + 1;
+    void send(sacnPacket({ universe: 1, data: [level, 0, 77], sequence: seq }), sacnPort);
+    void send(artDmxPacket({ sub: 1, data: [0, 33], sequence: seq }), artPort);
     void send(Buffer.from("not dmx"), artPort);
   }, 20);
   try {
@@ -216,7 +221,7 @@ test("the tool is registered and works over MCP with the bridge down", async () 
   probe.close();
   // Port 1 for the bridge: nothing listens there, the tool must not need it.
   const client: Client = await startMcpServer({ GMA3_BRIDGE_PORT: "1", GMA3_BRIDGE_TIMEOUT_MS: "500", GMA3_OSC_PORT: "1", GMA3_NET_OUTPUT_HOST: "127.0.0.1", GMA3_NET_OUTPUT_SACN_PORT: String(sacnPort), GMA3_NET_OUTPUT_ARTNET_PORT: "0", GMA3_NET_OUTPUT_MULTICAST: "0" });
-  const timer = setInterval(() => void send(sacnPacket({ universe: 5, data: [0, 0, 99] }), sacnPort).catch(() => {}), 20);
+  const timer = setInterval(() => void send(sacnPacket({ universe: 5, data: [0, 0, 99], sequence: nextSeq() }), sacnPort).catch(() => {}), 20);
   try {
     const tools = (await client.listTools()).tools.map((t) => t.name);
     assert.ok(tools.includes("gma3_network_output"));
@@ -240,7 +245,7 @@ test("review: an idle timeout shorter than listen_ms does not close the sockets 
   const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 300 });
   const sockets = await l.ensure();
   const sacnPort = sockets.find((s) => s.protocol === "sacn")!.boundPort!;
-  const timer = setInterval(() => void send(sacnPacket({ universe: 7, data: [0, 66] }), sacnPort).catch(() => {}), 20);
+  const timer = setInterval(() => void send(sacnPacket({ universe: 7, data: [0, 66], sequence: nextSeq() }), sacnPort).catch(() => {}), 20);
   try {
     const { result, isError } = await collectNetworkOutput(l, { listen_ms: 900, samples: 3 });
     assert.equal(isError, false);
@@ -280,7 +285,7 @@ test("review: a live high-priority keep-alive source quiet during a short window
   const sacnPort = sockets.find((s) => s.protocol === "sacn")!.boundPort!;
   // The priority-150 source's last keep-alive arrived 10 ms before the call; the priority-100 one sends during it.
   l.ingest("sacn", sacnPacket({ universe: 3, cid: 1, priority: 150, data: [200, 0], name: "Main" }), { address: "10.0.0.1", port: 5568 }, Date.now() - 10);
-  const timer = setInterval(() => void send(sacnPacket({ universe: 3, cid: 2, priority: 100, data: [10, 10], name: "Backup" }), sacnPort).catch(() => {}), 20);
+  const timer = setInterval(() => void send(sacnPacket({ universe: 3, cid: 2, priority: 100, data: [10, 10], name: "Backup", sequence: nextSeq() }), sacnPort).catch(() => {}), 20);
   try {
     const r = (await collectNetworkOutput(l, { listen_ms: 200, samples: 2, channels: "1-2" })).result as { universes: Array<{ universe: number; priority: number; merge: string; values: Record<string, number>; sources: Array<{ name: string; fps: number }> }>; samples: Array<{ values: Record<string, Record<string, number>> }> };
     const u = r.universes.find((x) => x.universe === 3)!;
@@ -348,6 +353,94 @@ test("review: preview-only or terminated-only streams give no merged values and 
     assert.equal(u.priority, undefined);
     assert.equal(u.sources[0].preview, true, "the preview stream stays in the source diagnostics");
     assert.ok(r.samples.every((s) => JSON.stringify(s.values["sACN 9"] ?? {}) === "{}"));
+  } finally {
+    l.close();
+  }
+});
+
+// --- review of #135, round 2 ---------------------------------------------------------------------------------------
+
+test("review 2: an Art-Net source resending static data every 4 s stays live; an sACN source quiet that long does not", async () => {
+  assert.deepEqual(SOURCE_TIMEOUT_MS, { sacn: 2500, artnet: 5000 });
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  try {
+    await l.ensure();
+    const threeSecondsAgo = Date.now() - 3000;
+    l.ingest("artnet", artDmxPacket({ sub: 2, data: [0, 44], sequence: 5 }), { address: "10.0.0.2", port: 6454 }, threeSecondsAgo);
+    l.ingest("sacn", sacnPacket({ universe: 2, data: [55] }), { address: "10.0.0.3", port: 5568 }, threeSecondsAgo);
+    const r = (await collectNetworkOutput(l, { listen_ms: 200, samples: 2 })).result as { universes: Array<{ protocol: string; universe: number; values: Record<string, number> }>; samples: Array<{ values: Record<string, Record<string, number>> }> };
+    assert.deepEqual(r.universes.map((u) => [u.protocol, u.universe, u.values]), [["Art-Net", 2, { 2: 44 }]], JSON.stringify(r.universes));
+    assert.ok(r.samples.every((s) => s.values["Art-Net 2"]?.["2"] === 44 && s.values["sACN 2"] === undefined), JSON.stringify(r.samples));
+  } finally {
+    l.close();
+  }
+});
+
+test("review 2: a delayed older frame does not replace newer values (wraparound-aware; Art-Net sequence 0 is unsequenced)", () => {
+  // Rules on their own.
+  assert.equal(isOutOfOrder("artnet", 11, 10), true);
+  assert.equal(isOutOfOrder("artnet", 11, 12), false);
+  assert.equal(isOutOfOrder("artnet", 255, 1), false, "Art-Net wraps 255 -> 1");
+  assert.equal(isOutOfOrder("artnet", 1, 255), true);
+  assert.equal(isOutOfOrder("artnet", 0, 7), false);
+  assert.equal(isOutOfOrder("artnet", 7, 0), false, "0 disables sequencing");
+  assert.equal(isOutOfOrder("sacn", 11, 10), true);
+  assert.equal(isOutOfOrder("sacn", 11, 11), true, "a duplicate is dropped");
+  assert.equal(isOutOfOrder("sacn", 255, 0), false, "sACN wraps 255 -> 0");
+  assert.equal(isOutOfOrder("sacn", 10, 240), false, "more than 20 behind counts as a jump forward (E1.31)");
+  assert.equal(isOutOfOrder("sacn", 10, 250), true);
+
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: false, idleMs: 5000 });
+  const rinfo = { address: "10.0.0.1", port: 6454 };
+  const t = Date.now();
+  l.ingest("artnet", artDmxPacket({ data: [200], sequence: 11 }), rinfo, t);
+  const late = l.ingest("artnet", artDmxPacket({ data: [10], sequence: 10 }), rinfo, t + 5);
+  assert.equal(late.ok, false);
+  let src = l.allSources()[0];
+  assert.equal(src.frame.sequence, 11);
+  assert.equal(src.frame.data[0], 200, "the newer value stays");
+  assert.equal(src.packets, 1);
+  assert.ok([...l.ignored.keys()].some((k) => /out-of-order/.test(k)));
+  l.ingest("artnet", artDmxPacket({ data: [30], sequence: 0 }), rinfo, t + 10);
+  assert.equal(l.allSources()[0].frame.data[0], 30, "an unsequenced frame is accepted");
+  // A restarted source (silent longer than its liveness timeout) is accepted whatever its sequence.
+  l.ingest("sacn", sacnPacket({ universe: 4, data: [90], sequence: 50 }), rinfo, t);
+  l.ingest("sacn", sacnPacket({ universe: 4, data: [91], sequence: 49 }), rinfo, t + 5);
+  src = l.allSources().find((s) => s.protocol === "sacn")!;
+  assert.equal(src.frame.data[0], 90);
+  l.ingest("sacn", sacnPacket({ universe: 4, data: [7], sequence: 49 }), rinfo, t + SOURCE_TIMEOUT_MS.sacn + 100);
+  assert.equal(l.allSources().find((s) => s.protocol === "sacn")!.frame.data[0], 7, "a restart after the timeout is accepted");
+  l.close();
+});
+
+test("review 2: a collection releases only the memberships it acquired, never one an overlapping collection still uses", async () => {
+  const l = new NetOutputListener({ host: "127.0.0.1", sacnPort: 0, artnetPort: 0, multicast: true, idleMs: 5000 });
+  await l.ensure();
+  const sock = (l as unknown as { sockets: Map<string, dgram.Socket> }).sockets.get("sacn")!;
+  let failing = true;
+  const dropped: string[] = [];
+  sock.addMembership = (() => {
+    if (failing) throw new Error("addMembership ENOBUFS");
+  }) as typeof sock.addMembership;
+  sock.dropMembership = ((group: string) => void dropped.push(group)) as typeof sock.dropMembership;
+  try {
+    // Collection A: its join fails, so it acquires nothing.
+    l.begin();
+    const a = l.joinUniverses([5]);
+    assert.deepEqual(a.acquired, []);
+    assert.equal(a.failures.length, 1);
+    // Collection B overlaps A and joins the same universe once the failure cleared.
+    failing = false;
+    l.begin();
+    const b = l.joinUniverses([5]);
+    assert.deepEqual(b.acquired, [5]);
+    // A ends first: B's membership stays.
+    l.end(a.acquired);
+    assert.deepEqual(l.joinedUniverses(), [5], "still joined for B");
+    assert.deepEqual(dropped, []);
+    l.end(b.acquired);
+    assert.deepEqual(l.joinedUniverses(), []);
+    assert.deepEqual(dropped.length > 0 && dropped.every((g) => g === "239.255.0.5"), true);
   } finally {
     l.close();
   }

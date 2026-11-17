@@ -113,10 +113,27 @@ export function parseArtDmx(buf: Buffer): ParseResult {
 }
 
 /**
- * How long a source counts as live after its last packet: E1.31's network data loss timeout (2.5 s). A source that
+ * How long a source counts as live after its last packet, per protocol. sACN: E1.31's network data loss timeout
+ * (2.5 s). Art-Net: a node may resend unchanged data only about every 4 s (Art-Net 4 spec), so 5 s. A source that
  * sends static data at a reduced keep-alive rate stays in the merge between its packets.
  */
-export const SOURCE_TIMEOUT_MS = 2500;
+export const SOURCE_TIMEOUT_MS: Record<NetProtocol, number> = { sacn: 2500, artnet: 5000 };
+
+/**
+ * Whether a frame with sequence `next` is older than (or the same as) the cached one with `last`, so it must not
+ * replace it. sACN (E1.31 6.7.2): discard when next - last, as a signed 8-bit difference, is in -20..0. Art-Net:
+ * sequence 0 means sequencing is off (always accepted); otherwise 1..255 wraps to 1, and the same 20-frame window
+ * applies. A source silent for longer than its liveness timeout has restarted: its frame is always accepted.
+ */
+export function isOutOfOrder(protocol: NetProtocol, last: number, next: number): boolean {
+  if (protocol === "artnet") {
+    if (last === 0 || next === 0) return false;
+    const d = (next - last + 255) % 255; // 1..255 cycle: 0 = the same frame, 235..254 = up to 20 behind
+    return d === 0 || d >= 255 - 20;
+  }
+  const d = (((next - last) % 256) + 256) % 256; // 0..255
+  return d === 0 || d >= 256 - 20;
+}
 
 /** A multicast group that could not be joined on any interface. */
 export interface MembershipFailure {
@@ -265,10 +282,12 @@ export class NetOutputListener {
 
   /**
    * Join the sACN multicast groups of these universes for a collection (every IPv4 interface). Each call must be
-   * paired with releaseUniverses (end) for the same list. A group no interface could join is a failure, reported.
+   * paired with releaseUniverses (end) for its `acquired` list. A group no interface could join is a failure, reported.
    */
-  joinUniverses(universes: number[]): { groups: string[]; failures: MembershipFailure[] } {
+  joinUniverses(universes: number[]): { groups: string[]; failures: MembershipFailure[]; acquired: number[] } {
     const failures: MembershipFailure[] = [];
+    // The universes this call holds a reference on: the caller releases exactly these (never another call's).
+    const acquired: number[] = [];
     const sock = this.sockets.get("sacn");
     if (sock && this.options.multicast) {
       const ifaces = Object.values(os.networkInterfaces())
@@ -280,6 +299,7 @@ export class NetOutputListener {
         const held = this.memberships.get(u);
         if (held) {
           held.users++;
+          acquired.push(u);
           continue;
         }
         const group = sacnMulticastGroup(u);
@@ -295,14 +315,19 @@ export class NetOutputListener {
             firstError ??= err instanceof Error ? err.message : String(err);
           }
         }
-        if (joined.length) this.memberships.set(u, { interfaces: joined, users: 1 });
-        else failures.push({ universe: u, group, error: firstError ?? "no IPv4 interface" });
+        if (joined.length) {
+          this.memberships.set(u, { interfaces: joined, users: 1 });
+          acquired.push(u);
+        } else failures.push({ universe: u, group, error: firstError ?? "no IPv4 interface" });
       }
     }
-    return { groups: this.joinedUniverses().map(sacnMulticastGroup), failures };
+    return { groups: this.joinedUniverses().map(sacnMulticastGroup), failures, acquired };
   }
 
-  /** Release a collection's groups: a group no running collection needs any more is left on every interface. */
+  /**
+   * Release the groups a collection acquired (joinUniverses' `acquired`): a group no running collection needs any more
+   * is left on every interface.
+   */
   releaseUniverses(universes: number[]): void {
     const sock = this.sockets.get("sacn");
     for (const u of new Set(universes)) {
@@ -338,6 +363,12 @@ export class NetOutputListener {
     const key = r.frame.cid ?? `${rinfo.address}:${r.frame.physical ?? 0}`;
     const id = `${protocol}|${r.frame.universe}|${key}`;
     const prev = this.sources.get(id);
+    if (prev && now - prev.lastSeen <= SOURCE_TIMEOUT_MS[protocol] && isOutOfOrder(protocol, prev.frame.sequence, r.frame.sequence)) {
+      // A delayed older frame (or a duplicate) must not replace newer values in the cache.
+      const reason = "out-of-order or duplicate frame (sequence not newer than the cached one)";
+      this.ignored.set(reason, (this.ignored.get(reason) ?? 0) + 1);
+      return { ok: false, reason };
+    }
     if (prev) {
       prev.frame = r.frame;
       prev.packets++;

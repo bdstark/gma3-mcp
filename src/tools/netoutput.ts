@@ -124,17 +124,18 @@ export async function collectNetworkOutput(listener: NetOutputListener, raw: Col
   // The collection runs from here to end(): the listener is not closed by its idle timer meanwhile.
   listener.begin();
   const joinList = universes?.length ? universes : DEFAULT_MULTICAST_UNIVERSES;
-  let joined = false;
+  // Only the memberships this collection acquired are released at its end, never another collection's.
+  let acquired: number[] = [];
   try {
     const sockets = await listener.ensure();
     if (!sockets.some((s) => s.listening)) {
       return { result: { tool: "gma3_network_output", error: "could not listen on either port", sockets: socketReport(sockets) }, isError: true };
     }
     const membership = listener.joinUniverses(joinList);
-    joined = true;
+    acquired = membership.acquired;
     return await collectWindow(listener, { universes, listenMs, samples, channels, sockets, groups: membership.groups, failures: membership.failures });
   } finally {
-    listener.end(joined ? joinList : []);
+    listener.end(acquired);
   }
 }
 
@@ -146,7 +147,7 @@ async function collectWindow(
   const wanted = universes?.length ? new Set(universes) : undefined;
   // Merge participants are the sources live at that moment (a packet within SOURCE_TIMEOUT_MS), not only those that
   // happened to send during the window: a keep-alive source between two packets still holds its universe.
-  const liveAt = (t: number) => listener.allSources().filter((s) => t - s.lastSeen <= SOURCE_TIMEOUT_MS && (!wanted || wanted.has(s.universe)));
+  const liveAt = (t: number) => listener.allSources().filter((s) => t - s.lastSeen <= SOURCE_TIMEOUT_MS[s.protocol] && (!wanted || wanted.has(s.universe)));
 
   const start = Date.now();
   const baseline = new Map(listener.allSources().map((s) => [`${s.protocol}|${s.universe}|${s.key}`, s.packets]));
@@ -221,7 +222,7 @@ async function collectWindow(
       channels ? "values: the selected channels ({channel: value}, 0..255)" : "values: nonzero channels only ({channel: value}, 0..255); pass channels for a range including zeros",
       "values are what the console puts on the network (after its merge and priority); with several sources, the highest sACN priority wins and equal ones merge HTP",
       "a static universe may be sent at a reduced keep-alive rate, so a low fps does not mean a problem",
-      `a source counts as live for ${SOURCE_TIMEOUT_MS} ms after its last packet; fps counts the packets of this window only`,
+      `a source counts as live after its last packet for ${SOURCE_TIMEOUT_MS.sacn} ms (sACN) or ${SOURCE_TIMEOUT_MS.artnet} ms (Art-Net, which may resend static data every 4 s); fps counts the packets of this window only; a frame older than the cached one (by sequence) is ignored`,
       "read-only and passive: no bridge request; the listener closes after a minute with no call",
     ],
   };

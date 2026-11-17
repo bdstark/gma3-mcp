@@ -26,7 +26,7 @@ Per universe:
 | `priority` | sACN: the winning priority (absent when no active stream is left) |
 | `fps` | packets per second during the window from the contributing sources (a static universe may be sent at a reduced keep-alive rate; 0 when no active stream is left) |
 | `slots`, `nonzero` | slots in the frame, channels above 0 |
-| `merge` | `single source`, `<name> wins at priority N`, or `HTP of N sources`: the highest sACN priority wins, equal ones merge HTP. The participants are the sources that are live (a packet within the last 2.5 s, E1.31's data loss timeout), not only those that sent during the window, so a keep-alive source quiet for a short window keeps its universe. Preview and terminated streams never take part: when only they are left the merge is `no active stream` with no values |
+| `merge` | `single source`, `<name> wins at priority N`, or `HTP of N sources`: the highest sACN priority wins, equal ones merge HTP. The participants are the sources that are live (a packet within the last 2.5 s for sACN, E1.31's data loss timeout; 5 s for Art-Net, which may resend static data only every 4 s), not only those that sent during the window, so a keep-alive source quiet for a short window keeps its universe. Preview and terminated streams never take part: when only they are left the merge is `no active stream` with no values |
 | `sources` | each live sender: name and CID (sACN), IP, priority, fps (this window), last sequence number, `preview` / `terminated` flags, `last_seen_ms_ago` |
 | `values` | `{channel: value}` (0..255) |
 
@@ -58,11 +58,16 @@ The hints cover the usual causes:
   held it returns an error. A protocol whose bind failed is tried again on the next call, so it recovers once the
   port is free.
 - sACN multicast: the listener joins `239.255.(u >> 8).(u & 255)` on every IPv4 interface for the universes asked for
-  (1-4 when none are given) for the call, and leaves each group again when no running call needs it, so repeated
+  (1-4 when none are given) for the call, and leaves each group it acquired when no running call needs it (a call releases only memberships it
+  acquired itself, never one an overlapping call still uses), so repeated
   calls for different universes do not pile up memberships (Linux allows 20 per socket by default). A group no
   interface could join is reported in `multicast_failures`. `GMA3_NET_OUTPUT_MULTICAST=0` turns joining off.
 - The latest frame is kept per protocol, universe and source (sACN by CID, Art-Net by sender address and physical
-  port), with the packet count and the time last seen.
+  port), with the packet count and the time last seen. A frame whose sequence number is not newer than the cached
+  one is ignored (counted in `ignored_packets`), so a delayed older packet never replaces newer values: sACN by
+  E1.31's rule (a difference of -20..0, wrapping at 256), Art-Net the same over 1..255, where sequence 0 means
+  unsequenced and is always accepted. A source silent for longer than its liveness timeout has restarted, and its
+  next frame is accepted whatever its sequence.
 - The sockets close after `GMA3_NET_OUTPUT_IDLE_MS` (default 60 s) with no call, and the frames are dropped. The
   countdown does not run while a call is collecting; it starts when the last one ends. Nothing listens permanently.
 
@@ -87,4 +92,6 @@ short and truncated), channel lists and options, the priority / HTP merge, an en
 to the listener on ephemeral ports (values, fps, samples of a rising fade, ignored packets, idle close), the hints
 when nothing arrives, a port held by another socket, and the tool over MCP with no bridge running. Review cases: an
 idle time shorter than `listen_ms`, a failed bind retried once the port is free, a quiet live high-priority source,
-multicast groups left after each call and a join failure reported, and preview-only or terminated-only streams.
+multicast groups left after each call and a join failure reported, and preview-only or terminated-only streams;
+round 2: Art-Net liveness of 5 s, out-of-order frames ignored, and overlapping calls releasing only their own
+memberships.
