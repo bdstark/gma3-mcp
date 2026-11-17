@@ -593,6 +593,26 @@ export async function buildInPreview(ctx: ToolContext, o: { items: PreviewItem[]
       },
     },
     {
+      // A look split into selection parts leaves only its last part selected at the Store. With a ChannelFilter that
+      // stores only the selected fixtures ("Active For Selected", "All For Selected"), the cue or preset would get only
+      // that part, so split looks need a ChannelFilter that does not depend on the selection. Checked before anything
+      // is sent, with or without verify; the operator's preference is never overridden.
+      name: "check_store_scope",
+      run: async () => {
+        if (!allLooks.some((l) => l.selectionPart)) return asRead({ name: "check_store_scope", status: "succeeded", op: "preset.context", detail: "no look is split: the store takes the look's whole selection" });
+        let context: { preferences?: Record<string, unknown>; preferencesReadable?: boolean };
+        try {
+          context = (await bridge.request("preset.context", {}, t)) as typeof context;
+        } catch (err) {
+          return asRead(stepFromError("check_store_scope", err, { op: "preset.context" }));
+        }
+        const filter = context.preferencesReadable ? context.preferences?.ChannelFilter : undefined;
+        if (typeof filter !== "string" || filter.trim() === "") return failedRead("check_store_scope", "a look's selection is too long for one command and is built in parts, but the store preference ChannelFilter could not be read, so whether the store would take every part is unknown; nothing was sent. Store the fixtures as a group and give the group instead");
+        if (/for\s*selected/i.test(filter)) return failedRead("check_store_scope", `a look's selection is too long for one command and is built in parts, and the store preference ChannelFilter is ${JSON.stringify(filter)}: the store would take only the last part's fixtures. Nothing was sent. Ask the operator to set ChannelFilter to Active, or store the fixtures as a group and give the group`);
+        return asRead({ name: "check_store_scope", status: "succeeded", op: "preset.context", detail: { ChannelFilter: filter, note: "the store takes every active value, whatever is selected, so every part of a split look is stored" } });
+      },
+    },
+    {
       name: "check_fixtures",
       run: async () => {
         for (const sel of new Set(allLooks.map((l) => l.fixtures))) {

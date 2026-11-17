@@ -26,7 +26,10 @@ command holds at most 4,096 characters (`src/selection-batches.ts`). A selection
 given. One over it is first compacted: a repeated keyword is dropped (`Fixture 1 + Fixture 3` becomes `Fixture 1 + 3`)
 and three or more consecutive ascending fixture ids become `a Thru b`, giving the same fixtures in the same order. If it
 still doesn't fit, the look is built in parts. Each part gets its own `ClearSelection`, its share of the selection and
-the look's whole content, and is checked on its own, so every fixture gets every value and every check. With
+the look's whole content, and is checked on its own, so every fixture gets every value and every check. Only the last part is selected at the store, so
+splitting needs the store preference `ChannelFilter` to store every active value (`Active` or `All`). With a
+"For Selected" filter, or one that can't be read, the call is refused at `check_store_scope` before anything is
+sent, and the operator's preference is never changed. With
 `detail: true` the report lists each part with `selectionPart` (`"2/5"`), under the look's own number.
 Some selections stay one command, as they were before this
 bound: a phaser look (a phaser spreads across its whole selection), a selection that removes fixtures with `-`, and

@@ -53,6 +53,8 @@ interface Seq {
 }
 
 class Console {
+  /** The operator's store preference ChannelFilter (preset.context); null: the preferences cannot be read. */
+  channelFilter: string | null = "Active";
   fixtures: Record<string, string[]> = {
     "101": ["Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"],
     "102": ["Dimmer", "ColorRGB_R", "ColorRGB_G", "ColorRGB_B"],
@@ -294,6 +296,7 @@ class Console {
     f.reset();
     f.onCommand((cmd) => this.apply(cmd));
     f.on("programmer", (args) => this.programmer(args));
+    f.on("preset.context", () => (this.channelFilter === null ? { preferences: {}, preferencesReadable: false } : { preferences: { ChannelFilter: this.channelFilter, StoreSource: "Programmer" }, preferencesReadable: true }));
     f.on("objects", (args) => this.objects(String(args.ref), Array.isArray(args.fields) ? (args.fields as string[]) : []));
     f.on("children", (args) => {
       if (args.ref === "ShowData.Masters.Speed") return { items: [] };
@@ -419,6 +422,36 @@ test("store_cues: a 530-fixture look over the one-command bound is built in part
     assert(storeAt > c.commands.indexOf(selects[1]), "one store, after the last part");
     assert.equal(c.commands.filter((cmd) => cmd.startsWith("[P] Store Sequence 981")).length, 1);
     normalUntouched(c);
+  } finally {
+    await h.close();
+  }
+});
+
+test("store_cues: a split look is refused before anything is sent when ChannelFilter stores only the selection, or cannot be read", async () => {
+  for (const [filter, pattern] of [["Active For Selected", /ChannelFilter is "Active For Selected": the store would take only the last part/], ["All For Selected", /ChannelFilter is "All For Selected"/], [null, /ChannelFilter could not be read/]] as Array<[string | null, RegExp]>) {
+    for (const verify of [true, false]) {
+      const { h, c } = await setup();
+      try {
+        c.channelFilter = filter;
+        const ids = Array.from({ length: 530 }, (_, i) => String(10001 + 2 * i));
+        for (const id of ids) c.fixtures[id] = ["Dimmer"];
+        const before = c.commands.length;
+        const { result, isError } = await h.callJson("gma3_store_cues", { sequence: 981, mode: "create", exclusive: true, verify, cues: [{ cue: 1, fixtures: ids.join(" + "), intensity: 70 }] });
+        assert.equal(isError, true, `${filter} verify ${verify}`);
+        assert.match(errors({ result }), pattern);
+        assert.deepEqual(c.commands.slice(before), [], `${filter} verify ${verify}: nothing was sent`);
+        assert.equal(c.seqs.has(981), false);
+      } finally {
+        await h.close();
+      }
+    }
+  }
+  // A look that is not split stores as before, whatever the ChannelFilter.
+  const { h, c } = await setup();
+  try {
+    c.channelFilter = "Active For Selected";
+    const { isError, result } = await h.callJson("gma3_store_cues", { sequence: 982, mode: "create", exclusive: true, cues: [{ cue: 1, fixtures: "101 + 102", intensity: 50 }] });
+    assert.equal(isError, false, JSON.stringify(result));
   } finally {
     await h.close();
   }
