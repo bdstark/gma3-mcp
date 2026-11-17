@@ -46,10 +46,21 @@ export function refLabel(r: ObjectRefInfo | null | undefined): string | null {
   return r.name ? `${where} "${r.name}"` : where;
 }
 
+/** A referenced preset's full address (its data pool included), or null: what tells two same-labelled presets apart. */
+export function refAddress(r: ObjectRefInfo | null | undefined): string | null {
+  if (!r || r.valid === false) return null;
+  return r.addrNative ?? r.addr ?? null;
+}
+
 const round = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v * 1000) / 1000 : v === undefined ? null : v);
 
-/** A stored value as a compact, comparable description (null fields left out). */
-export function valueOf(r: PresetRow): Row {
+/**
+ * A stored value as a compact description (null fields left out). With `identity` (comparisons: gma3_cue_diff,
+ * gma3_tracking_leaks), each preset reference's full address is kept too (presetAddr, relPresetAddr,
+ * stepPresetAddrs), so Preset 4.12 "Red" of DataPool 1 and of DataPool 2 differ (review of #129); the labels stay short.
+ */
+export function valueOf(r: PresetRow, opts: { identity?: boolean } = {}): Row {
+  const ref = (x: ObjectRefInfo | null | undefined) => refLabel(x);
   const out: Row = {};
   const put = (k: string, v: unknown) => {
     if (v !== null && v !== undefined) out[k] = v;
@@ -64,8 +75,12 @@ export function valueOf(r: PresetRow): Row {
       const vals = layer(k);
       if (vals.some((v) => v !== null)) put(name, vals);
     }
-    const integrated = r.steps.map((s) => refLabel(s.integrated));
+    const integrated = r.steps.map((s) => ref(s.integrated));
     if (integrated.some((x) => x !== null)) put("stepPresets", integrated);
+    if (opts.identity) {
+      const addrs = r.steps.map((s) => refAddress(s.integrated));
+      if (addrs.some((x) => x !== null)) put("stepPresetAddrs", addrs);
+    }
     put("speed", round(r.speed));
     put("phase", round(r.phase));
     // Measure and the speed master change playback timing too (review of #129).
@@ -75,8 +90,12 @@ export function valueOf(r: PresetRow): Row {
     put("value", round(r.value));
   }
   put("relative", round(r.relative));
-  put("preset", refLabel(r.absPreset));
-  put("relPreset", refLabel(r.relPreset));
+  put("preset", ref(r.absPreset));
+  put("relPreset", ref(r.relPreset));
+  if (opts.identity) {
+    put("presetAddr", refAddress(r.absPreset));
+    put("relPresetAddr", refAddress(r.relPreset));
+  }
   put("fade", round(r.fade));
   put("delay", round(r.delay));
   if (r.cooked) out.cooked = true;

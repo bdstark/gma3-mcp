@@ -296,6 +296,30 @@ test("preset usage: the cue budget stops the scan with a resume point, and resum
   assert.equal(second.result.usages[0].sequence, 3);
 });
 
+test("preset usage: max_seconds is checked before each sequence listing; the next sequence is not listed and resumes from its first cue", async (t) => {
+  show.sequences = [1, 2].map((s) => ({ no: s, name: `S${s}`, cues: [1, 2].map((c) => ({ no: c, parts: [{ part: 0, rows: [row("101", "Dimmer", 1, s === 2 && c === 2 ? { absPreset: RED } : {})] }] })) }));
+  // The clock jumps past the budget while the last cue of Sequence 1 is read.
+  let offset = 0;
+  const realNow = Date.now.bind(Date);
+  t.mock.method(Date, "now", () => realNow() + offset);
+  const contents = h.fake.handlerFor("cueContents")!;
+  h.fake.on("cueContents", async (args, req) => {
+    if (String(args.ref).endsWith("Sequence 1 Cue 2")) offset += 3_600_000;
+    return contents(args, req);
+  });
+  const first = await h.callJson("gma3_preset_usage", { preset: "4.12", max_seconds: 5 });
+  assert.equal(first.result.complete, false);
+  assert.deepEqual(first.result.next, { resume: { sequence: 2, cue: "0.001" } });
+  assert.match(first.result.reasons.join(" "), /time budget \(max_seconds\) was reached/);
+  assert.equal(h.fake.requests.filter((r) => r.op === "children" && r.args.ref === "Sequence 2").length, 0, "Sequence 2 was not listed");
+  t.mock.restoreAll();
+  h.fake.on("cueContents", contents);
+  const second = await h.callJson("gma3_preset_usage", { preset: "4.12", resume: first.result.next.resume });
+  assert.equal(second.result.complete, true);
+  assert.equal(second.result.coverage.cues.scanned, 2);
+  assert.deepEqual(second.result.usages.map((u: Row) => [u.sequence, u.cue]), [[2, "2"]]);
+});
+
 test("preset usage: a large show stays bounded (counts complete, rows capped)", async () => {
   const rows = Array.from({ length: 40 }, (_, i) => row(String(101 + i), "ColorRGB_R", 100, { absPreset: RED }));
   show.sequences = Array.from({ length: 30 }, (_, s) => ({ no: s + 1, name: `Seq ${s + 1}`, cues: Array.from({ length: 40 }, (_, c) => ({ no: c + 1, parts: [{ part: 0, rows }] })) }));
@@ -610,5 +634,26 @@ test("a numbered cue named OffCue or CueZero is scanned by preset usage and trac
   const { result } = await h.callJson("gma3_tracking_leaks", { sequence: 7 });
   assert.equal(result.complete, true);
   assert.equal(result.candidates.find((c: Row) => c.attribute === "Gobo1")?.storedIn, "1", "the value stored in cue 1 (named OffCue) is a candidate");
+  onlyReads();
+});
+
+test("cue diff: Preset 4.12 \"Red\" of DataPool 1 and of DataPool 2 are different presets, in values, steps and the preset lists", async () => {
+  const RED2: Ref = { ...RED, addr: "14.14.2.4.4.12", addrNative: "ShowData.DataPools.Two.PresetPools.4.12" };
+  const cue = (no: number, ref: Ref) => ({
+    no,
+    name: "Look",
+    parts: [{ part: 0, rows: [row("101", "ColorRGB_R", 100, { absPreset: ref }), { fixture: "201", attribute: "ColorRGB_G", stepCount: 2, steps: [{ step: 1, absolute: 0, integrated: ref }, { step: 2, absolute: 100, integrated: BLUE }] }] }],
+  });
+  show.sequences = [{ no: 1, name: "A", cues: [cue(1, RED), cue(2, RED2), cue(3, RED)] }];
+  const { result } = await h.callJson("gma3_cue_diff", { a: { sequence: 1, cue: 1 }, b: { cue: 2 } });
+  assert.equal(result.identical, false);
+  assert.deepEqual(result.values.find((x: Row) => x.attribute === "ColorRGB_R").fields, ["presetAddr"]);
+  assert.deepEqual(result.values.find((x: Row) => x.attribute === "ColorRGB_G").fields, ["stepPresetAddrs"]);
+  assert.equal(result.values.find((x: Row) => x.attribute === "ColorRGB_R").a.preset, 'Preset 4.12 "Red"', "labels stay short");
+  assert.deepEqual(result.presets.onlyA, ['Preset 4.12 "Red" @ ShowData.DataPools.Default.PresetPools.4.12']);
+  assert.deepEqual(result.presets.onlyB, ['Preset 4.12 "Red" @ ShowData.DataPools.Two.PresetPools.4.12']);
+  const same = await h.callJson("gma3_cue_diff", { a: { sequence: 1, cue: 1 }, b: { cue: 3 } });
+  assert.equal(same.result.identical, true);
+  assert.deepEqual(same.result.presets.onlyA, []);
   onlyReads();
 });

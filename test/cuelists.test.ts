@@ -1471,6 +1471,29 @@ test("store_cues: a value the cue did not store, or stored differently, is a mis
   }
 });
 
+test("store_cues: with Active For Selected and an incomplete programmer read, no value is claimed as left out; the check is unavailable", async () => {
+  for (const incomplete of ["all", "selection"]) {
+    const { h, c } = await setup();
+    try {
+      c.prefs.ChannelFilter = "Active For Selected";
+      const prog = h.fake.handlerFor("programmer")!;
+      h.fake.on("programmer", async (args, req) => {
+        const res = (await prog(args, req)) as Record<string, unknown>;
+        // Only the reads right before a store: the look checks read with other scopes.
+        return args.scope === incomplete && args.maxChannels === 50000 ? { ...res, coverage: { complete: false } } : res;
+      });
+      const { result } = await h.callJson("gma3_store_cues", twoCues(957));
+      const cue2 = result.cues[1];
+      assert.notEqual(cue2.verification, "mismatched", `${incomplete}: ${JSON.stringify(cue2)}`);
+      assert.equal(cue2.verification, "unavailable", incomplete);
+      assert.equal(cue2.storedValues?.leftOutByFilter, undefined, `${incomplete}: nothing counted as left out`);
+      assert.equal(result.storedValues?.leftOutByFilter, undefined);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
 test("store_cues: with Active For Selected only the last look's selection is stored; the other looks' values are reported missing", async () => {
   const { h, c } = await setup();
   try {

@@ -61,7 +61,9 @@ stored again. Each cue's `storedValues` (full result, or compact when the cue di
 
 With **`Active For Selected`**, each look is selected in turn, so the console stores only the **last look's
 selection**. The values of the cue's other looks are counted as `leftOutByFilter` and the cue is `mismatched`: it
-does not hold what was asked. A cue with a single look on all its fixtures is not affected.
+does not hold what was asked. A cue with a single look on all its fixtures is not affected. Values are counted as left out
+only when both the selection's and the whole programmer's reads are complete; otherwise nothing is claimed and that
+check is `unavailable`.
 
 The plugin expects `ChannelFilter` `Active`. Any other value is reported once per call in `warnings`, even with
 `verify: false`.

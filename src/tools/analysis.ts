@@ -55,7 +55,7 @@ import { findReferencesWhere } from "./playback.js";
 import { FIELD_ERRORS_BRIDGE, readAllChildren, versionAtLeast } from "./poolusage.js";
 import type { ObjectRefInfo, PresetRead, PresetRow } from "./presets.js";
 import { cueNo } from "./speed.js";
-import { PART_DATA_BRIDGE, readPartRows, refLabel, valueOf } from "./storedvalues.js";
+import { PART_DATA_BRIDGE, readPartRows, refAddress, refLabel, valueOf } from "./storedvalues.js";
 
 export { refLabel, valueOf };
 
@@ -429,6 +429,15 @@ export async function presetUsage(ctx: ToolContext, raw: PresetUsageArgs): Promi
   let stopped: string | undefined;
 
   outer: for (const seq of inScope) {
+    // The budget is checked before each sequence listing too (review of #129): a listing is a request of its own, and
+    // a show with many sequences could otherwise run past max_seconds before its first cue. A sequence not yet listed
+    // resumes from its first cue (0.001: the smallest cue number), or from the resume point it was given.
+    const before = budget.exhausted();
+    if (before) {
+      stopped = before;
+      next = { sequence: seq.no, cue: resume && seq.no === resume.sequence ? String(resume.cue) : "0.001" };
+      break;
+    }
     const listing = await listCues(bridge, seq.no, t);
     if (!listing.complete) reasons.push(`Sequence ${seq.no}: the cue listing is incomplete: ${listing.reason}`);
     let cues = listing.cues;
@@ -642,7 +651,7 @@ function valueMap(c: CueRead): Map<string, { fixture: string; attribute: string;
     for (const r of p.rows) {
       let key = `${r.fixture}|${r.attribute}`;
       if (out.has(key)) key = `${key}|part ${p.part}`;
-      out.set(key, { fixture: r.fixture, attribute: r.attribute, part: p.part, v: valueOf(r) });
+      out.set(key, { fixture: r.fixture, attribute: r.attribute, part: p.part, v: valueOf(r, { identity: true }) });
     }
   }
   return out;
@@ -677,7 +686,10 @@ export function diffCues(a: CueRead, b: CueRead): { cue: Row[]; parts: Row[]; va
     const y = mb.get(key);
     const id = (x ?? y)!;
     if (x && y) {
-      const fields = changedFields(x.v, y.v);
+      // An address field is reported only when its label is the same: then the preset differs by its data pool.
+      const raw = changedFields(x.v, y.v);
+      const labelOf: Record<string, string> = { presetAddr: "preset", relPresetAddr: "relPreset", stepPresetAddrs: "stepPresets" };
+      const fields = raw.filter((f) => !(f in labelOf && raw.includes(labelOf[f])));
       if (x.part !== y.part) fields.push("part");
       if (!fields.length) {
         same++;
@@ -694,24 +706,37 @@ export function diffCues(a: CueRead, b: CueRead): { cue: Row[]; parts: Row[]; va
     }
   }
   values.sort((p, q) => fixtureOrder(String(p.fixture), String(q.fixture)) || String(p.attribute).localeCompare(String(q.attribute)));
+  // A preset is keyed by its label and, when known, its full address: same-labelled presets of two data pools are two
+  // presets (review of #129). The lists show the short label, with the address only where two presets share a label.
   const presetsOf = (m: typeof ma, c: CueRead) => {
-    const s = new Set<string>();
-    for (const e of m.values()) for (const k of ["preset", "relPreset"]) if (typeof e.v[k] === "string") s.add(e.v[k] as string);
-    for (const e of m.values()) for (const p of asList(e.v.stepPresets)) s.add(String(p));
+    const s = new Map<string, string>();
+    const add = (label: unknown, addr: unknown, suffix = "") => s.set(`${label}${addr ? ` @ ${addr}` : ""}${suffix}`, `${label}${suffix}`);
+    for (const e of m.values()) for (const k of ["preset", "relPreset"]) if (typeof e.v[k] === "string") add(e.v[k], e.v[`${k}Addr`]);
+    for (const e of m.values()) {
+      const addrs = asList(e.v.stepPresetAddrs);
+      asList(e.v.stepPresets).forEach((p, i) => { if (p !== null) add(p, addrs[i]); });
+    }
     for (const p of c.parts) for (const r of p.recipes) {
-      const l = refLabel(asRow(r.presetRef) as unknown as ObjectRefInfo);
-      if (l && Object.keys(asRow(r.presetRef)).length) s.add(`${l} (recipe)`);
+      const info = asRow(r.presetRef) as unknown as ObjectRefInfo;
+      const l = refLabel(info);
+      if (l && Object.keys(asRow(r.presetRef)).length) add(l, refAddress(info), " (recipe)");
     }
     return s;
   };
   const pa = presetsOf(ma, a);
   const pb = presetsOf(mb, b);
+  const labels = new Map<string, Set<string>>();
+  for (const [key, label] of [...pa, ...pb]) labels.set(label, (labels.get(label) ?? new Set()).add(key));
+  const shown = (key: string) => {
+    const label = (pa.get(key) ?? pb.get(key))!;
+    return (labels.get(label)?.size ?? 0) > 1 ? key : label;
+  };
   return {
     cue,
     parts,
     values,
     counts: { aValues: ma.size, bValues: mb.size, added, removed, changed, same },
-    presets: { onlyA: [...pa].filter((x) => !pb.has(x)).sort(), onlyB: [...pb].filter((x) => !pa.has(x)).sort(), both: [...pa].filter((x) => pb.has(x)).length },
+    presets: { onlyA: [...pa.keys()].filter((x) => !pb.has(x)).map(shown).sort(), onlyB: [...pb.keys()].filter((x) => !pa.has(x)).map(shown).sort(), both: [...pa.keys()].filter((x) => pb.has(x)).length },
   };
 }
 
@@ -869,7 +894,7 @@ export function foldLeaks(cues: CueRead[], opts: LeakOptions, reachedEnd: boolea
       }
     }
     for (const p of c.parts) if (isSet(p.timing.trackingDistance)) seen(out.setTexts.trackingDistance, String(p.timing.trackingDistance));
-    for (const [key, r] of stored) open.set(key, { fixture: r.fixture, attribute: r.attribute, from: c.cue, value: valueOf(r), cues: 0, last: c.cue, revisits: [], ...(distanceOf.get(key) ? { excluded: "trackingDistance" } : {}) });
+    for (const [key, r] of stored) open.set(key, { fixture: r.fixture, attribute: r.attribute, from: c.cue, value: valueOf(r, { identity: true }), cues: 0, last: c.cue, revisits: [], ...(distanceOf.get(key) ? { excluded: "trackingDistance" } : {}) });
   }
   for (const run of open.values()) close(run, reachedEnd ? "end of the sequence (still on until OffCue or another release)" : "end of the scanned range");
   out.candidates.sort((p, q) => (q.revisits as number) - (p.revisits as number) || (q.trackedThrough as number) - (p.trackedThrough as number) || fixtureOrder(String(p.fixture), String(q.fixture)));

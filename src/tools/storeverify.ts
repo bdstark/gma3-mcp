@@ -64,6 +64,8 @@ export interface StoreExpectation {
    * not selected (count and the first labels). Absent when not asked, not applicable or not readable.
    */
   leftOut?: { count: number; shown: string[] };
+  /** With `leftOut` asked for: why the values a "... For Selected" filter keeps out could not be counted. */
+  leftOutUnknown?: string;
 }
 
 /** The ChannelFilter / StoreSource pair as an expectation model, or null when it is not modelled. */
@@ -144,16 +146,26 @@ export async function captureStoreExpectation(bridge: Gma3Bridge, t: number, opt
     const keep = (r: ProgRow) => model === "all" || model === "all_selected" || isActive(r);
     const rows = p.rows.filter(keep);
     let leftOut: StoreExpectation["leftOut"];
+    let leftOutReason: string | undefined;
+    // Values are claimed as left out only when both reads are complete: a value missing from an incomplete selection
+    // read may well be selected (review of #129), so nothing is claimed then and the check stays unavailable.
     if (opts.leftOut && scope === "selection") {
-      try {
-        const whole = await readProgrammer(bridge, "all", t);
-        const taken = new Set(rows.map(rowKey));
-        const out = whole.rows.filter((r) => keep(r) && !taken.has(rowKey(r)));
-        leftOut = { count: out.length, shown: out.slice(0, SHOWN).map(rowLabel) };
-      } catch {
-        leftOut = undefined; // not readable: nothing is claimed
+      if (!p.complete) leftOutReason = "the selection's programmer values could not be read completely, so the values the filter keeps out are not counted";
+      else {
+        try {
+          const whole = await readProgrammer(bridge, "all", t);
+          if (!whole.complete) leftOutReason = "the whole programmer could not be read completely, so the values the filter keeps out are not counted";
+          else {
+            const taken = new Set(rows.map(rowKey));
+            const out = whole.rows.filter((r) => keep(r) && !taken.has(rowKey(r)));
+            leftOut = { count: out.length, shown: out.slice(0, SHOWN).map(rowLabel) };
+          }
+        } catch {
+          leftOutReason = "the whole programmer could not be read, so the values the filter keeps out are not counted"; // nothing is claimed
+        }
       }
     }
+
     return {
       channelFilter,
       storeSource,
@@ -162,6 +174,7 @@ export async function captureStoreExpectation(bridge: Gma3Bridge, t: number, opt
       complete: p.complete,
       ...(p.complete ? (reason ? { reason } : {}) : { reason: [reason, "the programmer could not be read completely"].filter(Boolean).join("; ") }),
       ...(leftOut ? { leftOut } : {}),
+      ...(leftOutReason ? { leftOutUnknown: leftOutReason } : {}),
     };
   } catch (err) {
     const error = `the programmer could not be read before the store (${err instanceof Error ? err.message : String(err)})`;

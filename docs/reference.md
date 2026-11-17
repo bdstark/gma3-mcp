@@ -200,7 +200,9 @@ covers hard values too; `gma3_cue_contents` returns them per part (`storedValues
 - **`gma3_cue_diff`** `{a: {sequence, cue}, b: {sequence?, cue}}` compares the stored data of two cues, keyed by
   fixture and attribute: `added`, `removed` and `changed` rows with the changed `fields` (`value`, `steps`,
   `stepValues`, `stepRelative`, `stepWidth`, `stepTransition`, `stepAccel`, `stepDecel`, `stepPresets` (the preset of
-  each step, in step order), `speed`, `phase`, `measure`, `speedMaster`, `relative`, `preset`, `relPreset`, `fade`, `delay`, `cooked`, `part`),
+  each step, in step order), `speed`, `phase`, `measure`, `speedMaster`, `relative`, `preset`, `relPreset`, `fade`, `delay`, `cooked`, `part`,
+  and `presetAddr` / `relPresetAddr` / `stepPresetAddrs` when the label is the same but the full address differs, e.g. Preset
+  4.12 "Red" of another data pool; the preset lists then add the address),
   the presets only one cue references, the cue properties that differ and per part the timing, command, MIB and recipe
   lines that differ (every recipe property: selection, preset, values, FadeX, DelayX, SpeedX, PhaseX, MAtricks, filter,
   generator, enabled).
@@ -223,7 +225,8 @@ covers hard values too; `gma3_cue_contents` returns them per part (`storedValues
 
 Each cue costs one `cueContents` and one `preset.read` per part with data, so scans are bounded: `max_cues` (300 for
 usages, 500 for leaks), `max_seconds` (90) and `max_results` (100 rows; the counts stay complete for what was
-scanned). A stopped usage scan returns `next.resume` to pass back as `resume`. A leak scan is narrowed with `from`/`to`.
+scanned). The budget is checked before each sequence listing as well as before each cue. A stopped usage scan returns
+`next.resume` to pass back as `resume` (`cue: "0.001"` for a sequence not listed yet: from its first cue). A leak scan is narrowed with `from`/`to`.
 Values stored before `from` are unknown. `complete: false` with `reasons` covers a budget stop, a failed
 `cueContents` or `preset.read`, a part with more than 5000 values (`truncated`), a part without a per-fixture table,
 an incomplete or changed listing, an incomplete executor scan, a requested sequence that does not exist and a bridge older than 0.47.0 (listings
