@@ -77,6 +77,8 @@ class LoadConsole {
       },
     };
   }
+  /** The port the console's bridge listens on, as its ping reports it (behind a tunnel it differs from the client's). */
+  consolePort: number | undefined = undefined;
   /** The ping reports show.saveNeeded (bridge 0.53.0); older bridges leave it out. */
   reportsSaveNeeded = false;
   keystrokes: string[] = [];
@@ -94,7 +96,7 @@ class LoadConsole {
   install(h: Harness) {
     h.ctx.oscCommand = this.osc;
     h.ctx.keystroke = this.keystroke;
-    h.fake.on("ping", () => (this.running ? { bridgeVersion: this.shows.get(this.current)?.bridgeVersion, instance: this.instance, ...(this.noShowfile ? {} : { showfile: this.current }), ...(this.reportsSaveNeeded ? { show: { saveNeeded: this.unsavedChanges, fileStatus: "ShowLoaded" } } : {}) } : SILENT));
+    h.fake.on("ping", () => (this.running ? { bridgeVersion: this.shows.get(this.current)?.bridgeVersion, instance: this.instance, ...(this.noShowfile ? {} : { showfile: this.current }), ...(this.reportsSaveNeeded ? { show: { saveNeeded: this.unsavedChanges, fileStatus: "ShowLoaded" } } : {}), ...(this.consolePort !== undefined ? { port: this.consolePort } : {}) } : SILENT));
     h.fake.on("show.files", () => {
       if (!this.running) return SILENT;
       if (this.stallReads > 0) {
@@ -356,6 +358,33 @@ test("review of #133: an old-bridge answer during a slow load does not stop the 
   assert.ok(r.result.restart.oldBridgeAnswers >= 1, JSON.stringify(r.result.restart));
   assert.ok(r.result.restart.sends >= 1, "the start command was sent once the old bridge was silent");
   assert.deepEqual(con.loads, ["Other"]);
+});
+
+test("review of #133: behind a tunnel the restart command names the console's port from the ping, not the client's", async () => {
+  con.consolePort = 9800;
+  const r = await h.callJson("gma3_load_show", { name: "Other", exclusive: true });
+  assert.equal(r.isError, false, r.text);
+  assert.ok(con.oscSends.length >= 1 && con.oscSends.every((c) => c === 'Plugin "gma3_mcp_bridge"'), JSON.stringify(con.oscSends));
+  con.consolePort = 9801;
+  const other = await h.callJson("gma3_load_show", { name: "Show A", exclusive: true });
+  assert.equal(other.isError, false, other.text);
+  assert.ok(con.oscSends.includes('Plugin "gma3_mcp_bridge" "9801"'), JSON.stringify(con.oscSends));
+});
+
+test("review of #133: a LoadShow whose reply was lost is confirmed by the new bridge, not left unknown", async () => {
+  const queue = h.fake.handlerFor("show.load")!;
+  h.fake.on("show.load", (args, req) => {
+    queue(args, req);
+    return SILENT; // the load is queued, its reply never comes
+  });
+  const r = await h.callJson("gma3_load_show", { name: "Other", exclusive: true, timeout_ms: 5000 });
+  assert.equal(r.isError, false, r.text);
+  assert.equal(r.result.outcome, "succeeded", r.text);
+  assert.equal(r.result.verification.status, "matched");
+  const load = r.result.steps.find((s: { name: string }) => s.name === "load");
+  assert.equal(load.status, "succeeded");
+  assert.match(load.detail.note, /not resent/);
+  assert.equal(h.fake.requests.filter((q) => q.op === "show.load").length, 1, "LoadShow was sent once");
 });
 
 test("review: the answered question still visible for a moment is not a foreign dialog", async () => {

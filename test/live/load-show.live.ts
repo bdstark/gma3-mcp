@@ -1,6 +1,6 @@
 /**
  * Live console test for gma3_load_show: load a scratch copy and bring the bridge back (GMA3_LIVE_LOAD_RESTART: osc,
- * the default, or keystroke on a Mac running onPC), refuse a load over unsaved changes, load the starting show again.
+ * the default, or keystroke on a Mac running onPC), refuse a load over unsaved changes (before LoadShow is sent), load the starting show again.
  *
  * Runs only with GMA3_LIVE=1, GMA3_LIVE_EXCLUSIVE=1 and GMA3_LIVE_LOAD=1 against a disposable show (see README.md in
  * this folder). Not part of `npm test`. Needs:
@@ -73,20 +73,17 @@ liveTest("gma3_load_show: load a scratch copy (bridge restarted), refuse over un
       assert.equal(await current(), A);
     });
 
-    await t.test("unsaved changes + unsaved: refuse: Cancel is pressed, the show stays loaded and unchanged", async () => {
+    await t.test("unsaved changes + unsaved: refuse: refused before LoadShow (the ping's saveNeeded), the show unchanged", async () => {
       await cmd(`Store ${MACRO} "McpLiveLoad"`);
       assert.ok((await total(MACRO)) > 0, `${MACRO} was stored`);
-      // If the store did not mark the show changed, no question comes and B (a scratch copy) is loaded: the asserts fail.
+      // Bridge 0.54.0 reports show.saveNeeded, so the tool refuses before sending LoadShow; no question comes and no
+      // Cancel is pressed. (The dialog path, for a bridge without saveNeeded, is covered offline in test/load-show.test.ts.)
       const r = await load(B);
       t.diagnostic(r.result.summary ?? r.text.slice(0, 300));
       assert.equal(r.isError, true, r.text);
-      const step = r.result.steps.find((s: { name: string }) => s.name === "unsaved_changes");
-      assert.ok(step, r.text);
-      assert.equal(step.detail.clicked, "Cancel");
-      // Refused (an error), with the read-back that nothing was loaded: the same show and bridge instance answer.
-      assert.equal(r.result.verification.status, "matched", r.text);
-      assert.equal(r.result.steps.find((s: { name: string }) => s.name === "read_back")?.status, "failed", r.text);
-      assert.equal(r.result.current, A);
+      assert.match(r.text, /has unsaved changes \(NeedShowSave\); pass unsaved: save or discard/);
+      assert.equal(r.result.steps.find((s: { name: string }) => s.name === "load"), undefined, "LoadShow was not sent");
+      assert.equal(r.result.steps.find((s: { name: string }) => s.name === "unsaved_changes"), undefined, "no question was answered");
       assert.equal(await current(), A);
       assert.ok((await total(MACRO)) > 0, `${MACRO} is still there`);
     });
