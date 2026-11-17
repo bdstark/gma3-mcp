@@ -76,7 +76,9 @@ Pre-flight (read-only; nothing is sent on failure):
   quaternion): then a relative and an absolute position are the same place. Otherwise the call is refused, step
   `check_grouping`, naming the grouping fixture, its position and rotation: place it at 0, 0, 0 with rotation 0, 0, 0
   first (a top-level grouping fixture is placed like any fixture), or in the same call. Within a call, outer fixtures
-  are written first. A grouping fixture whose FID is not a number is refused. Its `mirror_mesh` is not checked.
+  are written first, and a grouping fixture the call moves is read back at the origin with no rotation before any
+  fixture inside it is written (`<fid>.check_grouping_origin`, with or without `verify`): the console can acknowledge a
+  write it ignores, so a mismatch stops the call there. A grouping fixture whose FID is not a number is refused. Its `mirror_mesh` is not checked.
 - The current poses, which go into the result as `restore` and, in the full result, each fixture's `before`. A position or rotation value that is missing
   or not a number refuses the call (it is never read as 0).
 

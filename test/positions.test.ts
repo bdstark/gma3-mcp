@@ -287,6 +287,26 @@ test("gma3_place_fixtures: a fixture inside grouping fixtures at the origin is p
   }
 });
 
+test("gma3_place_fixtures: a grouping fixture whose origin write the console ignores keeps the fixture inside it unwritten, with or without verify", async () => {
+  for (const verify of [true, false]) {
+    const { h, s, sets } = await setup();
+    try {
+      s.fixtures.get(4)!.pos = { x: 5, y: 0, z: 0 };
+      s.ignore.add("POSX");
+      const { result, isError } = await h.callJson("gma3_place_fixtures", { placements: [{ fid: 4, position: { x: 0 } }, { fid: 401, position: { z: 1 } }], verify, detail: true });
+      assert.equal(isError, true, `verify ${verify}: ${JSON.stringify(result, null, 2)}`);
+      assert.deepEqual(sets(), ["Fixture 4.POSX=0"], `verify ${verify}: the fixture inside is not written`);
+      const check = result.steps.find((x: any) => x.name === "401.check_grouping_origin");
+      assert.equal(check.status, "failed");
+      assert.match(check.error, /grouping fixture FID 4 reads 5, 0, 0 m .* not the origin with no rotation/);
+      assert.equal(result.steps.find((x: any) => x.name === "401.POSZ").status, "skipped");
+      assert.deepEqual(s.fixtures.get(401)!.pos, { x: 0, y: 0, z: 0 });
+    } finally {
+      await h.close();
+    }
+  }
+});
+
 test("gma3_place_fixtures: a write the console ignores is a mismatch, not a success", async () => {
   const { h, s } = await setup();
   try {

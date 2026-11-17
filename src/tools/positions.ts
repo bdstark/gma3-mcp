@@ -538,7 +538,36 @@ export async function placeFixtures(ctx: ToolContext, raw: PlaceArgs): Promise<O
     // A write whose reply was lost may have executed: its fixture's state is unknown, never "not changed".
     const uncertain = new Map<number, string>();
     let stopped: string | undefined;
+    // Grouping fixtures this call moved and that were read back at the origin with no rotation. The console may
+    // acknowledge a write it ignores, so a fixture inside one is written only after that read, with or without verify.
+    const confirmedOrigin = new Set<number>();
     for (const { f, sets } of writes) {
+      const pending = (chains.get(f.fid) ?? []).filter((a) => planned.has(a) && !confirmedOrigin.has(a));
+      if (pending.length && !stopped) {
+        const name = `${f.fid}.check_grouping_origin`;
+        try {
+          await sleep(FRAME_WAIT_MS);
+          const now = await readPoses(bridge, pending, t);
+          const off: string[] = [];
+          for (const a of pending) {
+            const p = now.get(a);
+            const atOrigin = p && (["x", "y", "z"] as const).every((k) => Number.isFinite(p.position[k]) && Math.abs(p.position[k]) <= POS_TOL_M);
+            const unrotated = p?.quaternion ? quatEquivalent(p.quaternion, IDENTITY) : false;
+            if (!p) off.push(`FID ${a} could not be read back`);
+            else if (!atOrigin || !unrotated) off.push(`grouping fixture FID ${a} reads ${round(p.position.x / s, 4)}, ${round(p.position.y / s, 4)}, ${round(p.position.z / s, 4)} ${unit} with rotation ${p.quaternion ? `${round(p.rotation.x, 3)}, ${round(p.rotation.y, 3)}, ${round(p.rotation.z, 3)}°` : "unreadable"}, not the origin with no rotation`);
+            else confirmedOrigin.add(a);
+          }
+          if (off.length) {
+            steps.push(asRead({ name, status: "failed", op: "objects", error: `FID ${f.fid} was not written: ${off.join("; ")}` }));
+            stopped = `${name} failed`;
+          } else {
+            steps.push(asRead({ name, status: "succeeded", op: "objects", detail: { grouping: pending, note: "read back at the origin with no rotation before writing the fixture inside" } }));
+          }
+        } catch (err) {
+          steps.push(asRead(stepFromError(name, err, { op: "objects" })));
+          stopped = `${name} could not be read`;
+        }
+      }
       for (const [property, value] of sets) {
         const name = `${f.fid}.${property}`;
         if (stopped) {
