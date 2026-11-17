@@ -147,7 +147,7 @@ async function collectWindow(
   const wanted = universes?.length ? new Set(universes) : undefined;
   // Merge participants are the sources live at that moment (a packet within SOURCE_TIMEOUT_MS), not only those that
   // happened to send during the window: a keep-alive source between two packets still holds its universe.
-  const liveAt = (t: number) => listener.allSources().filter((s) => t - s.lastSeen <= SOURCE_TIMEOUT_MS[s.protocol] && (!wanted || wanted.has(s.universe)));
+  const liveAt = (t: number) => listener.allSources(t).filter((s) => t - s.lastSeen <= SOURCE_TIMEOUT_MS[s.protocol] && (!wanted || wanted.has(s.universe)));
 
   const start = Date.now();
   const baseline = new Map(listener.allSources().map((s) => [`${s.protocol}|${s.universe}|${s.key}`, s.packets]));
@@ -192,6 +192,7 @@ async function collectWindow(
         ...(s.frame.preview ? { preview: true } : {}),
         ...(s.frame.terminated ? { terminated: true } : {}),
         last_seen_ms_ago: now - s.lastSeen,
+        ...(s.preview ? { preview_stream: { packets: s.preview.packets, last_seen_ms_ago: now - s.preview.lastSeen } } : {}),
       })),
       values: pickValues(m.data, channels),
     };
@@ -217,6 +218,7 @@ async function collectWindow(
     universes: rows,
     ...(sampled.length ? { samples: sampled } : {}),
     ...(Object.keys(ignored).length ? { ignored_packets: ignored } : {}),
+    ...(listener.evicted ? { evicted_sources: listener.evicted } : {}),
     ...(hints.length ? { hints } : {}),
     notes: [
       channels ? "values: the selected channels ({channel: value}, 0..255)" : "values: nonzero channels only ({channel: value}, 0..255); pass channels for a range including zeros",

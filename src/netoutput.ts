@@ -155,11 +155,25 @@ export interface SourceState {
   key: string;
   address: string;
   port: number;
+  /**
+   * The latest output frame. While a live (non-preview) frame is within its liveness timeout, sACN preview packets
+   * do not replace it (E1.31 6.2.6: preview data must not affect live output); they go to `preview`.
+   */
   frame: DmxFrame;
+  /** Packets that made `frame` (preview packets kept apart are counted in `preview`). */
   packets: number;
   firstSeen: number;
+  /** When `frame` arrived: the source's liveness for the merge. */
   lastSeen: number;
+  /** The sequence of the newest packet of any kind, and when it came: the order check and the cache's recency. */
+  lastSequence: number;
+  lastPacket: number;
+  /** sACN preview packets received while a live frame was kept, for diagnostics only. */
+  preview?: { frame: DmxFrame; lastSeen: number; packets: number };
 }
+
+/** At most this many sources are cached; past it the least recently heard one is evicted first. */
+export const MAX_SOURCES = 2048;
 
 export interface ListenerOptions {
   host: string;
@@ -348,9 +362,32 @@ export class NetOutputListener {
     }
   }
 
-  /** Every source seen since the sockets opened. */
-  allSources(): SourceState[] {
+  /** Sources evicted from the cache because it was full (expired ones are dropped without counting). */
+  evicted = 0;
+
+  /**
+   * Drop sources whose last packet is older than their liveness timeout. The map is kept in order of the last packet
+   * (an update moves its entry to the end), so the sweep starts at the oldest entry and stops at the first one heard
+   * within the shortest timeout: everything after it is newer.
+   */
+  private sweep(now: number): void {
+    const shortest = Math.min(...Object.values(SOURCE_TIMEOUT_MS));
+    for (const [id, s] of this.sources) {
+      const age = now - s.lastPacket;
+      if (age > SOURCE_TIMEOUT_MS[s.protocol]) this.sources.delete(id);
+      else if (age <= shortest) break;
+    }
+  }
+
+  /** The sources heard within their liveness timeout (older ones are dropped from the cache). */
+  allSources(now = Date.now()): SourceState[] {
+    this.sweep(now);
     return [...this.sources.values()];
+  }
+
+  /** How many sources the cache holds now. */
+  get sourceCount(): number {
+    return this.sources.size;
   }
 
   /** Feed one datagram (used by the sockets; public for tests). */
@@ -362,21 +399,38 @@ export class NetOutputListener {
     }
     const key = r.frame.cid ?? `${rinfo.address}:${r.frame.physical ?? 0}`;
     const id = `${protocol}|${r.frame.universe}|${key}`;
+    this.sweep(now);
     const prev = this.sources.get(id);
-    if (prev && now - prev.lastSeen <= SOURCE_TIMEOUT_MS[protocol] && isOutOfOrder(protocol, prev.frame.sequence, r.frame.sequence)) {
+    if (prev && now - prev.lastPacket <= SOURCE_TIMEOUT_MS[protocol] && isOutOfOrder(protocol, prev.lastSequence, r.frame.sequence)) {
       // A delayed older frame (or a duplicate) must not replace newer values in the cache.
       const reason = "out-of-order or duplicate frame (sequence not newer than the cached one)";
       this.ignored.set(reason, (this.ignored.get(reason) ?? 0) + 1);
       return { ok: false, reason };
     }
     if (prev) {
-      prev.frame = r.frame;
-      prev.packets++;
-      prev.lastSeen = now;
+      prev.lastSequence = r.frame.sequence;
+      prev.lastPacket = now;
       prev.address = rinfo.address;
       prev.port = rinfo.port;
+      const liveKept = !prev.frame.preview && now - prev.lastSeen <= SOURCE_TIMEOUT_MS[protocol];
+      if (r.frame.preview && liveKept) {
+        prev.preview = { frame: r.frame, lastSeen: now, packets: (prev.preview?.packets ?? 0) + 1 };
+      } else {
+        prev.frame = r.frame;
+        prev.packets++;
+        prev.lastSeen = now;
+        if (!r.frame.preview) prev.preview = undefined;
+      }
+      // Most recently heard last: the sweep and the cap evict from the front.
+      this.sources.delete(id);
+      this.sources.set(id, prev);
     } else {
-      this.sources.set(id, { protocol, universe: r.frame.universe, key, address: rinfo.address, port: rinfo.port, frame: r.frame, packets: 1, firstSeen: now, lastSeen: now });
+      if (this.sources.size >= MAX_SOURCES) {
+        const oldest = this.sources.keys().next().value;
+        if (oldest !== undefined) this.sources.delete(oldest);
+        this.evicted++;
+      }
+      this.sources.set(id, { protocol, universe: r.frame.universe, key, address: rinfo.address, port: rinfo.port, frame: r.frame, packets: 1, firstSeen: now, lastSeen: now, lastSequence: r.frame.sequence, lastPacket: now });
     }
     return r;
   }
@@ -394,6 +448,7 @@ export class NetOutputListener {
     this.sockets.clear();
     this.status.clear();
     this.sources.clear();
+    this.evicted = 0;
     this.memberships.clear();
     this.ignored.clear();
   }
