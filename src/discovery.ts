@@ -24,14 +24,15 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "speed masters and tempo", tools: ["gma3_configure_speed_master", "gma3_speed_master_action", "gma3_speed_masters"] },
   { task: "recipes, many cues per call", tools: ["gma3_recipes", "gma3_edit_recipe", "gma3_store_recipe_cues", "gma3_cook_recipes", "gma3_edit_phaser_recipe"] },
   { task: "macros and their dialogs", tools: ["gma3_store_macro", "gma3_edit_macro_line", "gma3_run_macro", "gma3_macros", "gma3_dialog"] },
-  { task: "console variables ($name in macros, cue commands)", tools: ["gma3_variables", "gma3_set_variable"] },
-  { task: "tags: tagging, kill types, which objects carry a tag", tools: ["gma3_tags", "gma3_assign_tag", "gma3_store_tag", "gma3_delete_tag", "gma3_configure_tag", "gma3_playback"] },
+  { task: "console variables ($name)", tools: ["gma3_variables", "gma3_set_variable"] },
+  { task: "tags, kill types, tagged objects", tools: ["gma3_tags", "gma3_assign_tag", "gma3_store_tag", "gma3_delete_tag", "gma3_configure_tag", "gma3_playback"] },
   { task: "timecode shows", tools: ["gma3_build_timecode", "gma3_timecode_transport", "gma3_timecodes"] },
   { task: "DMX output (universes, grants, Art-Net, sACN)", tools: ["gma3_dmx_output", "gma3_configure_dmx_output", "gma3_dmx", "gma3_fixture_output", "gma3_network_output"] },
   { task: "OSC input and output", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
   { task: "save, load and list show files", tools: ["gma3_save_show", "gma3_load_show", "gma3_show_files"] },
   { task: "tempo-sync plugin, phaser ReSync", tools: ["gma3_tempo_sync_status", "gma3_configure_tempo_sync", "gma3_playback"] },
-  { task: "show analysis: preset usage, cue diff, tracking leaks", tools: ["gma3_preset_usage", "gma3_cue_diff", "gma3_tracking_leaks"] },
+  { task: "show analysis: preset usage, cue diffs, leaks", tools: ["gma3_preset_usage", "gma3_cue_diff", "gma3_tracking_leaks"] },
+  { task: "copy, move, delete, rename pool objects", tools: ["gma3_pool_objects"] },
   { task: "read show data and live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences", "gma3_pool_usage"] },
 ];
 
@@ -58,6 +59,7 @@ export const BATCH_TOOLS: ReadonlyArray<{ tool: string; list: string }> = [
   { tool: "gma3_delete_tag", list: "tags" },
   { tool: "gma3_assign_tag", list: "assignments" },
   { tool: "gma3_configure_tag", list: "tags" },
+  { tool: "gma3_pool_objects", list: "objects" },
 ];
 
 const BATCH_NOTE = `Many objects at once: ${BATCH_TOOLS.map((b) => `${b.tool} (${b.list})`).join(", ")} take a list per call (per-item checks, read-back, one line each); never loop over them in Lua.`;
@@ -69,11 +71,11 @@ export function serverInstructions(staleWarning?: string): string {
   const map = TASK_TOOLS.map((t) => `- ${t.task}: ${t.tools.join(", ")}`).join("\n");
   return [
     ...(staleWarning ? [staleWarning, ""] : []),
-    "gma3-mcp controls a grandMA3 console. Use the structured tools for show work: they check first, never retry, report each step and read back. Map from task to tools:",
+    "gma3-mcp controls a grandMA3 console. Structured tools check first, never retry, report each step and read back. Map from task to tools:",
     map,
     BATCH_NOTE,
     OBSERVE_NOTE,
-    "Fallbacks, only for what no structured tool covers: gma3_command (one command line; syntax: gma3_help) and gma3_lua (off by default; short scripts only). gma3_status: bridge and build.",
+    "Fallbacks, only for what no structured tool covers: gma3_command (one command line; syntax: gma3_help) and gma3_lua (off by default, short scripts). gma3_status: bridge and build.",
   ].join("\n");
 }
 
@@ -81,10 +83,10 @@ export function serverInstructions(staleWarning?: string): string {
 export const LUA_FALLBACK_NOTE =
   "FALLBACK: use a structured tool when one fits; they check, read back and need no Lua. Patch: gma3_patch_library, gma3_patch_import, gma3_patch_add, gma3_patch_set, gma3_patch_move, gma3_patch_stages, gma3_patch_retype, gma3_patch_type_structure, gma3_place_fixtures, gma3_layout_cells. Dialogs: gma3_dialog (never Mouse()). " +
   "Groups: gma3_store_group, gma3_configure_matricks. Presets: gma3_apply_preset, gma3_store_preset. Phasers: gma3_build_phaser. Looks: gma3_set_attributes. Cues: gma3_store_cues, gma3_edit_cues, gma3_build_chase, gma3_cue_contents. Recipe cues: gma3_store_recipe_cues, then gma3_cook_recipes. " +
-  "Playback: gma3_configure_sequence, gma3_configure_executor, gma3_playback, gma3_goto_cue. Reads: gma3_objects, gma3_get_object, gma3_list_children, gma3_programmer; used and free pool numbers and executors: gma3_pool_usage; where a preset is used (and dangling preset references), cue diffs and tracking leaks: gma3_preset_usage, gma3_cue_diff, gma3_tracking_leaks. " +
+  "Playback: gma3_configure_sequence, gma3_configure_executor, gma3_playback, gma3_goto_cue. Copy, move, delete, rename pool objects: gma3_pool_objects. Reads: gma3_objects, gma3_get_object, gma3_list_children, gma3_programmer; used and free pool numbers and executors: gma3_pool_usage; where a preset is used (and dangling preset references), cue diffs and tracking leaks: gma3_preset_usage, gma3_cue_diff, gma3_tracking_leaks. " +
   `${BATCH_NOTE} ` +
   `${OBSERVE_NOTE} `;
 
 /** The pointer at the start of gma3_command's description. */
 export const COMMAND_FALLBACK_NOTE =
-  "FALLBACK for a command no structured tool covers: patching, looks, presets, groups, phasers, cues, chases and playback have their own tools (see the server instructions), which check before acting and read back; a raw command is not checked or read back. ";
+  "FALLBACK for a command no structured tool covers: patching, looks, presets, groups, phasers, cues, chases, playback and copying, moving, deleting or renaming pool objects (gma3_pool_objects) have their own tools (see the server instructions), which check before acting and read back; a raw command is not checked or read back. ";

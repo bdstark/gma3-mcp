@@ -46,6 +46,7 @@ import { registerTempoSyncTools, resyncPlayback, RESYNC_NOTE } from "./tools/tem
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 import { registerPoolUsageTools, shapeListing } from "./tools/poolusage.js";
 import { registerAnalysisTools } from "./tools/analysis.js";
+import { registerPoolObjectTools } from "./tools/poolobjects.js";
 import { UndoGroups, inToolScope } from "./undo.js";
 
 const env = process.env;
@@ -725,6 +726,7 @@ registerTagTools(server, toolContext);
 registerTempoSyncTools(server, toolContext);
 registerPoolUsageTools(server, toolContext);
 registerAnalysisTools(server, toolContext);
+registerPoolObjectTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",

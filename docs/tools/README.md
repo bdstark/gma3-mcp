@@ -34,6 +34,7 @@ the live test procedure on a disposable show.
 | Shared speed and synchronisation (SB-06; sequence links through `gma3_configure_sequence`) | `gma3_speed_masters`, `gma3_configure_speed_master`, `gma3_speed_master_action`, `gma3_observe_tempo` | [speed.md](speed.md) |
 | Macros as show actions (SB-07; authoring never runs a macro) | `gma3_macros`, `gma3_store_macro`, `gma3_edit_macro_line`, `gma3_run_macro` | [macros.md](macros.md) |
 | Timecode shows (SB-08, bridge 0.25.0; building never plays or records) | `gma3_timecodes`, `gma3_build_timecode`, `gma3_timecode_transport` | [timecode.md](timecode.md) |
+| Pool objects: copy, move, delete, rename with checks (#141, no bridge change) | `gma3_pool_objects` | [pool-objects.md](pool-objects.md) |
 
 Console variables (SU-15, bridge 0.31.0): `gma3_variables`, `gma3_set_variable` ([variables.md](variables.md)).
 
