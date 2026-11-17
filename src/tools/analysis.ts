@@ -50,7 +50,7 @@ import { parseConsoleBoolean } from "../results.js";
 import { Validator, ValidationError, cueNumber, describe, finiteNumber, objectNumber } from "../validate.js";
 import type { RegisterTools, ToolContext } from "./context.js";
 import { dataPoolShape, scopedBridge } from "./datapool.js";
-import { CUE_KEYS, PART_TIMING_KEYS } from "./inspection.js";
+import { CUE_KEYS, PART_TIMING_KEYS, RECIPE_KEYS } from "./inspection.js";
 import { findReferencesWhere } from "./playback.js";
 import { FIELD_ERRORS_BRIDGE, readAllChildren, versionAtLeast } from "./poolusage.js";
 import type { ObjectRefInfo, PresetRead, PresetRow } from "./presets.js";
@@ -591,7 +591,23 @@ function parseSide(v: Validator, field: string, raw: unknown, fallbackSeq?: numb
   return sequence !== undefined && cue !== undefined ? { sequence, cue } : undefined;
 }
 
-const recipeText = (r: Row) => `${r.index ?? "?"}: ${r.selection ?? ""} | ${r.preset ?? r.values ?? ""}${r.enabled === false ? " (disabled)" : ""}`;
+/**
+ * A recipe line as a comparable object: every behaviour-affecting field cueContents returns (RECIPE_KEYS), so two
+ * lines that differ only in FadeX, DelayX, SpeedX, PhaseX, MAtricks, filter or generator never compare equal (review
+ * of #129). The resolved preset reference is reduced to its address; the internal presetDataKey is left out.
+ */
+const recipeOf = (r: Row): Row => {
+  const out: Row = {};
+  for (const k of RECIPE_KEYS) {
+    if (k === "presetDataKey") continue;
+    const v = r[k];
+    if (k === "presetRef") {
+      const ref = asRow(v);
+      out[k] = v && typeof v === "object" ? (ref.addrNative ?? ref.addr ?? null) : (v ?? null);
+    } else out[k] = v === undefined ? null : v;
+  }
+  return out;
+};
 
 /** Part-level properties that are compared: name, timing, command, MIB, recipe lines. */
 function partProps(p: PartRead): Row {
@@ -599,7 +615,7 @@ function partProps(p: PartRead): Row {
   for (const k of PART_TIMING_KEYS) out[`timing.${k}`] = p.timing[k] ?? null;
   for (const k of ["text", "delay", "enabled"]) out[`command.${k}`] = p.command[k] ?? null;
   for (const k of ["mode", "target", "fade", "delay"]) out[`mib.${k}`] = p.mib[k] ?? null;
-  out.recipes = p.recipes.map(recipeText);
+  out.recipes = p.recipes.map(recipeOf);
   return out;
 }
 
@@ -753,7 +769,8 @@ export async function cueDiff(ctx: ToolContext, raw: { a?: unknown; b?: unknown;
 // ---------------------------------------------------------------------------
 
 /** A Break or TrackingDistance text that means "not set". */
-const UNSET = /^\s*(|none|<none>|empty|<empty>|off|no|-|0)\s*$/i;
+// "#FFFFFFFFFFFFFFFF" is how onPC 2.5.1 reads the Break of a cue without one (docs/probes/cue-part-data-macos-2.5.1.md).
+const UNSET = /^\s*(|none|<none>|empty|<empty>|off|no|-|0|#F{16})\s*$/i;
 export const isSet = (v: unknown) => v !== null && v !== undefined && !UNSET.test(String(v));
 
 interface Run {
@@ -790,7 +807,7 @@ export interface LeakFold {
  * attribute again (restated, blocked, cooked), at a cue with Release, at a cue with a Break (its filter is not
  * evaluated: the run is counted up to that cue), or at an unread cue (unknown from there). A run is a candidate when it
  * tracks through at least minCues cues and, with requireRevisit, at least one of them stores another attribute of the
- * same (sub)fixture without restating this one. Values stored in a cue with a TrackingDistance are excluded (counted).
+ * same (sub)fixture without restating this one. Values stored in a part with a TrackingDistance are excluded (counted).
  */
 export function foldLeaks(cues: CueRead[], opts: LeakOptions, reachedEnd: boolean): LeakFold {
   const open = new Map<string, Run>();
@@ -815,7 +832,16 @@ export function foldLeaks(cues: CueRead[], opts: LeakOptions, reachedEnd: boolea
       continue;
     }
     const stored = new Map<string, PresetRow>();
-    for (const p of c.parts) for (const r of p.rows) stored.set(`${r.fixture}|${r.attribute}`, r);
+    // The TrackingDistance of the part that stores each value: it excludes only that part's values (review of #129).
+    const distanceOf = new Map<string, boolean>();
+    for (const p of c.parts) {
+      const d = isSet(p.timing.trackingDistance);
+      for (const r of p.rows) {
+        const key = `${r.fixture}|${r.attribute}`;
+        stored.set(key, r);
+        distanceOf.set(key, (distanceOf.get(key) ?? false) || d);
+      }
+    }
     const touched = new Set([...stored.values()].map((r) => r.fixture));
     const release = parseConsoleBoolean(c.props.release ?? "") === true;
     const brk = isSet(c.props.break) ? String(c.props.break) : undefined;
@@ -838,9 +864,8 @@ export function foldLeaks(cues: CueRead[], opts: LeakOptions, reachedEnd: boolea
         if (touched.has(run.fixture)) run.revisits.push(c.cue);
       }
     }
-    const distance = c.parts.some((p) => isSet(p.timing.trackingDistance));
     for (const p of c.parts) if (isSet(p.timing.trackingDistance)) seen(out.setTexts.trackingDistance, String(p.timing.trackingDistance));
-    for (const [key, r] of stored) open.set(key, { fixture: r.fixture, attribute: r.attribute, from: c.cue, value: valueOf(r), cues: 0, last: c.cue, revisits: [], ...(distance ? { excluded: "trackingDistance" } : {}) });
+    for (const [key, r] of stored) open.set(key, { fixture: r.fixture, attribute: r.attribute, from: c.cue, value: valueOf(r), cues: 0, last: c.cue, revisits: [], ...(distanceOf.get(key) ? { excluded: "trackingDistance" } : {}) });
   }
   for (const run of open.values()) close(run, reachedEnd ? "end of the sequence (still on until OffCue or another release)" : "end of the scanned range");
   out.candidates.sort((p, q) => (q.revisits as number) - (p.revisits as number) || (q.trackedThrough as number) - (p.trackedThrough as number) || fixtureOrder(String(p.fixture), String(q.fixture)));
@@ -851,7 +876,7 @@ export const LEAK_HEURISTIC =
   "Folded from STORED cue data in cue order (CueZero and OffCue left out). A run starts where a fixture|attribute value is stored and counts each later cue it is still effective in (not stored there). " +
   "It ends at a cue that stores the attribute again (a restated, blocked or cooked value), at a cue with Release Yes, at a cue with a Break (its filter or world is NOT evaluated, so the run is only counted up to the cue before), or at an unread cue. " +
   "A run is a CANDIDATE when it tracks through at least min_cues cues and (require_revisit, default true) at least one of those cues stores another attribute of the same (sub)fixture without restating this one: the fixture was worked on there, but this value was left to track. " +
-  "Values stored in a cue whose part has a TrackingDistance are excluded and counted (the distance itself is not evaluated). This is a heuristic: a candidate can be intended (a gobo kept on purpose); a value that tracks through cues that never touch the fixture is not a candidate unless require_revisit is false.";
+  "Values stored in a part that has a TrackingDistance are excluded and counted (the distance itself is not evaluated). This is a heuristic: a candidate can be intended (a gobo kept on purpose); a value that tracks through cues that never touch the fixture is not a candidate unless require_revisit is false.";
 
 export async function trackingLeaks(
   ctx: ToolContext,
@@ -911,7 +936,7 @@ export async function trackingLeaks(
   const fold = foldLeaks(read, { minCues, requireRevisit }, reachedEnd);
   const uncertain: string[] = [];
   if (fold.breaks.length) uncertain.push(`cue(s) ${firstFew(fold.breaks, 10).join(", ")} have a Break (read as ${fold.setTexts.break.map((x) => JSON.stringify(x)).join(", ")}) whose filter was not evaluated: ${fold.cutByBreak} run(s) reaching them were counted only up to the cue before, so a leak past a Break is not shown`);
-  if (fold.excluded.trackingDistance) uncertain.push(`${fold.excluded.trackingDistance} value run(s) stored in cues with a TrackingDistance (read as ${fold.setTexts.trackingDistance.map((x) => JSON.stringify(x)).join(", ")}) were excluded`);
+  if (fold.excluded.trackingDistance) uncertain.push(`${fold.excluded.trackingDistance} value run(s) stored in parts with a TrackingDistance (read as ${fold.setTexts.trackingDistance.map((x) => JSON.stringify(x)).join(", ")}) were excluded`);
   if (from !== undefined && listing.cues.length && listing.cues[0].no < Number(from) - 1e-9) uncertain.push(`values stored before cue ${from} are not known: the scan starts at cue ${from}`);
   const complete = reasons.length === 0;
   const n = fold.candidates.length;

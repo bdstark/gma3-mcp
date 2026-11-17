@@ -470,7 +470,7 @@ test("tracking leaks: Release ends runs, a Break is counted up to the cue before
   leakShow((cues) => (cues[0].parts[0].timing = { trackingDistance: "3" }));
   const dist = await h.callJson("gma3_tracking_leaks", { sequence: 7 });
   assert.equal(dist.result.candidates.find((c: Row) => c.storedIn === "1"), undefined);
-  assert.match(dist.result.uncertain.join(" "), /3 value run\(s\) stored in cues with a TrackingDistance \(read as "3"\) were excluded/);
+  assert.match(dist.result.uncertain.join(" "), /3 value run\(s\) stored in parts with a TrackingDistance \(read as "3"\) were excluded/);
 });
 
 test("tracking leaks: Tracking off means no leaks; unread cues and the budget leave the result incomplete", async () => {
@@ -512,4 +512,64 @@ test("tracking leaks: the fold is a pure function of the cues read", () => {
   assert.equal(isSet("Filter 3"), true);
   assert.equal(renderLines({ a: 1, rows: [1, 2] }, ["rows"]), '{"a":1,\n"rows":[\n1,\n2\n]}');
   assert.deepEqual(JSON.parse(renderLines({ a: 1, rows: [{ x: 1 }], other: [] }, ["rows", "other"])), { a: 1, rows: [{ x: 1 }], other: [] });
+});
+
+// Review of #129: equality must cover every stored layer, recipe properties, per-part TrackingDistance and the
+// console's unset Break text.
+
+test("cue diff: phaser steps that differ only in a relative value, a timing layer or which step holds a preset are not identical", async () => {
+  const steps = (rel: number, width: number, presets: [Ref | null, Ref | null]) => ({
+    stepCount: 2,
+    steps: [
+      { step: 1, absolute: 50, relative: rel, width, integrated: presets[0] },
+      { step: 2, absolute: 50, relative: rel, integrated: presets[1] },
+    ],
+  });
+  const cue = (no: number, extra: Row) => ({ no, name: "Look", parts: [{ part: 0, rows: [row("101", "Pan", 50, extra)] }] });
+  show.sequences = [{ no: 1, name: "A", cues: [cue(1, steps(0, 100, [RED, BLUE])), cue(2, steps(20, 100, [RED, BLUE])), cue(3, steps(0, 50, [RED, BLUE])), cue(4, steps(0, 100, [BLUE, RED])), cue(5, steps(0, 100, [RED, BLUE]))] }];
+  for (const [b, field] of [[2, "stepRelative"], [3, "stepWidth"], [4, "stepPresets"]] as const) {
+    const { result } = await h.callJson("gma3_cue_diff", { a: { sequence: 1, cue: 1 }, b: { cue: b } });
+    assert.equal(result.identical, false, `cue ${b}`);
+    assert.deepEqual(result.values.find((x: Row) => x.attribute === "Pan").fields, [field], `cue ${b}`);
+  }
+  const same = await h.callJson("gma3_cue_diff", { a: { sequence: 1, cue: 1 }, b: { cue: 5 } });
+  assert.equal(same.result.identical, true);
+  onlyReads();
+});
+
+test("cue diff: recipe lines that differ only in FadeX, SpeedX, MAtricks or filter are a part difference", async () => {
+  const line: Row = { index: 1, enabled: false, selection: "Group 1", preset: "4.12", fadeX: "None", delayX: "None", speedX: "None", phaseX: "None", matricks: "None", filter: "None" };
+  const cue = (no: number, extra: Row) => ({ no, name: "Look", parts: [{ part: 0, rows: [], recipes: [{ ...line, ...extra }] }] });
+  show.sequences = [{ no: 1, name: "A", cues: [cue(1, {}), cue(2, { fadeX: "2" }), cue(3, { matricks: "MAtricks 3" }), cue(4, {})] }];
+  for (const b of [2, 3]) {
+    const { result } = await h.callJson("gma3_cue_diff", { a: { sequence: 1, cue: 1 }, b: { cue: b } });
+    assert.equal(result.identical, false, `cue ${b}`);
+    assert.equal(result.parts[0].changes[0].field, "recipes");
+  }
+  assert.equal((await h.callJson("gma3_cue_diff", { a: { sequence: 1, cue: 1 }, b: { cue: 4 } })).result.identical, true);
+  onlyReads();
+});
+
+test("tracking leaks: a TrackingDistance excludes only its own part's values; the console's unset Break text is no Break", async () => {
+  const cue = (no: string, parts: Array<{ part: number; rows: Row[]; distance?: string }>, props: Row = {}): CueRead => ({
+    sequence: 1, cue: no, ref: `Sequence 1 Cue ${no}`, name: null, props, tracking: true,
+    parts: parts.map((p) => ({ part: p.part, name: null, timing: { trackingDistance: p.distance ?? "" }, command: {}, mib: {}, ownDataPresent: true, recipes: [], rows: p.rows as never })),
+  });
+  const opts = { minCues: 2, requireRevisit: true };
+  // Part 0 stores the Dimmer; an empty Part 1 has a TrackingDistance: the Dimmer is still a candidate.
+  const later = [cue("2", [{ part: 0, rows: [row("1", "Pan", 1)] }]), cue("3", [{ part: 0, rows: [row("1", "Pan", 2)] }])];
+  const fold = foldLeaks([cue("1", [{ part: 0, rows: [row("1", "Dimmer", 100)] }, { part: 1, rows: [], distance: "2" }]), ...later], opts, false);
+  assert.deepEqual(fold.candidates.map((c) => c.attribute), ["Dimmer"]);
+  assert.equal(fold.excluded.trackingDistance, 0);
+  // The same Dimmer stored in the part with the TrackingDistance is excluded.
+  const own = foldLeaks([cue("1", [{ part: 0, rows: [] }, { part: 1, rows: [row("1", "Dimmer", 100)], distance: "2" }]), ...later], opts, false);
+  assert.deepEqual(own.candidates, []);
+  assert.equal(own.excluded.trackingDistance, 1);
+  // onPC 2.5.1 reads a cue without a Break as "#FFFFFFFFFFFFFFFF": runs go on through it.
+  assert.equal(isSet("#FFFFFFFFFFFFFFFF"), false);
+  assert.equal(isSet("#ffffffffffffffff"), false);
+  const sentinel = foldLeaks([cue("1", [{ part: 0, rows: [row("1", "Dimmer", 100)] }], { break: "#FFFFFFFFFFFFFFFF" }), ...later.map((c) => ({ ...c, props: { break: "#FFFFFFFFFFFFFFFF" } }))], opts, false);
+  assert.deepEqual(sentinel.candidates.map((c) => c.attribute), ["Dimmer"]);
+  assert.equal(sentinel.cutByBreak, 0);
+  assert.deepEqual(sentinel.breaks, []);
 });

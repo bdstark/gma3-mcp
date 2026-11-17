@@ -57,8 +57,15 @@ export function valueOf(r: PresetRow): Row {
   if ((r.stepCount ?? 1) > 1 && Array.isArray(r.steps)) {
     put("steps", r.steps.length);
     put("stepValues", r.steps.map((s) => round(s.absolute)));
-    const integrated = r.steps.map((s) => refLabel(s.integrated)).filter((x) => x !== null);
-    if (integrated.length) put("stepPresets", [...new Set(integrated)]);
+    // Every playback-significant step layer, step by step, so two cues whose steps differ only in a relative value,
+    // a timing layer or which step holds which preset never compare equal (review of #129).
+    const layer = (k: "relative" | "width" | "trans" | "accel" | "decel") => r.steps!.map((s) => round(s[k]));
+    for (const [name, k] of [["stepRelative", "relative"], ["stepWidth", "width"], ["stepTransition", "trans"], ["stepAccel", "accel"], ["stepDecel", "decel"]] as const) {
+      const vals = layer(k);
+      if (vals.some((v) => v !== null)) put(name, vals);
+    }
+    const integrated = r.steps.map((s) => refLabel(s.integrated));
+    if (integrated.some((x) => x !== null)) put("stepPresets", integrated);
     put("speed", round(r.speed));
     put("phase", round(r.phase));
   } else {

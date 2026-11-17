@@ -40,8 +40,9 @@ interface ProgRow {
   subfixtureIndex?: number;
   attribute?: string;
   value?: number | null;
+  relative?: number | null;
   stepCount?: number;
-  steps?: Array<{ absolute?: number }>;
+  steps?: Array<{ absolute?: number | null; relative?: number | null; width?: number | null; trans?: number | null; accel?: number | null; decel?: number | null }>;
   masks?: { activeValue?: number; activePhaser?: number; individual?: number };
 }
 
@@ -171,19 +172,45 @@ export async function captureStoreExpectation(bridge: Gma3Bridge, t: number, opt
 const near = (a: number, b: number) => Math.abs(a - b) <= VALUE_TOLERANCE;
 const fidOf = (r: ProgRow) => (r.fid && r.fid !== "None" ? String(r.fid) : null);
 
-/** Compare one programmer row with the stored row: undefined when equal, else the difference in words. */
+/** A step layer the console leaves out of a stored step when it holds its default (presets.ts: width/trans 100, accel/decel 0). */
+const STEP_DEFAULTS: Record<"width" | "trans" | "accel" | "decel", number> = { width: 100, trans: 100, accel: 0, decel: 0 };
+const STEP_LAYER_NAMES: Record<string, string> = { absolute: "absolute", relative: "relative", width: "width", trans: "transition", accel: "acceleration", decel: "deceleration" };
+
+/**
+ * Compare one programmer row with the stored row: undefined when equal, else the difference in words.
+ * Every layer the programmer holds as a number is compared (review of #129): the absolute and relative value, and on a
+ * phaser each step's absolute, relative, width, transition, acceleration and deceleration. A layer the programmer holds
+ * but the part does not store is a difference, except a step timing layer, which the console leaves out at its default.
+ */
 function differs(p: ProgRow, s: PresetRow): string | undefined {
   const n = p.stepCount ?? 1;
   if (n > 1) {
-    const want = (p.steps ?? []).map((x) => x.absolute);
-    const got = (s.steps ?? []).map((x) => x.absolute);
+    const want = p.steps ?? [];
+    const got = s.steps ?? [];
     if ((s.stepCount ?? got.length) !== n || got.length !== want.length) return `${n} steps in the programmer, ${s.stepCount ?? got.length} stored`;
-    const bad = want.findIndex((w, i) => typeof w === "number" && typeof got[i] === "number" && !near(w, got[i] as number));
-    return bad >= 0 ? `step ${bad + 1}: ${want[bad]} in the programmer, ${got[bad]} stored` : undefined;
+    for (let i = 0; i < want.length; i++) {
+      for (const k of ["absolute", "relative", "width", "trans", "accel", "decel"] as const) {
+        const w = want[i][k];
+        if (typeof w !== "number") continue;
+        let g: unknown = (got[i] as Record<string, unknown>)[k];
+        if (typeof g !== "number" && k in STEP_DEFAULTS) g = STEP_DEFAULTS[k as keyof typeof STEP_DEFAULTS];
+        if (typeof g !== "number") return `step ${i + 1} ${STEP_LAYER_NAMES[k]}: ${round(w)} in the programmer, none stored`;
+        if (!near(w, g)) return `step ${i + 1} ${STEP_LAYER_NAMES[k]}: ${round(w)} in the programmer, ${round(g)} stored`;
+      }
+    }
+    return undefined;
   }
-  if (typeof p.value !== "number") return undefined; // relative-only or no absolute: presence is what is checked
-  if (typeof s.value !== "number") return `${round(p.value)} in the programmer, no absolute value stored`;
-  return near(p.value, s.value) ? undefined : `${round(p.value)} in the programmer, ${round(s.value)} stored`;
+  const out: string[] = [];
+  if (typeof p.value === "number") {
+    if (typeof s.value !== "number") out.push(`${round(p.value)} in the programmer, no absolute value stored`);
+    else if (!near(p.value, s.value)) out.push(`${round(p.value)} in the programmer, ${round(s.value)} stored`);
+  }
+  if (typeof p.relative === "number") {
+    if (typeof s.relative !== "number") out.push(`relative ${round(p.relative)} in the programmer, no relative value stored`);
+    else if (!near(p.relative, s.relative)) out.push(`relative ${round(p.relative)} in the programmer, ${round(s.relative)} stored`);
+  }
+  // A row with neither an absolute nor a relative number: presence is what is checked.
+  return out.length ? out.join(", ") : undefined;
 }
 
 const round = (v: number) => Math.round(v * 1000) / 1000;
@@ -208,7 +235,7 @@ export interface StoredCheck extends Verification {
 
 /** After the store: read the part and check every expected value is stored. Never throws. */
 export async function verifyStoredValues(bridge: Gma3Bridge, partRef: string, exp: StoreExpectation, t: number): Promise<StoredCheck> {
-  const checked = `the values stored in ${partRef} against the programmer values the store was expected to take (ChannelFilter ${JSON.stringify(exp.channelFilter)}); values and phaser steps, not preset references, within ${VALUE_TOLERANCE} %`;
+  const checked = `the values stored in ${partRef} against the programmer values the store was expected to take (ChannelFilter ${JSON.stringify(exp.channelFilter)}); absolute and relative values and every phaser step layer (absolute, relative, width, transition, acceleration, deceleration), within ${VALUE_TOLERANCE} %; not preset references, nor a phaser's speed, phase or measure`;
   if (exp.error) return unavailable(exp.error, checked);
   const read = await readPartRows(bridge, partRef, t);
   if (read.unread && !read.rows.length) return unavailable(`the stored values could not be read: ${read.unread}`, checked);
@@ -265,7 +292,9 @@ export async function verifyStoredValues(bridge: Gma3Bridge, partRef: string, ex
   }
   // Nothing expected (a command-only cue, an empty selection): nothing can be missing; the detail says so.
   if (exp.rows.length === 0) return { status: "matched", checked, detail: `the programmer held no value the store was expected to take (ChannelFilter ${JSON.stringify(exp.channelFilter)})`, storedValues: counts };
-  return { status: "matched", checked, ...(notCompared ? { detail: `${notCompared} value(s) of cells without their own FID were not compared` } : {}), storedValues: counts };
+  // An expected value that could not be compared is not verified (review of #129): unavailable, never matched.
+  if (notCompared) return { status: "unavailable", checked, detail: `${compared} value(s) compared and matched; ${notCompared} expected value(s) could not be compared (a cell without its own FID whose stored row was not found by subfixture index, or a row without an attribute)`, storedValues: counts };
+  return { status: "matched", checked, storedValues: counts };
 }
 
 /** The weakest of several verifications: mismatched > unavailable / not requested > matched. */

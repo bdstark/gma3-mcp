@@ -198,18 +198,22 @@ covers hard values too; `gma3_cue_contents` returns them per part (`storedValues
   can be asked in one call. `sequences` narrows the scan.
 - **`gma3_cue_diff`** `{a: {sequence, cue}, b: {sequence?, cue}}` compares the stored data of two cues, keyed by
   fixture and attribute: `added`, `removed` and `changed` rows with the changed `fields` (`value`, `steps`,
-  `stepValues`, `relative`, `preset`, `relPreset`, `fade`, `delay`, `cooked`, `part`), the presets only one cue
-  references, the cue properties that differ and per part the timing, command, MIB and recipe lines that differ.
+  `stepValues`, `stepRelative`, `stepWidth`, `stepTransition`, `stepAccel`, `stepDecel`, `stepPresets` (the preset of
+  each step, in step order), `speed`, `phase`, `relative`, `preset`, `relPreset`, `fade`, `delay`, `cooked`, `part`),
+  the presets only one cue references, the cue properties that differ and per part the timing, command, MIB and recipe
+  lines that differ (every recipe property: selection, preset, values, FadeX, DelayX, SpeedX, PhaseX, MAtricks, filter,
+  generator, enabled).
   Value rows are paged (`offset`, `limit`, default 200). Tracked values are not part of a cue's data and are not
   compared.
 - **`gma3_tracking_leaks`** `{sequence, from?, to?, min_cues?, require_revisit?}` folds tracking from the stored data
   in cue order. The heuristic, as the tool states it: a run starts where a fixture/attribute value is stored and counts
   each later cue it is still effective in. It ends at a cue that stores the attribute again (restated, blocked or
-  cooked), at a cue with Release Yes, at a cue with a Break, or at an unread cue. A Break's filter or world is not
+  cooked), at a cue with Release Yes, at a cue with a Break, or at an unread cue. A Break that reads empty, "None" or
+  `#FFFFFFFFFFFFFFFF` (how onPC 2.5.1 reads a cue without one) is no Break. A Break's filter or world is not
   evaluated, so the run is counted only up to the cue before it, and `uncertain` says so. A run is a candidate when
   it tracks through at least `min_cues` cues (default 2) and, with `require_revisit` (default true), at least one of
-  them stores another attribute of the same (sub)fixture without restating this one. Values stored in a cue whose part
-  has a TrackingDistance are excluded and counted. `notEvaluated` counts the runs cut at a Break and excluded for a
+  them stores another attribute of the same (sub)fixture without restating this one. Values stored in a part that has a
+  TrackingDistance are excluded and counted; the cue's other parts are not. `notEvaluated` counts the runs cut at a Break and excluded for a
   TrackingDistance, and `uncertain` quotes the texts read for them; with none found but some not evaluated, the summary
   says so instead of "no candidate". A sequence with Tracking off has no leaks. Each candidate has
   `storedIn`, `value`, `trackedThrough`, `lastEffective`, `revisitedIn` and `endedBy`. Candidates are sorted by

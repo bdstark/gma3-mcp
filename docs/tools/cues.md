@@ -102,9 +102,13 @@ takes follows the operator's `ChannelFilter` (the store command sends no option 
 | `All For Selected` | every programmer value of the selected (sub)fixtures |
 
 A value is active while its `activeValue` or `activePhaser` mask is set. After the store the part is read with
-GetPresetData (`preset.read`). Each expected value must be there, with the same value within 0.5 % or the same
-phaser steps. A missing or different value makes the verification `mismatched` and the call an MCP error; nothing is
-stored again. Preset references are not compared, because the programmer's `absPreset` is not reliable for a hard
+GetPresetData (`preset.read`). Each expected value must be there, with every layer the programmer holds the same
+within 0.5 %: the absolute and the relative value, and on a phaser each step's absolute, relative, width, transition,
+acceleration and deceleration (a stored step leaves out a timing layer at its default: width and transition 100,
+acceleration and deceleration 0). A phaser's speed, phase and measure are not compared. A missing or different value
+or layer makes the verification `mismatched` and the call an MCP error; nothing is stored again. An expected value
+that could not be compared (a cell without its own FID whose stored row is not found) makes it `unavailable`, never
+`matched`, and is counted in `notCompared`. Preset references are not compared, because the programmer's `absPreset` is not reliable for a hard
 value. Values the cue already held (merge) are not judged either. With another ChannelFilter or StoreSource, or a
 programmer that could not be read completely, the values found are still compared, but completeness is not judged
 (`unavailable`). `storedValues` gives the preference and the counts: `expected`, `stored`, `compared`, `missing`,

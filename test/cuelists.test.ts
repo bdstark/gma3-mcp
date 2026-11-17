@@ -1512,3 +1512,41 @@ test("store_cues: an unmodelled ChannelFilter compares what it finds but does no
     await h.close();
   }
 });
+
+// Review of #129: every stored layer the programmer holds is compared, and an expected value that could not be
+// compared is never "matched".
+test("stored values: relative values, phaser step layers and missing step absolutes are compared; uncompared cells are unavailable", async () => {
+  const { verifyStoredValues } = await import("../src/tools/storeverify.ts");
+  const bridgeWith = (rows: unknown[]) => ({ request: async () => ({ rows, byFixtures: true }) }) as never;
+  const exp = (rows: unknown[]) => ({ channelFilter: "Active", storeSource: "Programmer", model: "active" as const, rows: rows as never, complete: true });
+  const check = (prog: unknown[], stored: unknown[]) => verifyStoredValues(bridgeWith(stored), "Sequence 1 Cue 1 Part 0", exp(prog), 1000);
+  const pan = { fid: "101", subfixtureIndex: 1, attribute: "Pan", value: 50 };
+
+  // A changed or lost relative value.
+  let v = await check([{ ...pan, relative: 20 }], [{ fixture: "101", attribute: "Pan", value: 50, relative: 0 }]);
+  assert.equal(v.status, "mismatched");
+  assert.match(v.detail!, /101 Pan: relative 20 in the programmer, 0 stored/);
+  v = await check([{ ...pan, relative: 20 }], [{ fixture: "101", attribute: "Pan", value: 50 }]);
+  assert.match(v.detail!, /relative 20 in the programmer, no relative value stored/);
+  v = await check([{ fid: "101", subfixtureIndex: 1, attribute: "Pan", value: null, relative: 20 }], [{ fixture: "101", attribute: "Pan", relative: 20 }]);
+  assert.equal(v.status, "matched", "a relative-only value that matches");
+
+  // Phaser steps: a missing stored absolute, a different relative or timing layer; absent stored timing is its default.
+  const prog = (steps: unknown[]) => [{ fid: "101", subfixtureIndex: 1, attribute: "Dimmer", stepCount: 2, steps }];
+  const stored = (steps: unknown[]) => [{ fixture: "101", attribute: "Dimmer", stepCount: 2, steps }];
+  v = await check(prog([{ absolute: 100 }, { absolute: 0 }]), stored([{ step: 1, absolute: 100 }, { step: 2 }]));
+  assert.equal(v.status, "mismatched");
+  assert.match(v.detail!, /step 2 absolute: 0 in the programmer, none stored/);
+  v = await check(prog([{ absolute: 100, relative: 10 }, { absolute: 0 }]), stored([{ step: 1, absolute: 100, relative: 0 }, { step: 2, absolute: 0 }]));
+  assert.match(v.detail!, /step 1 relative: 10 in the programmer, 0 stored/);
+  v = await check(prog([{ absolute: 100, width: 50 }, { absolute: 0, trans: 0 }]), stored([{ step: 1, absolute: 100, width: 50 }, { step: 2, absolute: 0 }]));
+  assert.match(v.detail!, /step 2 transition: 0 in the programmer, 100 stored/);
+  v = await check(prog([{ absolute: 100, width: 100, accel: 0 }, { absolute: 0 }]), stored([{ step: 1, absolute: 100 }, { step: 2, absolute: 0 }]));
+  assert.equal(v.status, "matched", "a timing layer at its default is left out of the stored step");
+
+  // A cell without its own FID whose stored row is not found: not compared, so unavailable, with the counts kept.
+  v = await check([{ fid: null, subfixtureIndex: 9, attribute: "Dimmer", value: 80 }], []);
+  assert.equal(v.status, "unavailable");
+  assert.match(v.detail!, /1 expected value\(s\) could not be compared/);
+  assert.deepEqual([v.storedValues!.expected, v.storedValues!.compared, v.storedValues!.notCompared], [1, 0, 1]);
+});
