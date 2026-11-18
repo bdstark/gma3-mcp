@@ -469,6 +469,22 @@ export async function buildBitmap(ctx: ToolContext, a: BuildArgs): Promise<Opera
     const store = await commandStep(ctx.bridge, "store", `Store Bitmap ${a.bitmap} /NoConfirmation`, t);
     steps.push(store);
     if (store.status === "failed") return buildResult({ operation: op, target, steps, verification: unavailable("the console refused to store the bitmap"), warnings });
+    if (store.status !== "succeeded") {
+      // No answer to Store Bitmap: nothing is configured until a read shows the bitmap is there (the slot was free,
+      // or its old bitmap was deleted, before the store).
+      let found: boolean | undefined;
+      try {
+        found = ((await ctx.bridge.request("bitmap.list", { bitmap: a.bitmap }, t)) as ListReply).bitmapFound === true;
+      } catch (err) {
+        return stop(asRead(stepFromError("resolve_store", err, { op: "bitmap.list" })), "the store's outcome is unknown and could not be read; nothing was configured");
+      }
+      if (!found) return stop(asRead({ name: "resolve_store", status: "failed", op: "bitmap.list", error: `Store Bitmap ${a.bitmap} got no clear answer and Bitmap ${a.bitmap} is not there; nothing was configured` }));
+      steps.push(asRead({ name: "resolve_store", status: "succeeded", op: "bitmap.list", detail: { bitmapFound: true } }));
+      // Resolved: the store happened (the console's feedback is kept on the step).
+      store.status = "succeeded";
+      store.detail = { resolvedBy: "resolve_store", unclearFeedback: store.error };
+      delete store.error;
+    }
 
     const config: Record<string, unknown> = { image };
     if (a.width !== undefined) config.width = a.width;
@@ -496,7 +512,20 @@ export async function buildBitmap(ctx: ToolContext, a: BuildArgs): Promise<Opera
       steps.push(asRead(stepFromError("read_back", err, { op: "bitmap.list" })));
     }
 
-    if (a.apply) {
+    const checked = `Bitmap ${a.bitmap}'s BitmapConfig 1 shows Image 3.${image} and every asked setting; channels and name as asked (apply and store are not part of this check)`;
+    let verification: Verification;
+    if (!after) verification = unavailable("the bitmap could not be read back", checked);
+    else {
+      const cmp = compareBitmap(after.bitmapFound ? after.bitmap : undefined, a, image);
+      verification = cmp.mismatches.length ? { status: "mismatched", checked, expected: cmp.expected, actual: cmp.actual, detail: cmp.mismatches.join("; ") } : { status: "matched", checked, expected: cmp.expected, actual: cmp.actual };
+    }
+    const configured = steps.find((x) => x.name === "configure")?.status === "succeeded" && verification.status === "matched";
+    if (a.apply && !configured) {
+      const why = `skipped: the bitmap's configuration ${verification.status === "matched" ? "step did not succeed" : `was not confirmed (${verification.status})`}, so it is not applied${a.store ? " or stored" : ""}`;
+      steps.push({ name: "apply", status: "skipped", error: why });
+      if (a.store) steps.push({ name: "store_look", status: "skipped", error: why });
+    }
+    if (a.apply && configured) {
       const apply = await commandStep(ctx.bridge, "apply", `Group ${a.apply.group} At Bitmap ${a.bitmap}`, t);
       steps.push(apply);
       if (apply.status === "succeeded") {
@@ -525,13 +554,6 @@ export async function buildBitmap(ctx: ToolContext, a: BuildArgs): Promise<Opera
       }
     }
 
-    const checked = `Bitmap ${a.bitmap}'s BitmapConfig 1 shows Image 3.${image} and every asked setting; channels and name as asked (apply and store are not part of this check)`;
-    let verification: Verification;
-    if (!after) verification = unavailable("the bitmap could not be read back", checked);
-    else {
-      const cmp = compareBitmap(after.bitmapFound ? after.bitmap : undefined, a, image);
-      verification = cmp.mismatches.length ? { status: "mismatched", checked, expected: cmp.expected, actual: cmp.actual, detail: cmp.mismatches.join("; ") } : { status: "matched", checked, expected: cmp.expected, actual: cmp.actual };
-    }
     return buildResult({
       operation: op,
       target,

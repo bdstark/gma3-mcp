@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32 } from "node:zlib";
 import { startHarness, type Harness } from "./helpers/tool-harness.js";
-import { BridgeReplyError } from "./helpers/fake-bridge.js";
+import { BridgeReplyError, SILENT } from "./helpers/fake-bridge.js";
 import { registerBitmapTools, checkImage, compareBitmap, fileSizeMatches, imageFileName, type BitmapEntry } from "../src/tools/bitmaps.js";
 import { LIBRARY_ADD_CHUNK } from "../src/tools/patchlibrary.js";
 
@@ -39,6 +39,9 @@ class Console {
   /** The console ignores width (a read-back mismatch). */
   ignoreWidth = false;
   importFeedback = "OK";
+  /** Feedback for Store Bitmap; "none" stores nothing. */
+  storeFeedback = "OK";
+  storeDoes = true;
 
   install(h: Harness) {
     h.fake.on("patch.libraryStat", (a) => {
@@ -137,8 +140,9 @@ class Console {
       m = /^Store Bitmap (\d+) \/NoConfirmation$/.exec(cmd);
       if (m) {
         const no = Number(m[1]);
+        if (!this.storeDoes) return this.storeFeedback;
         this.bitmaps.set(no, { no, name: `Bitmap ${no}`, class: "Bitmap", speedMaster: "None", configs: [{ index: 1, content: null, width: 64, height: 64, contentMode: "None", interpolate: "No", alpha: "No", controlX: 0, controlY: 0, controlZoom: 50, controlAspect: 1, controlRotate: 0 }], channels: defaultChannels() });
-        return "OK";
+        return this.storeFeedback;
       }
       m = /^Delete Bitmap (\d+) \/NoConfirmation$/.exec(cmd);
       if (m) return this.bitmaps.delete(Number(m[1])) ? "OK" : "Failed";
@@ -379,6 +383,75 @@ test("gma3_bitmaps lists bitmaps and images; an old bridge is named", async () =
     const old = await h.call("gma3_bitmaps", {});
     assert.equal(old.isError, true);
     assert.match(old.content[0].text, /bridge 0\.57\.0/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_build_bitmap (#157 review): no apply or store unless the configuration succeeded and read back matched", async () => {
+  // A configuration the console ignores (width stays 64).
+  let { h, con } = await setup();
+  try {
+    con.images.set(1, { ...IMG });
+    con.ignoreWidth = true;
+    const { result, isError } = await h.callJson("gma3_build_bitmap", { bitmap: 5, image: 1, width: 40, apply: { group: 1 }, store: { preset: "4.9" } });
+    assert.equal(isError, true);
+    assert.equal(result.verification.status, "mismatched");
+    assert.deepEqual(h.fake.commands, ["Store Bitmap 5 /NoConfirmation"]);
+    assert.ok(stepNames(result).includes("apply:skipped") && stepNames(result).includes("store_look:skipped"), stepNames(result).join(" "));
+    assert.equal(con.presets.has("4.9"), false);
+  } finally {
+    await h.close();
+  }
+  // bitmap.set gets no reply (dispatched timeout): read-back shows empty content; nothing is applied or stored.
+  ({ h, con } = await setup());
+  try {
+    con.images.set(1, { ...IMG });
+    h.fake.on("bitmap.set", () => SILENT);
+    const { result, isError } = await h.callJson("gma3_build_bitmap", { bitmap: 5, image: 1, apply: { group: 1 }, store: { preset: "4.9" } });
+    assert.equal(isError, true);
+    assert.equal(result.steps.find((x: any) => x.name === "configure").status, "unknown");
+    assert.deepEqual(h.fake.commands, ["Store Bitmap 5 /NoConfirmation"]);
+    assert.ok(stepNames(result).includes("apply:skipped"));
+  } finally {
+    await h.close();
+  }
+  // A configure step with setErrors but every asked setting read back: still not applied.
+  ({ h, con } = await setup());
+  try {
+    con.images.set(1, { ...IMG });
+    con.refuse.add("speedMaster");
+    const { result } = await h.callJson("gma3_build_bitmap", { bitmap: 5, image: 1, speed_master: "Speed 3", apply: { group: 1 } });
+    assert.equal(result.steps.find((x: any) => x.name === "configure").status, "failed");
+    assert.deepEqual(h.fake.commands, ["Store Bitmap 5 /NoConfirmation"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_build_bitmap (#157 review): an unanswered Store Bitmap is resolved by a read before anything is configured", async () => {
+  let { h, con } = await setup();
+  try {
+    con.images.set(1, { ...IMG });
+    con.storeFeedback = "Hmm";
+    const { result, isError } = await h.callJson("gma3_build_bitmap", { bitmap: 5, image: 1, width: 40 });
+    assert.equal(isError, false, JSON.stringify(result));
+    assert.deepEqual(stepNames(result).slice(0, 3), ["check:succeeded", "store:succeeded", "resolve_store:succeeded"]);
+    assert.match(result.steps[1].detail.unclearFeedback, /Hmm/);
+    assert.equal(result.verification.status, "matched");
+  } finally {
+    await h.close();
+  }
+  ({ h, con } = await setup());
+  try {
+    con.images.set(1, { ...IMG });
+    con.storeFeedback = "Hmm";
+    con.storeDoes = false;
+    const { result, isError } = await h.callJson("gma3_build_bitmap", { bitmap: 5, image: 1, width: 40, apply: { group: 1 } });
+    assert.equal(isError, true);
+    assert.match(result.steps.at(-1).error, /got no clear answer and Bitmap 5 is not there; nothing was configured/);
+    assert.equal(h.fake.requests.filter((x) => x.op === "bitmap.set").length, 0);
+    assert.deepEqual(h.fake.commands, ["Store Bitmap 5 /NoConfirmation"]);
   } finally {
     await h.close();
   }

@@ -68,13 +68,16 @@ Steps:
 1. `check` (`bitmap.list {bitmap, image}`): the image exists and is a `UserImage`; the bitmap slot is free unless
    `overwrite: true`. `check_group` and `check_store` read the apply group and the store target (`objects`).
 2. `delete_old` (only with `overwrite` on a taken slot): `Delete Bitmap <n> /NoConfirmation`.
-3. `store`: `Store Bitmap <n> /NoConfirmation`.
+3. `store`: `Store Bitmap <n> /NoConfirmation`. Without a clear answer, `resolve_store` reads the slot: the bitmap
+   is there, so the store is taken as done, or nothing is configured.
 4. `configure`: `bitmap.set`. The bridge checks every value first (the image, each attribute in the show's
    attribute definitions, each source), then sets each one on its own; a refused set is listed in `setErrors` and
    fails this step, while the others still apply.
 5. `read_back` (`bitmap.list {bitmap}`). **Matched** when every asked setting reads back: the content is
    `Image 3.<image>`, sizes and control values within 0.01, words ignoring case, channels in order.
-6. `apply` (with `apply`): `Group <g> At Bitmap <n>`, then `read_programmer` (the bridge's `programmer` op on the
+6. Apply and store run only when `configure` succeeded and the read-back **matched**; otherwise both are `skipped`,
+   so a misconfigured bitmap never reaches the programmer or a preset or cue.
+   `apply` (with `apply`): `Group <g> At Bitmap <n>`, then `read_programmer` (the bridge's `programmer` op on the
    selection). The rows are reported (`verification: "unverified"`), not compared. The selection and programmer
    values stay; clear them with `gma3_clear_programmer`.
 7. `store_look` (with `store`): `Store Preset <p> /NoConfirmation` or `Store Sequence <s> Cue <c> /NoConfirmation`
