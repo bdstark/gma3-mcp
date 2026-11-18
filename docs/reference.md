@@ -123,6 +123,8 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_build_bitmap` | Store a Bitmap (pixel mapping) on an image: canvas size, content mode, control values, channels, name, speed master, each read back; `apply` (group) and `store` (preset or cue) are reported but unverified (bridge 0.57.0) |
 | `gma3_agenda` | Read-only: the Agenda's entries, whether the agenda runs, and the location twilight times use, with today's dawn, sunrise, sunset and dusk ([docs](tools/agenda.md)) |
 | `gma3_bitmaps` | Read-only: bitmaps with their configs and channels, and the Images pool (bridge 0.57.0) |
+| `gma3_store_layout` | Build a layout view (Layout pool) from elements (one pool object each, with position, size, label, action, appearance, visibility, text settings) and/or a grid of a range; refuses a taken layout unless `overwrite` (rebuild) or `append`; each Assign must add exactly one element showing its object before its properties are set; everything read back ([tools/layouts.md](tools/layouts.md)) |
+| `gma3_layouts` | Read-only: the Layout pool, or one layout's elements with the object each shows and their properties |
 | `gma3_dialog` | Read the console's top dialog (title, message, buttons) or press one button by its text, only while the dialog still shows what was read; reports whether it closed (bridge 0.42.0) |
 
 Console feedback (KB-06; needs plugin v0.8.0; read-only, works with Lua and input disabled and while another client
