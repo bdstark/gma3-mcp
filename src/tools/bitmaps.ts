@@ -388,6 +388,29 @@ export function compareBitmap(b: BitmapEntry | undefined, a: BuildArgs, image: n
 const PRESET_RE = /^([1-9]\d?)\.([1-9]\d{0,3})$/;
 const SOURCES = ["Intensity", "Const", "Red", "Green", "Blue", "Alpha", "Hue", "Saturation", "Brightness"];
 
+/** The summary's apply clause, from the apply step as it ran: sent (programmer content unverified), failed, unknown or skipped. */
+export function applyClause(steps: StepResult[], group: number): string {
+  const s = steps.find((x) => x.name === "apply");
+  if (!s) return `not applied to Group ${group}`;
+  if (s.status === "succeeded") return `applied to Group ${group} (command accepted; programmer content unverified)`;
+  if (s.status === "failed") return `applying to Group ${group} FAILED (${s.error ?? s.feedback ?? "refused"})`;
+  if (s.status === "unknown") return `applying to Group ${group} got no clear answer (${s.error ?? "unknown"}); check the programmer`;
+  return `not applied to Group ${group} (${s.error ?? "skipped"})`;
+}
+
+/** The summary's store clause, from store_look and read_store as they ran. */
+export function storeClause(steps: StepResult[], ref: string): string {
+  const s = steps.find((x) => x.name === "store_look");
+  if (!s) return `not stored into ${ref}`;
+  if (s.status === "failed") return `storing into ${ref} FAILED (${s.error ?? s.feedback ?? "refused"})`;
+  if (s.status === "unknown") return `storing into ${ref} got no clear answer (${s.error ?? "unknown"}); check ${ref}`;
+  if (s.status === "skipped") return `not stored into ${ref} (${s.error ?? "skipped"})`;
+  const read = steps.find((x) => x.name === "read_store");
+  if (read?.status === "succeeded") return `stored into ${ref} (command accepted, ${ref} exists; content unverified)`;
+  if (read?.status === "failed") return `store into ${ref} was accepted but ${read.error ?? `${ref} is missing`}`;
+  return `store into ${ref} was accepted, but ${ref} could not be read back`;
+}
+
 export async function buildBitmap(ctx: ToolContext, a: BuildArgs): Promise<OperationResult> {
   const op = "build_bitmap";
   const errors: string[] = [];
@@ -548,9 +571,11 @@ export async function buildBitmap(ctx: ToolContext, a: BuildArgs): Promise<Opera
             } catch (err) {
               steps.push(asRead(stepFromError("read_store", err, { op: "objects" })));
             }
-            warnings.push(`store is unverified: ${storeRef} exists, but its content was not compared with the bitmap`);
+            if (steps.at(-1)?.status === "succeeded") warnings.push(`store is unverified: ${storeRef} exists, but its content was not compared with the bitmap`);
           }
         }
+      } else if (a.store) {
+        steps.push({ name: "store_look", status: "skipped", error: `skipped: the apply step was ${apply.status}, so there is nothing to store` });
       }
     }
 
@@ -562,7 +587,7 @@ export async function buildBitmap(ctx: ToolContext, a: BuildArgs): Promise<Opera
       warnings,
       summary:
         verification.status === "matched"
-          ? `Stored Bitmap ${a.bitmap} on Image 3.${image}${a.apply ? `; applied to Group ${a.apply.group} (unverified)` : ""}${a.store ? `; stored into ${storeRef} (unverified)` : ""}.`
+          ? `Stored Bitmap ${a.bitmap} on Image 3.${image}${a.apply ? `; ${applyClause(steps, a.apply.group)}` : ""}${a.store && storeRef ? `; ${storeClause(steps, storeRef)}` : ""}.`
           : undefined,
       extra: { bitmap: a.bitmap, image: `3.${image}`, ...(after?.bitmap ? { bitmapEntry: after.bitmap } : {}) },
     });
