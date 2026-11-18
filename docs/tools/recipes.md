@@ -140,7 +140,8 @@ and a cook at the end. This tool checks the references once, writes per cue part
    values) and whose cue name and note match is **already done**: its item says so, is `matched`, and nothing is sent for it.
    Sending the same call again after a lost answer (a client timeout while the console finished) therefore rewrites
    only what differs. A field or column that could not be read, or a list read in part, is never taken for a new line's
-   default: that part is written. `append` always writes (a repeat cannot be told from a wanted second copy). A `cook` still cooks
+   default: that part is written. Parts of one cue that ask for different names or notes (shared by the cue) are never
+   skipped, so the last part's value is the one left. `append` always writes (a repeat cannot be told from a wanted second copy). A `cook` still cooks
    every part.
 4. Each cue part is a batch item, in order, inside one span of the mutation lock (see
    [Batch forms](README.md#batch-forms-su-12)):

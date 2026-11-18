@@ -929,6 +929,28 @@ test("already done (#145 review): a column or line field that could not be read,
   }
 });
 
+test("already done (#156 late review): parts of one cue that ask for different notes or names are never skipped", async () => {
+  con.cue(9060, 1);
+  con.cue(9060, 1, 1);
+  // The console: both parts hold the requested line, and the cue's note is B.
+  await store({ mode: "replace", cues: [{ cue: 1, lines: [line(908, "4.4")] }, { cue: 1, part: 1, note: "B", lines: [line(908, "4.4")] }] });
+  assert.equal(con.cues.get("Sequence 9060 Cue 1")?.note, "B");
+  // Part 0 asks for note A, Part 1 for B: Part 1 already reads as asked but must not be skipped, or Part 0 leaves A.
+  con.commands = [];
+  const { result } = await store({ mode: "replace", cues: [{ cue: 1, note: "A", lines: [line(908, "4.4")] }, { cue: 1, part: 1, note: "B", lines: [line(908, "4.4")] }] });
+  assert.equal(result.outcome, "succeeded", JSON.stringify(result.summary));
+  assert.ok(result.items.every((i: { summary: string }) => !/already done/.test(i.summary)), JSON.stringify(result.items));
+  assert.equal(con.cues.get("Sequence 9060 Cue 1")?.note, "B", "the last part's note wins, as the call asks");
+  // Names the same way.
+  const names = await store({ mode: "replace", cues: [{ cue: 1, name: "One", lines: [line(908, "4.4")] }, { cue: 1, part: 1, name: "Two", lines: [line(908, "4.4")] }] });
+  assert.ok(names.result.items.every((i: { summary: string }) => !/already done/.test(i.summary)));
+  // Parts that agree on the note can still be skipped.
+  con.commands = [];
+  const agree = await store({ mode: "replace", cues: [{ cue: 1, name: "Two", note: "B", lines: [line(908, "4.4")] }, { cue: 1, part: 1, name: "Two", note: "B", lines: [line(908, "4.4")] }] });
+  assert.ok(agree.result.items.every((i: { summary: string }) => /already done/.test(i.summary)), JSON.stringify(agree.result.items));
+  assert.deepEqual(con.commands, []);
+});
+
 test("progress (#145): one unit per written cue part, then one per cooked cue part; none without a token", async () => {
   for (const c of [1, 2, 3]) con.cue(9060, c);
   const seen: Array<{ progress: number; total?: number; message?: string }> = [];

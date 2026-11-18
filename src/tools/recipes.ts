@@ -1153,6 +1153,22 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
     // asks is not written again, so a call sent again after its answer was lost (a client timeout while the console
     // finished) does not rewrite what is there. Append cannot tell a repeat from a wanted second copy, so it always writes.
     const alreadyDone = new Set<string>();
+    // The cue's name and note are shared by its parts, and the parts are written in order: when parts of one cue in
+    // this call ask for different names (or notes), the console's value before the call says nothing about the value
+    // after it, so none of those parts is skipped (#156 late review: note B on the console, Part 0 note A, Part 1 note
+    // B; skipping Part 1 would leave A).
+    const cueKey = (c: RecipeCueSpec) => cueRef(sequence, c.target.cue);
+    const asked = new Map<string, { names: Set<string>; notes: Set<string> }>();
+    for (const c of cues) {
+      const a = asked.get(cueKey(c)) ?? { names: new Set<string>(), notes: new Set<string>() };
+      if (c.name !== undefined) a.names.add(c.name);
+      if (c.note !== undefined) a.notes.add(c.note);
+      asked.set(cueKey(c), a);
+    }
+    const sharedConflict = (c: RecipeCueSpec) => {
+      const a = asked.get(cueKey(c))!;
+      return (c.name !== undefined && a.names.size > 1) || (c.note !== undefined && a.notes.size > 1);
+    };
     if (mode === "replace") {
       const cmp = await runSteps([
         {
@@ -1168,6 +1184,7 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
                 const read = await readColumnsChecked(bridge, c.target, LINE_COLUMN_PROPS, t);
                 // A column that could not be read is not proof of anything: the cue part is written.
                 if (read.problems.length || columnDifferences(c, read.columns).length) continue;
+                if (sharedConflict(c)) continue;
                 if (c.name !== undefined || c.note !== undefined) {
                   const res = await readObjects(bridge, cueRef(sequence, c.target.cue), ["Name", "Note"], 1);
                   const f = res?.items?.[0]?.fields ?? {};
