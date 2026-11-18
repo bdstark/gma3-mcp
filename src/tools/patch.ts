@@ -222,7 +222,7 @@ async function readState(bridge: Gma3Bridge, t: number): Promise<PatchState> {
 }
 
 /** check_state: Root, copy closed, no modal. */
-async function checkStateStep(bridge: Gma3Bridge, t: number): Promise<StepResult> {
+export async function checkStateStep(bridge: Gma3Bridge, t: number): Promise<StepResult> {
   try {
     const s = await readState(bridge, t);
     const problems: string[] = [];

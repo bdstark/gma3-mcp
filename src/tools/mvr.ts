@@ -34,7 +34,7 @@ import { progressSteps } from "../progress.js";
 import { asRead, buildResult, stepFromError, unavailable, validationFailure, type OperationResult, type StepResult, type Verification } from "../results.js";
 import { NAME_FORBIDDEN_CHARS } from "../validate.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
-import { matchingTypes, patchAdd, patchImport, patchSet, sameName, type TypeRow } from "./patch.js";
+import { checkStateStep, matchingTypes, patchAdd, patchImport, patchSet, sameName, type TypeRow } from "./patch.js";
 import { decodeBase64, libraryFileName, patchLibraryAdd } from "./patchlibrary.js";
 import { placeFixtures } from "./positions.js";
 
@@ -268,12 +268,16 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
     if (!f.gdtfMode) flag(f, "no GDTFMode");
   }
 
-  // 3. The console: stages and fixture types.
+  // 3. The console: a patch session can start (the copy closed, the command line at Root, no modal: the patch tools'
+  // own check_state, before anything is uploaded; review of #162), its stages and fixture types.
   const t = ctx.requestTimeoutMs;
+  const ready = await checkStateStep(ctx.bridge, t);
+  if (ready.status !== "succeeded") return stop({ ...ready, error: `a patch session cannot start: ${ready.error ?? "patch.state cannot be read"}` });
+  steps.push(ready);
   let stages: string[];
   let types: TypeRow[];
   try {
-    stages = ((await ctx.bridge.request("patch.state", {}, t)) as { stages?: string[] }).stages ?? [];
+    stages = ((ready.detail as { stages?: string[] } | undefined)?.stages ?? []) as string[];
     types = ((await ctx.bridge.request("patch.types", {}, t)) as { types: TypeRow[] }).types;
   } catch (err) {
     return stop(asRead(stepFromError("check_console", err, { op: "patch.types" })));
@@ -331,6 +335,19 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
       for (const p of group) typeProblem.set(p.spec, `the MVR holds ${group.length} different GDTFs of ${h?.manufacturer ?? "?"} / ${h?.name ?? "?"} (${group.map((x) => x.spec).join(", ")}) and only one can be imported: import the one wanted (gma3_patch_library_add, gma3_patch_import) and name it with types for each`);
     }
   }
+  // Different types whose names clean to the same library file ("Spot/A" and "SpotA"): the second upload would find the
+  // first's file (review of #162). Each of those files gets the GDTF's CRC-32 as its revision part.
+  const byFile = new Map<string, TypePlan[]>();
+  for (const p of typePlans.values()) if (p.file !== undefined) byFile.set(p.file.toLowerCase(), [...(byFile.get(p.file.toLowerCase()) ?? []), p]);
+  for (const group of byFile.values()) {
+    if (group.length < 2) continue;
+    for (const p of group) {
+      const sum = crc32(p.gdtf.bytes as Buffer).toString(16).padStart(8, "0");
+      const m = /^(.*?)@(.*?)(?:@(.*))?\.gdtf$/.exec(p.file as string);
+      p.file = m ? `${m[1]}@${m[2]}@${m[3] ? `${m[3]}_` : ""}${sum}.gdtf` : p.file;
+    }
+    warnings.push(`${group.map((p) => p.spec).join(", ")} would share one library file name; they go in as ${group.map((p) => p.file).join(", ")}`);
+  }
   /** The GDTF specs an import serves: its own and those that share its bytes. */
   const serves = (p: TypePlan, spec: string) => spec === p.spec || typePlans.get(spec)?.sameAs === p.spec;
 
@@ -374,7 +391,9 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
       const unknown = r.occupancyUnknown ?? [];
       const unchecked = fx.filter((p) => p.address !== undefined && typeof p.footprint !== "number").map((p) => p.fid);
       const detailOut = { fixtures: fx.length, conflicts: r.conflicts.length, taken: r.fids.filter((x) => !x.free).length, ...(unchecked.length ? { footprintUnknownUntilImport: unchecked } : {}), ...(unknown.length ? { occupancyUnknown: unknown } : {}) };
-      if (unknown.length) return asRead({ name, status: "failed", op: "patch.check", error: `the DMX occupancy of ${unknown.length} patched fixture(s) cannot be established (FID ${unknown[0].fid}: ${unknown[0].reason}), so free ranges cannot be proven`, detail: detailOut });
+      // Only a fixture with an address needs free DMX; an unpatched rig is not stopped by an unreadable patched fixture
+      // (patch_add checks occupancy only with an address too; review of #162).
+      if (unknown.length && fx.some((p) => p.address !== undefined)) return asRead({ name, status: "failed", op: "patch.check", error: `the DMX occupancy of ${unknown.length} patched fixture(s) cannot be established (FID ${unknown[0].fid}: ${unknown[0].reason}), so free ranges cannot be proven`, detail: detailOut });
       return asRead({ name, status: "succeeded", op: "patch.check", detail: detailOut });
     } catch (err) {
       const s = asRead(stepFromError(name, err, { op: "patch.check" }));

@@ -220,6 +220,9 @@ interface World {
   live: Array<{ fid: number; first: number; last: number }>;
   library: Map<string, Buffer>;
   oldBridge: boolean;
+  /** patch.check reports these patched fixtures' occupancy as unknown. */
+  occupancyUnknown: Array<{ fid: number; reason: string }>;
+  state: { destination: string; copyOpen: boolean; modal?: { name: string } | false };
 }
 
 const abs = (a: string) => {
@@ -228,9 +231,9 @@ const abs = (a: string) => {
 };
 
 async function harness(world: Partial<World> = {}): Promise<{ h: Harness; w: World }> {
-  const w: World = { stages: ["Stage 1", "Main Floor"], types: [{ no: 3, name: "Wash 7", manufacturer: "Glow Co", modes: [{ no: 1, name: "8ch", footprint: 8, breaks: 1 }] }], live: [{ fid: 1, first: 0, last: 7 }], library: new Map(), oldBridge: false, ...world };
+  const w: World = { stages: ["Stage 1", "Main Floor"], types: [{ no: 3, name: "Wash 7", manufacturer: "Glow Co", modes: [{ no: 1, name: "8ch", footprint: 8, breaks: 1 }] }], live: [{ fid: 1, first: 0, last: 7 }], library: new Map(), oldBridge: false, occupancyUnknown: [], state: { destination: "Root", copyOpen: false, modal: false }, ...world };
   const h = await startHarness(registerMvrTools);
-  h.fake.on("patch.state", () => ({ destination: "Root", copyOpen: false, stages: w.stages }));
+  h.fake.on("patch.state", () => ({ ...w.state, stages: w.stages }));
   h.fake.on("patch.types", () => ({ types: w.types }));
   h.fake.on("patch.check", (a) => {
     if (w.oldBridge || !Array.isArray(a.ranges)) throw new BridgeReplyError("[bad-args] patch.check needs add, edits or fids", "bad-args");
@@ -241,7 +244,7 @@ async function harness(world: Partial<World> = {}): Promise<{ h: Harness; w: Wor
       for (const o of w.live) if (p.first <= o.last && o.first <= p.last) conflicts.push({ fid: p.fid, range: "x", with: o.fid, withRange: "y" });
       for (const q of proposed.slice(i + 1)) if (p.first <= q.last && q.first <= p.last) conflicts.push({ fid: p.fid, with: q.fid, reason: "two requested ranges overlap" });
     });
-    return { fids: ranges.map((r) => ({ fid: r.fid, free: !w.live.some((l) => l.fid === r.fid) })), conflicts, occupancyUnknown: [] };
+    return { fids: ranges.map((r) => ({ fid: r.fid, free: !w.live.some((l) => l.fid === r.fid) })), conflicts, occupancyUnknown: w.occupancyUnknown };
   });
   h.fake.on("patch.libraryStat", (a) => {
     const b = w.library.get(String(a.file));
@@ -624,6 +627,68 @@ test("gma3_patch_import_mvr: two GDTFs of one fixture type share one import when
     } finally {
       await h.close();
     }
+  }
+});
+
+test("gma3_patch_import_mvr: an open patch copy, a destination other than Root or a modal is refused before any upload, preview too (review of #162)", async () => {
+  for (const state of [
+    { destination: "Root", copyOpen: true, modal: false as const },
+    { destination: "ShowData.DataPools", copyOpen: false, modal: false as const },
+    { destination: "Root", copyOpen: false, modal: { name: "MessageBox" } },
+  ]) {
+    const { h, w } = await harness({ state });
+    try {
+      const { deps, calls } = recorder(w);
+      for (const preview of [true, false]) {
+        const res = await mvrImport(h.ctx, { content_base64: b64(RIG()), preview, exclusive: true }, deps);
+        assert.equal(res.outcome, "failed");
+        assert.match(String(res.steps.at(-1)?.error), /a patch session cannot start: .*(patch copy is open|not Root|modal is open)/);
+      }
+      assert.equal(calls.length, 0);
+      assert.ok(!h.fake.requests.some((r) => r.op === "patch.libraryStat" || r.op === "patch.check"));
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("gma3_patch_import_mvr: two fixture types whose names clean to one library file get distinct files (review of #162)", async () => {
+  const { h, w } = await harness({ types: [] });
+  try {
+    const A = gdtf("ACME", "Spot/A", [{ name: "Standard", offsets: ["1", "2"] }]);
+    const B = gdtf("ACME", "SpotA", [{ name: "Standard", offsets: ["1", "2"] }]);
+    const file = mvr(
+      { Front: { fixtures: [{ name: "A 1", fid: 101, spec: "a.gdtf" }, { name: "B 1", fid: 201, spec: "b.gdtf" }] } },
+      { "a.gdtf": A, "b.gdtf": B },
+    );
+    const { deps, calls } = recorder(w);
+    const res = await mvrImport(h.ctx, { content_base64: b64(file), preview: true }, deps);
+    assert.equal(res.outcome, "succeeded", res.summary);
+    const files = (res.plan as { types: Array<{ import?: string }> }).types.map((x) => x.import);
+    const hex = (b: Buffer) => crc32(b).toString(16).padStart(8, "0");
+    assert.deepEqual(files, [`ACME@SpotA@${hex(A)}.gdtf`, `ACME@SpotA@${hex(B)}.gdtf`]);
+    assert.ok(res.warnings?.some((x) => /would share one library file name/.test(x)));
+    assert.equal(calls.length, 0);
+    // The library is checked under the distinct names.
+    assert.deepEqual(h.fake.requests.filter((r) => r.op === "patch.libraryStat").map((r) => r.args.file), files);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_import_mvr: unknown DMX occupancy stops only an import with addresses (review of #162)", async () => {
+  const { h, w } = await harness({ occupancyUnknown: [{ fid: 7, reason: "its mode is unavailable" }] });
+  try {
+    const { deps } = recorder(w);
+    const unpatched = mvr({ Front: { fixtures: [{ name: "Wash 1", fid: 201, spec: "Glow_Co@Wash_7.gdtf", mode: "8ch" }] } });
+    const ok1 = await mvrImport(h.ctx, { content_base64: b64(unpatched), exclusive: true }, deps);
+    assert.equal(ok1.outcome, "succeeded", ok1.summary);
+    assert.ok((ok1.steps.find((x) => x.name === "check_patch")?.detail as { occupancyUnknown?: unknown[] }).occupancyUnknown?.length === 1);
+    const addressed = await mvrImport(h.ctx, { content_base64: b64(RIG()), preview: true }, deps);
+    assert.equal(addressed.outcome, "failed");
+    assert.match(String(addressed.steps.at(-1)?.error), /DMX occupancy of 1 patched fixture\(s\) cannot be established \(FID 7/);
+  } finally {
+    await h.close();
   }
 });
 
