@@ -16,6 +16,8 @@ import { checkContent, parseXml, readZip, type FixtureHeader, type XmlElement } 
 
 export const MVR_MAX_BYTES = 64 * 1024 * 1024;
 export const MVR_MAX_FIXTURES = 1024;
+/** The highest fixture number the console patches (PATCH_MAX_FID in the bridge plugin). */
+export const MAX_FID = 99_999_999;
 /** One GDTF in the zip: the same limit gma3_patch_library_add sends. */
 export const GDTF_MAX_BYTES = 8 * 1024 * 1024;
 
@@ -247,6 +249,9 @@ export function parseMvr(bytes: Buffer): MvrScene {
       let fid: number | undefined;
       if (numeric !== undefined && /^\d+$/.test(numeric) && Number(numeric) > 0) fid = Number(numeric);
       else if (idText !== undefined && /^\d+$/.test(idText) && Number(idText) > 0) fid = Number(idText);
+      // The console's fixture numbers end at 99,999,999 (PATCH_MAX_FID in the bridge): a larger one is this fixture's
+      // problem, so skip_unusable can leave it out instead of the range check refusing the whole call (review of #162).
+      if (fid !== undefined && fid > MAX_FID) problems.push(`its fixture number ${fid} is above the console's ${MAX_FID}`);
       const addressesEl = child(els, i, "Addresses");
       const addresses: Array<{ break: number; address: string }> = [];
       if (addressesEl !== undefined) {
