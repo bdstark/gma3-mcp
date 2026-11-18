@@ -270,7 +270,7 @@ test("on an empty agenda a schema without a needed property is found on the new 
   c.schema = SCHEMA.filter((x) => x !== "REPEATEVERYYEAR");
   const r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5, every_year: true });
   assert.equal(r.result.outcome, "partial");
-  assert.match(r.result.summary, /no writable everyYear .* deleted again/);
+  assert.match(r.result.summary, /no writable everyYear .* deleted again \(read back absent\)/);
   assert.deepEqual(h.fake.commands, ["Store Agenda 1 /NoConfirmation", "Delete Agenda 1 /NoConfirmation"]);
   assert.equal(c.entries.has(1), false);
 });
@@ -304,10 +304,40 @@ test("an ignored disable deletes the new entry again: nothing is assigned or con
   c.ignore.add("ENABLED");
   const r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
   assert.notEqual(r.result.outcome, "succeeded");
-  assert.match(r.result.summary, /could not be confirmed disabled .* deleted again/);
+  assert.match(r.result.summary, /could not be confirmed disabled .* deleted again \(read back absent\)/);
   assert.deepEqual(h.fake.commands, ["Store Agenda 1 /NoConfirmation", "Delete Agenda 1 /NoConfirmation"]);
   assert.deepEqual(sets(), ["ENABLED=No"]);
   assert.equal(c.entries.has(1), false);
+});
+
+test("cleanup is read back: an ignored or unreadable Delete is reported as a live hazard, never as deleted (review of #160)", async () => {
+  c.ignore.add("ENABLED");
+  c.ignoreCmd = /^Delete/;
+  let r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
+  assert.match(r.result.summary, /NOT deleted: it is still there/);
+  assert.match(JSON.stringify(r.result.warnings), /may still be enabled .* check it now/);
+  assert.equal(c.entries.get(1)?.props.ENABLED, "Yes");
+  install();
+  c.ignore.add("ENABLED");
+  let deleted = false;
+  h.fake.on("objects", (a) => {
+    if (deleted && String(a.ref) === "Agenda 1") throw new Error("read timed out on the console");
+    return c.objects(a);
+  });
+  h.fake.on("cmd", (a) => {
+    if (/^Delete/.test(String(a.command))) deleted = true;
+    const fb = c.command(String(a.command));
+    return fb === SILENT ? SILENT : { command: a.command, feedback: fb };
+  });
+  r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
+  assert.match(r.result.summary, /possibly not deleted: whether it is still there could not be read/);
+  assert.match(JSON.stringify(r.result.warnings), /check it now/);
+  install();
+  c.schema = SCHEMA.filter((x) => x !== "REPEATEVERYYEAR");
+  c.ignoreCmd = /^Delete/;
+  r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5, every_year: true });
+  assert.match(r.result.summary, /NOT deleted: it is still there/);
+  assert.match(JSON.stringify(r.result.warnings), /may fire: check it now/);
 });
 
 test("an unreadable write or an unreadable entry before enabling leaves it disabled", async () => {

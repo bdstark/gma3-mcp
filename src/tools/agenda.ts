@@ -703,19 +703,40 @@ export async function storeAgenda(ctx: ToolContext, raw: StoreAgendaArgs): Promi
     if (created.class && !ENTRY_CLASS.test(created.class)) return fail({ name: "check_stored", kind: "read", status: "failed", op: "object", error: `${spec.ref} reads class ${created.class}, not an agenda entry; nothing more was sent` });
     steps.push({ name: "check_stored", kind: "read", status: "succeeded", op: "object", detail: { class: created.class, addr: created.addr } });
 
+    /**
+     * Delete the entry this call created and read the slot: "gone" only when the read shows it absent. An answered
+     * Delete is not proof (review of #160): the console can answer OK and keep the entry.
+     */
+    const removeNew = async (name: string): Promise<"gone" | "still there" | "unknown"> => {
+      const del = await commandStep(bridge, name, `Delete ${spec.ref} /NoConfirmation`);
+      steps.push(del);
+      if (del.status === "failed") return "still there";
+      try {
+        const left = await readObjects(bridge, spec.ref, [], 1);
+        const there = Boolean(left?.items?.[0] && !left.items[0].invalid);
+        steps.push({ name: "check_removed", kind: "read", status: there ? "failed" : "succeeded", op: "objects", ...(there ? { error: `${spec.ref} still exists after Delete` } : {}) });
+        return there ? "still there" : "gone";
+      } catch (err) {
+        steps.push(asRead(stepFromError("check_removed", err, { op: "objects" })));
+        return "unknown";
+      }
+    };
+    const removedText = (r: "gone" | "still there" | "unknown") =>
+      r === "gone" ? "deleted again (read back absent)" : r === "still there" ? "NOT deleted: it is still there" : "possibly not deleted: whether it is still there could not be read";
+
     // 7. The new entry's schema, when no entry could tell before.
     if (!props) {
       const mapped = mapRoles(spec, created.schema ?? []);
       if (mapped.missing.length) {
         steps.push({ name: "map_properties", kind: "read", status: "failed", op: "object", error: `the new entry's properties have no writable ${mapped.missing.join(", ")}`, detail: { schema: (created.schema ?? []).map((s) => s.name) } });
-        const undo = await commandStep(bridge, "delete_unusable", `Delete ${spec.ref} /NoConfirmation`);
-        steps.push(undo);
+        const removed = await removeNew("delete_unusable");
+        if (removed !== "gone") warnings.push(`the new ${spec.ref} is ${removedText(removed)}; it holds the console's current date and time and may fire: check it now`);
         return buildResult({
           operation: op,
           target,
           steps,
           warnings,
-          summary: `store_agenda failed: this console's agenda entries have no writable ${mapped.missing.join(", ")}; the new ${spec.ref} was ${undo.status === "succeeded" ? "deleted again" : `left in place (the delete ${undo.status})`}`,
+          summary: `store_agenda failed: this console's agenda entries have no writable ${mapped.missing.join(", ")}; the new ${spec.ref} was ${removedText(removed)}`,
         });
       }
       props = mapped.props;
@@ -759,10 +780,9 @@ export async function storeAgenda(ctx: ToolContext, raw: StoreAgendaArgs): Promi
     steps.push(disable);
     if (disable.status !== "succeeded") {
       // A new entry starts at the console's current date and time: one that may still be enabled must not stay.
-      const undo = await commandStep(bridge, "delete_unconfirmed", `Delete ${spec.ref} /NoConfirmation`);
-      steps.push(undo);
-      if (undo.status !== "succeeded") warnings.push(`${spec.ref} may be enabled with the console's current date and time and could not be deleted again (the delete ${undo.status}): check it now`);
-      return buildResult({ operation: op, target, steps, warnings, summary: `store_agenda failed: ${spec.ref} could not be confirmed disabled (${disable.error ?? disable.status}); it was ${undo.status === "succeeded" ? "deleted again" : "not deleted"} and nothing was configured` });
+      const removed = await removeNew("delete_unconfirmed");
+      if (removed !== "gone") warnings.push(`${spec.ref} may still be enabled with the console's current date and time and is ${removedText(removed)}: check it now`);
+      return buildResult({ operation: op, target, steps, warnings, summary: `store_agenda failed: ${spec.ref} could not be confirmed disabled (${disable.error ?? disable.status}); it was ${removedText(removed)}, and nothing was configured` });
     }
     const plan: Array<{ name: string; run: () => Promise<StepResult> }> = [];
     if (spec.target) plan.push({ name: "assign", run: () => commandStep(bridge, "assign", `Assign ${spec.target!.ref} At ${spec.ref}`) });

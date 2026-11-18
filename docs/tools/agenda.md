@@ -59,6 +59,8 @@ call's target, and its own twilight mode drops the call's `time`.
 2. **Replace:** with `overwrite`, `Delete Agenda n /NoConfirmation`, then read the slot back as free.
 3. **Store:** `Store Agenda n /NoConfirmation`, then read that it is an agenda entry. If no entry existed before, the property names come from this new one; if one is missing, the new entry is deleted again.
 4. **Disable, confirmed:** set `Enabled` to `No` and check that it reads `No`. A new entry starts with the console's date and time and may be enabled, so if the disable can't be confirmed the new entry is deleted again and nothing else is sent.
+
+   Every cleanup delete is read back: the result says "deleted" only when the slot reads empty. If the entry is still there or the slot can't be read, the result warns that the entry may be live and needs checking now.
 5. **Assign:** `Assign <target> At Agenda n`.
 6. **Write:** set each property with the bridge's `set` op and check what each write reads back: mode, start date, start time or offset, valid duration, action or command, end date and time, minute interval, repeat every year, name. A write the console ignores, answers in a form the tool can't compare, or can't read back stops the entry, which stays disabled; the remaining steps are reported as skipped.
 7. **Check before enabling:** while the entry is still disabled, read back the whole entry, including the `Object` by address. Anything that doesn't match, or can't be read, leaves it disabled. This check always runs, so an entry is never switched on unchecked.
