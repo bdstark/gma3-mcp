@@ -37,6 +37,7 @@ import { registerTypeStructureTools } from "./tools/typestructure.js";
 import { registerCellLayoutTools } from "./tools/celllayout.js";
 import { registerDmxOutputTools } from "./tools/dmxoutput.js";
 import { registerNetOutputTools } from "./tools/netoutput.js";
+import { registerUndoTools } from "./tools/undo.js";
 import { registerVariableTools } from "./tools/variables.js";
 import { registerOscTools } from "./tools/osc.js";
 import { registerShowTools } from "./tools/show.js";
@@ -46,6 +47,7 @@ import { registerTempoSyncTools, resyncPlayback, RESYNC_NOTE } from "./tools/tem
 import { annotatePlayback, readTargetState, registerLiveStateTools, stateAfterFrame } from "./tools/livestate.js";
 import { registerPoolUsageTools, shapeListing } from "./tools/poolusage.js";
 import { registerAnalysisTools } from "./tools/analysis.js";
+import { registerPoolObjectTools } from "./tools/poolobjects.js";
 import { UndoGroups, inToolScope } from "./undo.js";
 import { withProgress } from "./progress.js";
 
@@ -101,10 +103,12 @@ const allowLuaTool = !/^(0|false|no|off)$/i.test((env.GMA3_ALLOW_LUA ?? "1").tri
 // read-only) take the same lock so a workflow is never split by them. This orders only this
 // process's own requests; it does not isolate anything from another console operator or client.
 // GMA3_UNDO_GROUPS=1: each tool call's mutation span is one console undo group (bridge 0.55.0); off by default.
-const mutations = new MutationLock(new UndoGroups(bridge));
+const undoGroups = new UndoGroups(bridge);
+const mutations = new MutationLock(undoGroups);
 const toolContext: ToolContext = {
   bridge,
   mutations,
+  undo: undoGroups,
   requestTimeoutMs: Number(env.GMA3_BRIDGE_TIMEOUT_MS ?? 15000),
   luaToolAllowed: allowLuaTool,
   osc: oscOptions,
@@ -720,6 +724,7 @@ registerCellLayoutTools(server, toolContext);
 registerDmxOutputTools(server, toolContext);
 // Passive sACN / Art-Net listener: read-only, no bridge, no mutation lock.
 registerNetOutputTools(server, toolContext);
+registerUndoTools(server, toolContext);
 registerVariableTools(server, toolContext);
 registerLiveStateTools(server, toolContext);
 registerOscTools(server, toolContext);
@@ -728,6 +733,7 @@ registerTagTools(server, toolContext);
 registerTempoSyncTools(server, toolContext);
 registerPoolUsageTools(server, toolContext);
 registerAnalysisTools(server, toolContext);
+registerPoolObjectTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",
