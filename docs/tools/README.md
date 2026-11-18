@@ -26,6 +26,7 @@ the live test procedure on a disposable show.
 | Fixture positions in 3D (SU-04; no undo, refused while the patch copy is open) | `gma3_fixture_positions`, `gma3_place_fixtures` | [positions.md](positions.md) |
 | Cell layouts (SU-08, bridge 0.29.0; no undo, need `exclusive: true`) | `gma3_layout_cells`, `gma3_assign_cell_layout` | [positions.md](positions.md#cell-layouts-su-08) |
 | Bitmaps: images mapped onto pixels (#143, bridge 0.57.0; apply and store unverified) | `gma3_image_add`, `gma3_build_bitmap`, `gma3_bitmaps` | [bitmaps.md](bitmaps.md) |
+| Layout views: touch layouts of pool objects (#146; no bridge change, unverified on a console) | `gma3_store_layout`, `gma3_layouts` | [layouts.md](layouts.md) |
 | DMX universes and output (SU-09, bridge 0.30.0; changes need `exclusive: true`, network output `network: true`) | `gma3_dmx_output`, `gma3_configure_dmx_output` | [dmx-output.md](dmx-output.md) |
 | Network DMX output on the wire (sACN / Art-Net listener; read-only, no bridge needed) | `gma3_network_output` | [network-output.md](network-output.md) |
 | Executor and sequence playback configuration (SB-01) | `gma3_executor_settings`, `gma3_configure_executor`, `gma3_configure_sequence` | [playback.md](playback.md) |

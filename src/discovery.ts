@@ -11,10 +11,10 @@
 export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] }> = [
   { task: "find and import fixture types", tools: ["gma3_patch_library", "gma3_patch_import", "gma3_patch_library_add", "gma3_patch_types", "gma3_patch_remove_type"] },
   { task: "patch fixtures, stages, MVR rigs (readdress, rename, nest, retype)", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list", "gma3_patch_move", "gma3_patch_retype", "gma3_patch_stages", "gma3_patch_import_mvr"] },
-  { task: "fixture type modes, cells, channels, size", tools: ["gma3_patch_type_structure"] },
+  { task: "fixture type modes, cells, channels", tools: ["gma3_patch_type_structure"] },
   { task: "place fixtures in 3D (rotation, mirror)", tools: ["gma3_place_fixtures", "gma3_fixture_positions"] },
-  { task: "cell layouts, bitmaps", tools: ["gma3_layout_cells", "gma3_assign_cell_layout", "gma3_build_bitmap", "gma3_image_add"] },
-  { task: "select fixtures, set values (a look in one call)", tools: ["gma3_select", "gma3_set_attributes", "gma3_set_color", "gma3_set_position", "gma3_set_attribute", "gma3_clear_programmer"] },
+  { task: "cell layouts, bitmaps, layout views", tools: ["gma3_layout_cells", "gma3_assign_cell_layout", "gma3_build_bitmap", "gma3_image_add", "gma3_store_layout"] },
+  { task: "select fixtures, set values (a look per call)", tools: ["gma3_select", "gma3_set_attributes", "gma3_set_color", "gma3_set_position", "gma3_set_attribute", "gma3_clear_programmer"] },
   { task: "presets", tools: ["gma3_apply_preset", "gma3_store_preset", "gma3_preset", "gma3_release_attributes"] },
   { task: "groups and MAtricks", tools: ["gma3_store_group", "gma3_selection_grid", "gma3_configure_matricks", "gma3_matricks"] },
   { task: "phasers (movement, colour)", tools: ["gma3_build_phaser", "gma3_phaser_release"] },
@@ -31,7 +31,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "OSC input and output", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
   { task: "save, load, list show files; undo tool calls", tools: ["gma3_save_show", "gma3_load_show", "gma3_show_files", "gma3_undo"] },
   { task: "tempo-sync plugin, phaser ReSync", tools: ["gma3_tempo_sync_status", "gma3_configure_tempo_sync", "gma3_playback"] },
-  { task: "show analysis: preset usage, cue diffs, leaks", tools: ["gma3_preset_usage", "gma3_cue_diff", "gma3_tracking_leaks"] },
+  { task: "preset usage, cue diffs, leaks", tools: ["gma3_preset_usage", "gma3_cue_diff", "gma3_tracking_leaks"] },
   { task: "copy, move, delete, rename pool objects", tools: ["gma3_pool_objects"] },
   { task: "read show data, live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences", "gma3_pool_usage"] },
 ];
@@ -71,7 +71,7 @@ export function serverInstructions(staleWarning?: string): string {
   const map = TASK_TOOLS.map((t) => `- ${t.task}: ${t.tools.join(", ")}`).join("\n");
   return [
     ...(staleWarning ? [staleWarning, ""] : []),
-    "gma3-mcp controls a grandMA3 console. Structured tools check first, never retry, report each step and read back. Map from task to tools:",
+    "gma3-mcp controls a grandMA3 console. Structured tools check first, never retry, report steps and read back. Map from task to tools:",
     map,
     BATCH_NOTE,
     OBSERVE_NOTE,
