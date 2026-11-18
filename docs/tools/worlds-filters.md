@@ -25,6 +25,8 @@ Choose the attributes the filter passes by attribute name (`attributes`), by fea
 
 The steps:
 
+A new filter, including one `on_taken: "update"` lands on because the number is free, always needs `attributes` or `feature_groups`, so its attributes never come from whatever the At Filter holds.
+
 1. **New filter:** `Store Filter <n> "name" /NoConfirmation` (the 2.3 release notes give this form; it stores the At Filter). Then `Attributes` is written as the whole string with the bridge's `set` op, and all four layers are written, Yes unless `layers` says false.
 2. **Update:** only what the call gives is written. `name` is applied with `Label`.
 3. **Read back:** the filter must pass exactly the attributes asked for, and each layer must read as asked. A form the tool cannot compare is a mismatch, and a field it cannot read makes the result unavailable. Dynamic filter rules the At Filter carried into a new filter are reported as a warning; edit the filter on the console to remove them.

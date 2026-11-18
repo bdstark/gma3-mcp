@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
-import { decodeAttributes, encodeAttributes, parseColor, parseTargetObject, registerWorldFilterTools, resolveAttributes, type AttributeCatalog } from "../src/tools/worldsfilters.ts";
+import { decodeAttributes, encodeAttributes, objectRef, parseColor, parseTargetObject, registerWorldFilterTools, resolveAttributes, type AttributeCatalog } from "../src/tools/worldsfilters.ts";
 
 /** Attribute definitions as in a small show: index (1-based), name, feature. */
 const ATTRS: Array<[number, string, string]> = [
@@ -144,8 +144,10 @@ class Console {
       a.fields.Image = img.name;
       return "OK";
     }
-    if ((m = cmd.match(/^Assign (Appearance \d+) At (\w+ [\d.]+)$/))) {
-      const o = this.objects.get(m[2]);
+    if ((m = cmd.match(/^Assign (Appearance \d+) At (\w+ (?:[\d.]+|"[^"]+"))$/))) {
+      const byName = m[2].match(/^(\w+) "([^"]+)"$/);
+      const key = byName ? [...this.objects.keys()].find((k) => k.startsWith(`${byName[1]} `) && this.objects.get(k)!.name === byName[2]) : m[2];
+      const o = key ? this.objects.get(key) : undefined;
       if (!o || !this.objects.has(m[1])) return "Error";
       o.fields.Appearance = m[1];
       return "OK";
@@ -410,4 +412,33 @@ test("the assigned object must be exactly one object (#161 review): wildcards ar
   r = await h.callJson("gma3_set_appearance", { object: "Group 3", appearance: "Macro" });
   assert.match(r.text, /names 2 appearances; give it by number/);
   assert.deepEqual(h.fake.commands, []);
+});
+
+test("#161 review: on_taken update on a free filter still needs attributes; quoted names keep their spaces; numeric appearance aliases are one appearance", async () => {
+  let r = await h.callJson("gma3_store_filter", { filter: 20, name: "Colour", on_taken: "update" });
+  assert.equal(r.result.outcome, "failed", r.text);
+  assert.match(r.text, /Filter 20 is free, so it would be stored new from the At Filter: give attributes or feature_groups/);
+  assert.deepEqual(h.fake.commands, []);
+  assert.equal(c.objects.has("Filter 20"), false);
+
+  assert.equal(parseTargetObject("o", '  Group   "Front  Wash" '), 'Group "Front  Wash"');
+  c.objects.set("Group 5", { class: "Group", name: "Front  Wash", fields: { Appearance: null } });
+  c.objects.set("Group 6", { class: "Group", name: "Front Wash", fields: { Appearance: null } });
+  r = await h.callJson("gma3_set_appearance", { object: 'Group "Front  Wash"', appearance: 1 });
+  assert.equal(r.result.verification.status, "matched", r.text);
+  assert.deepEqual(h.fake.commands, ['Assign Appearance 1 At Group "Front  Wash"']);
+  assert.equal(c.objects.get("Group 5")!.fields.Appearance, "Appearance 1");
+  assert.equal(c.objects.get("Group 6")!.fields.Appearance, null);
+
+  install();
+  c.ignoreSet.add("BackR");
+  r = await h.callJson("gma3_set_appearance", { assignments: [{ appearance: 26, create: { color: "#FF0000" } }, { object: "Group 3", appearance: "026" }] });
+  assert.equal(r.result.items[1].outcome, "not_attempted", r.text);
+  assert.equal(h.fake.commands.some((x) => x.startsWith("Assign Appearance")), false);
+  h.fake.requests.length = 0;
+  r = await h.callJson("gma3_set_appearance", { assignments: [{ appearance: 27, create: { color: "#000000" } }, { appearance: "027", create: { color: "#FFFFFF" } }] });
+  assert.equal(r.result.outcome, "failed");
+  assert.match(r.text, /appearance 27 is created or changed by more than one item/);
+  assert.equal(objectRef("group 03"), objectRef("Group 3"));
+  assert.notEqual(objectRef('Group "A  B"'), objectRef('Group "A B"'));
 });

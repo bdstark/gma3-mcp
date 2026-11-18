@@ -468,6 +468,11 @@ export async function storeFilter(ctx: ToolContext, raw: StoreFilterArgs): Promi
       steps.push(asRead({ name: "check_filter", status: "succeeded", detail: { taken: false } }));
     }
     const creating = !before.exists;
+    // A new filter's attributes are always chosen: Store takes the At Filter's (#161 review).
+    if (creating && !want) {
+      steps.push(refuse("check_attributes", `${ref} is free, so it would be stored new from the At Filter: give attributes or feature_groups for it; nothing was sent`));
+      return done({ filter: shown(before) });
+    }
 
     if (name !== undefined && !(before.exists && before.name === name)) {
       const cache: PoolNameCache<string> = new Map();
@@ -572,8 +577,9 @@ export function parseColor(field: string, value: unknown): [number, number, numb
 /** One pool object for an assignment (no ranges, no lists). */
 export function parseTargetObject(field: string, value: unknown): string {
   if (typeof value !== "string" || !value.trim()) throw new ValidationError(`${field} must be one object such as "Group 3", "Sequence 5" or "Macro 2" (got ${describe(value)})`, field);
-  const s = value.trim().replace(/\s+/g, " ");
-  if (/\b(thru|through)\b|[+;]/i.test(s)) throw new ValidationError(`${field}: one object per item (got ${JSON.stringify(s)}); use the batch form for several`, field);
+  // Whitespace is collapsed outside a quoted name only: "Front  Wash" and "Front Wash" are two names (#161 review).
+  const s = value.trim().replace(/("[^"]*")|\s+/g, (m, q) => q ?? " ");
+  if (/\b(thru|through)\b|[+;]/i.test(s.replace(/"[^"]*"/g, ""))) throw new ValidationError(`${field}: one object per item (got ${JSON.stringify(s)}); use the batch form for several`, field);
   if (!/^[A-Za-z]+ (\d+(\.\d+)*|"[^"]+")$/.test(s)) throw new ValidationError(`${field} must be an object keyword and number such as "Group 3" or "Preset 4.12" (got ${JSON.stringify(s)})`, field);
   if (/[*?]/.test(s)) throw new ValidationError(`${field}: wildcards ("*", "?") can match several objects; name one object (got ${JSON.stringify(s)})`, field);
   if (/^appearance /i.test(s)) throw new ValidationError(`${field}: an appearance is not assigned to an appearance; give the object that should show it`, field);
@@ -818,9 +824,21 @@ const appearanceShape = {
   on_name_taken: z.enum(ON_NAME_TAKEN).optional(),
 };
 
-/** The appearance an item names, canonical ("20", 20 and " 20 " are one; a name case aside). */
+/** The appearance an item names, canonical (20, "20", " 020 " are one; a name case aside). */
 export function appearanceRef(it: Record<string, unknown>): string {
-  return `appearance ${String(it.appearance).trim().replace(/^"|"$/g, "").toLowerCase()}`;
+  const s = String(it.appearance).trim();
+  return `appearance ${/^\d+$/.test(s) ? String(Number(s)) : s.replace(/^"|"$/g, "").toLowerCase()}`;
+}
+
+/** The object an item names, canonical: numbers without leading zeros outside a quoted name, keyword case aside. */
+export function objectRef(object: unknown): string {
+  let s: string;
+  try {
+    s = parseTargetObject("object", object);
+  } catch {
+    s = String(object).trim();
+  }
+  return s.replace(/("[^"]*")|\d+/g, (m, q) => q ?? String(Number(m))).replace(/^\w+/, (w) => w.toLowerCase());
 }
 
 /** The appearance an item writes (canonical), when it creates or changes one. */
@@ -907,7 +925,7 @@ export const registerWorldFilterTools: RegisterTools = (server, ctx) => {
               listKey: "assignments",
               identityKeys: ["object", "appearance"],
               label: (it) => `${it.object !== undefined ? `${String(it.object)} <- ` : ""}Appearance ${String(it.appearance)}`,
-              key: (it) => (it.object !== undefined ? String(it.object).trim().toLowerCase() : appearanceKey(it)),
+              key: (it) => (it.object !== undefined ? objectRef(it.object) : appearanceKey(it)),
               keys: (it) => {
                 const k = appearanceKey(it);
                 return k && it.object !== undefined ? [k] : [];
