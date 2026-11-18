@@ -15,7 +15,7 @@ Every `Fixture` under `Scene/Layers` is read, also inside a `GroupObject`, `Trus
 | MVR | Used as |
 |---|---|
 | `FixtureIDNumeric`, else `FixtureID` when it is a whole number | the FID; a fixture without one cannot be imported |
-| `name` | the fixture's name (characters the console strips, `\"$&*?,.;^{}|~`, are removed; a warning lists the changes) |
+| `name` | the fixture's name (characters the console strips, `\"$&*?,.;^{}|~`, are removed and it is cut to the bridge's 128 bytes of UTF-8; a warning lists the changes) |
 | `GDTFSpec`, `GDTFMode` | the GDTF in the zip and its DMX mode |
 | `Addresses/Address` (`break` attribute) | the DMX address of break 0: an integer is the absolute 1-based address (513 = 2.001), `U.A` text is taken as it is, 0 means unpatched. More than one break is refused (gma3_patch_add takes single-break modes) |
 | `Matrix` of the fixture and of every parent (layer, group, truss) | position in metres and rotation in degrees. A Matrix is `{u}{v}{w}{o}`: the object's axes and offset (mm) in its parent's frame. The rotation is given as the console's angles: grandMA3 builds a rotation as q = qZ·qY·qX ([positions.md](positions.md)), so R = Rz·Ry·Rx and the angles come from R. A scaled, sheared or mirrored matrix is refused for that fixture |
@@ -29,8 +29,8 @@ layers are not stages: `stage` puts every fixture on one stage, `layer_stages` c
 | Step | Kind | What |
 |---|---|---|
 | `read_file`, `parse_mvr` | read | The file (at most 64 MiB, at most 1,024 fixtures per call: choose `layers`), the scene and each GDTF (at most 8 MiB, the limit of `gma3_patch_library_add`) |
-| `check_console` | read | `patch.state` (the stages named exist), `patch.types`: each GDTF is matched to the show's fixture type by manufacturer and name; one match is used, none means the GDTF is imported, more than one is refused unless `types` names the type |
-| `check_patch` | read | `patch.check { ranges }` (bridge 0.61.0): every FID free, every DMX range free of the live patch and of the other fixtures, inside one universe. For a type in the show the console's footprint is used; for a GDTF to import the footprint is counted from its DMX channels (`null` when GeometryReferences repeat channels, then checked after the import only) |
+| `check_console` | read | `patch.state` (the stages named exist; a name that differs only in case, spaces or underscores is sent as the show spells it, and refused when it matches more than one), `patch.types`: each GDTF is matched to the show's fixture type by manufacturer and name; one match is used, none means the GDTF is imported, more than one is refused unless `types` names the type |
+| `check_patch` | read | `patch.check { ranges }` (bridge 0.61.0), for the fixtures not already found unusable: every FID free, every DMX range free of the live patch and of the other fixtures, inside one universe. For a type in the show the console's footprint is used; for a GDTF to import the footprint is counted from its DMX channels (`null` when GeometryReferences repeat channels, then checked after the import only) |
 | `check_library` | read | `patch.libraryStat` for each GDTF to import, as `manufacturer@name[@revision].gdtf` from its own FixtureType: the same bytes already there are not sent again; different bytes, or the name in another library, are refused |
 | `check_mvr` | read | The verdict: every fixture with a problem is listed (no number, duplicate number, taken FID, DMX overlap, missing GDTF or mode, multi-break). With any, nothing is changed, unless `skip_unusable: true`, which leaves those out with a warning |
 | `library_add`, `import_type` | mutation | `gma3_patch_library_add` and `gma3_patch_import` for each GDTF the show lacks |

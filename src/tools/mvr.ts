@@ -75,11 +75,23 @@ const NEEDS_BRIDGE = "the console runs an older bridge plugin without patch.chec
 /** Per sub-call: gma3_patch_add takes 256 fixtures, gma3_patch_set 256 edits, gma3_place_fixtures 256 fixtures. */
 const CHUNK = 256;
 const MAX_LISTED = 25;
+/** The longest name the bridge's patch.set accepts, in UTF-8 bytes (nameArg in the bridge plugin). */
+export const NAME_MAX_BYTES = 128;
 const NAME_STRIP = new RegExp(`[${NAME_FORBIDDEN_CHARS.replace(/[\\\]^-]/g, "\\$&")}]`, "g");
 
 /** A fixture name the console keeps: the characters it strips removed, spaces collapsed; "" when nothing is left. */
 export function consoleName(name: string): string {
-  return name.replace(/[\x00-\x1f\x7f]/g, " ").replace(NAME_STRIP, "").replace(/\s+/g, " ").trim().slice(0, 200);
+  const clean = name.replace(/[\x00-\x1f\x7f]/g, " ").replace(NAME_STRIP, "").replace(/\s+/g, " ").trim();
+  // The bridge takes at most NAME_MAX_BYTES bytes of UTF-8 (nameArg): cut at a whole character (review of #162).
+  let out = "";
+  let bytes = 0;
+  for (const ch of clean) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (bytes + n > NAME_MAX_BYTES) break;
+    out += ch;
+    bytes += n;
+  }
+  return out.trim();
 }
 
 /** The user-library file name a GDTF goes in as: manufacturer@name[@revision].gdtf from its own FixtureType. */
@@ -264,10 +276,23 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
   } catch (err) {
     return stop(asRead(stepFromError("check_console", err, { op: "patch.types" })));
   }
-  const stageFor = (f: MvrFixture) => raw.layer_stages?.[f.layer] ?? raw.stage;
-  const wantedStages = [...new Set(chosen.map(stageFor).filter((s): s is string => s !== undefined))];
-  const missingStages = wantedStages.filter((s) => !stages.some((x) => x === s || sameName(x, s)));
-  if (missingStages.length) return stop(asRead({ name: "check_console", status: "failed", op: "patch.state", error: `the show has no stage ${missingStages.map((s) => JSON.stringify(s)).join(", ")} (its stages: ${stages.map((s) => JSON.stringify(s)).join(", ")}); create it with gma3_patch_stages` }));
+  // A stage named in the call, as the show spells it: gma3_patch_add enters it by its exact name (review of #162).
+  const stageNames = new Map<string, string>();
+  const missingStages: string[] = [];
+  const ambiguousStages: string[] = [];
+  for (const want of new Set([raw.stage, ...Object.values(raw.layer_stages ?? {})].filter((x): x is string => typeof x === "string"))) {
+    const exact = stages.filter((x) => x === want);
+    const loose = exact.length ? exact : stages.filter((x) => sameName(x, want));
+    if (loose.length === 1) stageNames.set(want, loose[0]);
+    else if (loose.length === 0) missingStages.push(want);
+    else ambiguousStages.push(`${JSON.stringify(want)} (${loose.map((x) => JSON.stringify(x)).join(", ")})`);
+  }
+  if (missingStages.length || ambiguousStages.length)
+    return stop(asRead({ name: "check_console", status: "failed", op: "patch.state", error: [missingStages.length ? `the show has no stage ${missingStages.map((x) => JSON.stringify(x)).join(", ")} (its stages: ${stages.map((x) => JSON.stringify(x)).join(", ")}); create it with gma3_patch_stages` : "", ambiguousStages.length ? `more than one stage matches ${ambiguousStages.join(", ")}: give the exact name` : ""].filter(Boolean).join("; ") }));
+  const stageFor = (f: MvrFixture) => {
+    const want = raw.layer_stages?.[f.layer] ?? raw.stage;
+    return want === undefined ? undefined : stageNames.get(want);
+  };
 
   const typePlans = new Map<string, TypePlan>();
   const typeProblem = new Map<string, string>();
@@ -335,7 +360,8 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
       return s;
     }
   };
-  const rangeStep = await checkRanges("check_patch", planned);
+  // Fixtures already found unusable are never patched: their ranges would only make usable ones look taken (review of #162).
+  const rangeStep = await checkRanges("check_patch", planned.filter((p) => !problems.has(p.fixture)));
   if (rangeStep.status !== "succeeded") return stop(rangeStep);
   steps.push(rangeStep);
 

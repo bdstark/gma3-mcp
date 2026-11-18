@@ -532,6 +532,63 @@ test("gma3_patch_import_mvr: the recheck after an import covers fixtures of type
   }
 });
 
+test("consoleName stays within the bridge's 128 bytes of UTF-8, cutting at a whole character (review of #162)", () => {
+  assert.equal(consoleName("a".repeat(129)), "a".repeat(128));
+  const e = consoleName("é".repeat(70));
+  assert.equal(Buffer.byteLength(e, "utf8"), 128);
+  assert.equal(e, "é".repeat(64));
+  assert.equal(Buffer.byteLength(consoleName("a" + "€".repeat(60)), "utf8") <= 128, true);
+});
+
+test("gma3_patch_import_mvr skip_unusable: an unusable fixture's range does not make a usable one look taken (review of #162)", async () => {
+  const { h, w } = await harness();
+  try {
+    const { deps, calls } = recorder(w);
+    const file = mvr({
+      Front: {
+        fixtures: [
+          { name: "Good", fid: 101, addresses: [[0, "1.101"]] },
+          { name: "Scaled", fid: 102, addresses: [[0, "1.101"]], matrix: "{2,0,0}{0,1,0}{0,0,1}{0,0,0}" },
+        ],
+      },
+    });
+    const res = await mvrImport(h.ctx, { content_base64: b64(file), exclusive: true, skip_unusable: true, names: false, place: false }, deps);
+    assert.equal(res.outcome, "succeeded", res.summary);
+    assert.deepEqual(calls.filter((c) => c.tool === "add").map((c) => c.args.fid), [101]);
+    const first = h.fake.requests.find((r) => r.op === "patch.check");
+    assert.deepEqual(first?.args.ranges, [{ fid: 101, address: "1.101", footprint: 8 }]);
+    assert.ok(res.warnings?.some((x) => /FID 102 "Scaled": .*scaled/.test(x)));
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_import_mvr: a stage named loosely is sent as the show spells it; two loose matches are refused (review of #162)", async () => {
+  {
+    const { h, w } = await harness();
+    try {
+      const { deps, calls } = recorder(w);
+      const res = await mvrImport(h.ctx, { content_base64: b64(RIG()), exclusive: true, layer_stages: { Front: "main_floor" }, names: false, place: false }, deps);
+      assert.equal(res.outcome, "succeeded", res.summary);
+      assert.ok(calls.filter((c) => c.tool === "add").every((c) => c.args.stage === "Main Floor"));
+    } finally {
+      await h.close();
+    }
+  }
+  {
+    const { h, w } = await harness({ stages: ["Main Floor", "main floor"] });
+    try {
+      const res = await mvrImport(h.ctx, { content_base64: b64(RIG()), preview: true, stage: "MAIN_FLOOR" }, recorder(w).deps);
+      assert.equal(res.outcome, "failed");
+      assert.match(String(res.steps.at(-1)?.error), /more than one stage matches "MAIN_FLOOR".*exact name/);
+      const exact = await mvrImport(h.ctx, { content_base64: b64(RIG()), preview: true, stage: "main floor" }, recorder(w).deps);
+      assert.equal(exact.outcome, "succeeded", exact.summary);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
 test("gma3_patch_import_mvr validation: path or content, exclusive unless preview, known layers", async () => {
   const { h, w } = await harness();
   try {
