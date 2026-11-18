@@ -35,6 +35,7 @@ the live test procedure on a disposable show.
 | Shared speed and synchronisation (SB-06; sequence links through `gma3_configure_sequence`) | `gma3_speed_masters`, `gma3_configure_speed_master`, `gma3_speed_master_action`, `gma3_observe_tempo` | [speed.md](speed.md) |
 | Macros as show actions (SB-07; authoring never runs a macro) | `gma3_macros`, `gma3_store_macro`, `gma3_edit_macro_line`, `gma3_run_macro` | [macros.md](macros.md) |
 | Timecode shows (SB-08, bridge 0.25.0; building never plays or records) | `gma3_timecodes`, `gma3_build_timecode`, `gma3_timecode_transport` | [timecode.md](timecode.md) |
+| Pool objects: copy, move, delete, rename with checks (#141, no bridge change) | `gma3_pool_objects` | [pool-objects.md](pool-objects.md) |
 
 Console variables (SU-15, bridge 0.31.0): `gma3_variables`, `gma3_set_variable` ([variables.md](variables.md)).
 
@@ -53,6 +54,8 @@ Saving and loading the show (SU-20, bridge 0.35.0, loading 0.54.0; `exclusive: t
 
 Fixture-type data (SU-19, bridge 0.34.0): `cellOrder` and `wheels` in `gma3_patch_type_structure`
 ([patch.md](patch.md#cell-order-su-19)); `order: "dmx"` in `gma3_layout_cells`; `{cells_of, order}` in group lists.
+
+Undo of tool calls (#142, bridge 0.56.0, needs `GMA3_UNDO_GROUPS=1`): `gma3_undo` ([undo.md](undo.md)).
 
 OSC input and output (SU-18, bridge 0.33.0; changes need `exclusive: true`, a newly opened command port on a
 networked machine `network: true`): `gma3_osc`, `gma3_configure_osc`, `gma3_test_osc_input` ([osc.md](osc.md)).

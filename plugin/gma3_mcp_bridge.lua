@@ -2888,8 +2888,151 @@ ops["undo.close"] = function(args, ctx)
   if ctx and g.client ~= ctx.client then return { closed = false, note = "the open group belongs to another connection" } end
   state.undo = nil
   local ok, r = pcall(CloseUndo, g.handle)
-  return { closed = ok and r ~= false, name = g.name, commands = g.commands, error = (not ok) and tostring(r) or nil }
+  local closed = ok and r ~= false
+  -- 0.56.0: a closed group with commands is one Oops step; it is remembered (newest last, at most 50) so
+  -- undo.undo can check that it is still the console's latest step and Oops exactly it. An empty group adds no step.
+  local id
+  if closed and g.commands > 0 then
+    state.undoSeq = (state.undoSeq or 0) + 1
+    id = tostring(state.instance or "0") .. ":" .. state.undoSeq
+    local hist = state.undoHistory or {}
+    state.undoHistory = hist
+    hist[#hist + 1] = { id = id, handle = g.handle, name = g.name, client = g.client, commands = g.commands, closedAt = os.time() }
+    while #hist > 50 do table.remove(hist, 1) end
+  end
+  return { closed = closed, id = id, name = g.name, commands = g.commands, error = (not ok) and tostring(r) or nil }
 end
+
+-- undo.undo {ids, preview} (0.56.0): Oops the groups with these ids (newest first), one Oops each, but only after
+-- checking that they are exactly the console's latest undo steps, in that order. The undo list is read through the
+-- group handle: CreateUndo answers an object (Root 20.1.1.1.1 on onPC 2.5.1), whose parent is taken as the list and
+-- whose last child as the latest step (the Oops menu lists the latest at the bottom). Not verified on a console yet;
+-- anything that cannot be read refuses, nothing falls back to a blind Oops. Each Oops is read back: the group's
+-- handle must be gone from the list (or invalid) before the next one is sent. The ids are the ownership check: a
+-- server only knows the ids undo.close answered it (a reconnect does not lose them).
+;(function()
+  local function hexOf(h)
+    local ok, s = pcall(HandleToStr, h)
+    if ok and type(s) == "string" and s ~= "" then return s:upper() end
+    return nil
+  end
+  local function isValid(h)
+    local ok, v = pcall(IsObjectValid, h)
+    if not ok then return nil end
+    return v ~= false and v ~= nil
+  end
+  -- The undo list a group handle belongs to (its parent), or nil + why.
+  local function listOf(h)
+    local okP, parent = pcall(function() return h:Parent() end)
+    if not okP or parent == nil then return nil, "the console's undo list (the group's parent) could not be read" end
+    return parent
+  end
+  -- The list's steps, newest first, as { hex, name } (at most `n`; all when n is nil); nil + why when unreadable.
+  local function latest(list, n)
+    local okC, kids = pcall(function() return list:Children() end)
+    if not okC or type(kids) ~= "table" then return nil, "the console's undo list could not be listed" end
+    local out = {}
+    for i = #kids, n and math.max(1, #kids - n + 1) or 1, -1 do
+      local k = kids[i]
+      local hex = hexOf(k)
+      -- An identity that cannot be read proves nothing: the whole read is unreadable (review of #154).
+      if not hex then return nil, "undo step " .. (#kids - i + 1) .. " from the top of the console's undo list cannot be identified" end
+      out[#out + 1] = { hex = hex, name = safeProp(k, "name") }
+    end
+    return out
+  end
+  local function find(id)
+    for i, rec in ipairs(state.undoHistory or {}) do if rec.id == id then return rec, i end end
+    return nil
+  end
+  local function forget(id)
+    local _, i = find(id)
+    if i then table.remove(state.undoHistory, i) end
+  end
+  local function brief(rec) return { id = rec.id, name = rec.name, commands = rec.commands, closedAt = rec.closedAt } end
+
+  ops["undo.list"] = function()
+    local out = {}
+    for i = #(state.undoHistory or {}), 1, -1 do out[#out + 1] = brief(state.undoHistory[i]) end
+    return { groups = emptyArray(out), open = state.undo and { name = state.undo.name, commands = state.undo.commands } or nil }
+  end
+
+  ops["undo.undo"] = function(args, ctx)
+    local ids = args.ids
+    if type(ids) ~= "table" or #ids == 0 or #ids > 20 then error("args.ids (1-20 group ids, newest first) is required") end
+    if state.undo then
+      local whose = (ctx and state.undo.client == ctx.client) and "this connection" or "another connection"
+      raise({ code = "group-open", message = "an undo group of " .. whose .. " (" .. tostring(state.undo.name) .. ") is open; the console refuses Oops until it is closed" })
+    end
+    local recs = {}
+    for i, id in ipairs(ids) do
+      local rec = find(id)
+      if not rec then raise({ code = "unknown-group", message = "undo group " .. tostring(id) .. " is not known to this bridge run (it restarted, or the group was undone or dropped)", id = id }) end
+      local valid = isValid(rec.handle)
+      if valid == false then
+        forget(id)
+        raise({ code = "group-gone", message = "undo group " .. id .. " (" .. tostring(rec.name) .. ") is no longer on the console (Oopsed already, or a show load or patch change cleared the undo list)", id = id })
+      end
+      rec.hex = rec.hex or hexOf(rec.handle)
+      if not rec.hex then raise({ code = "unreadable", message = "undo group " .. id .. "'s handle cannot be read; nothing was undone", id = id }) end
+      recs[i] = rec
+    end
+    local list, why = listOf(recs[1].handle)
+    local top
+    if list then top, why = latest(list, #recs) end
+    if not top then raise({ code = "unreadable", message = why .. "; nothing was undone" }) end
+    for i, rec in ipairs(recs) do
+      local t = top[i]
+      if not t or t.hex ~= rec.hex then
+        raise({
+          code = "not-latest",
+          message = "the console's " .. (i == 1 and "latest undo step" or ("undo step " .. i .. " from the top")) .. " is " ..
+            (t and ("\"" .. tostring(t.name) .. "\"") or "missing") .. ", not this server's group " .. rec.id .. " (" .. tostring(rec.name) ..
+            "): something was done on the console since; nothing was undone",
+          latest = emptyArray(top), expected = rec.id,
+        })
+      end
+    end
+    local groups = {}
+    for i, rec in ipairs(recs) do groups[i] = brief(rec) end
+    if args.preview then return { preview = true, groups = emptyArray(groups), latest = emptyArray(top) } end
+    -- Interaction admission (KB-05), as handleLine applies it to cmd: no Oops while input ownership is active. Only
+    -- here, after the read-only checks, so preview stays available like every other read (review of #154).
+    local busy = inputBusy()
+    if busy then
+      raise({ code = "busy", message = "an Oops is refused while input ownership is active: " .. tostring(busy.description) ..
+                ". Reads stay available; the owner ends its interaction (input.end), releases its keys, or the sequence finishes first; nothing was undone",
+              reason = busy.reason, owner = busy.owner, interaction = busy.interaction, sequence = busy.sequence, hold = busy.hold,
+              remainingMs = busy.remainingMs, module = busy.module, device = busy.device, control = busy.control })
+    end
+    local undone = {}
+    for i, rec in ipairs(recs) do
+      local okC, feedback = pcall(Cmd, "Oops")
+      -- Read back: the group's handle is invalid, or every step left in the list is identified and none is the group.
+      -- A list that cannot be read in full proves nothing: the group stays remembered and no further Oops is sent.
+      local gone, unreadable = isValid(rec.handle) == false, nil
+      if not gone then
+        local after, why = latest(list)
+        if after then
+          gone = true
+          for _, t in ipairs(after) do if t.hex == rec.hex then gone = false end end
+        else
+          unreadable = why
+        end
+      end
+      undone[#undone + 1] = { id = rec.id, name = rec.name, feedback = okC and feedback or nil, error = (not okC) and tostring(feedback) or unreadable, gone = gone, unreadable = unreadable and true or nil }
+      if gone then forget(rec.id) end
+      if not okC or not gone then
+        local what = not okC and ("failed: " .. tostring(feedback))
+          or unreadable and ("ran, but the read-back failed (" .. unreadable .. "): whether the group was undone is unknown, so it stays remembered")
+          or "ran, but the group is still in the console's undo list"
+        raise({ code = unreadable and "readback-unreadable" or "oops-failed", message = "Oops for undo group " .. rec.id .. " (" .. tostring(rec.name) .. ") " .. what .. "; " .. (i - 1) .. " group(s) were undone before it and no further Oops was sent", undone = emptyArray(undone) })
+      end
+    end
+    local now = latest(list, 1)
+    return { undone = emptyArray(undone), remaining = #(state.undoHistory or {}), latestAfter = now and now[1] or nil }
+  end
+end)()
 
 ops.cmd = function(args, ctx)
   local command = args.command or args.cmd
@@ -5641,6 +5784,9 @@ do
     end
     return { bitmap = bitmapEntry(b), setErrors = emptyArray(errs) }
   end
+  -- Show-object writes: refused while another client owns input, like cmd and set (the uploads only write files).
+  GUARDED_OPS["bitmap.set"] = "a bitmap change"
+  GUARDED_OPS["bitmap.imageName"] = "an image rename"
   end)()
 
   local function typeRow(t)
@@ -8701,6 +8847,8 @@ local function MainImpl(display_handle, argument)
   state.instance = string.format("%d-%d", os.time(), math.random(1, 1073741823))
   -- 0.55.0: an undo group left open by a run that did not stop cleanly is closed.
   if state.undo then pcall(CloseUndo, state.undo.handle); state.undo = nil end
+  -- 0.56.0: groups remembered for undo.undo belong to the previous run.
+  state.undoHistory = {}
   state.stopRequested = false
   state.clients = {}
   loadModules()

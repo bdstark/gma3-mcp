@@ -266,21 +266,59 @@ export async function findReferences(bridge: Gma3Bridge, addr: string, timeoutMs
   return findReferencesWhere(bridge, (a) => a === addr, timeoutMs);
 }
 
-/** Every executor in the current data pool whose assigned object's address satisfies `match`. Never throws. */
-export async function findReferencesWhere(bridge: Gma3Bridge, match: (addr: string) => boolean, timeoutMs: number): Promise<References> {
+/**
+ * Every executor in the current data pool whose assigned object's address satisfies `match`. Never throws.
+ *
+ * `failClosed` (#155 review, gma3_pool_objects' delete gate): anything the scan could not read makes it incomplete,
+ * with the reasons in `error`: a listing the console could not enumerate (enumerationError, bridge 0.47.0), a page or
+ * executor listing that stops before its total, a page without an address or number, an invalid executor, and an
+ * executor whose No or Object read failed (fieldErrors) or has no number. Without it the scan behaves as before (the
+ * other callers only warn or report from it).
+ */
+export async function findReferencesWhere(bridge: Gma3Bridge, match: (addr: string) => boolean, timeoutMs: number, opts: { failClosed?: boolean } = {}): Promise<References> {
   const out: References = { complete: false, executors: [], pagesScanned: 0, requests: 0 };
-  type Listing = { total?: number; items?: ObjectSummary[] };
+  type Listing = { total?: number; items?: ObjectSummary[]; enumerationError?: unknown };
+  const strict = opts.failClosed === true;
+  const problems: string[] = [];
+  const enumFailed = (l: Listing | null | undefined) => l?.enumerationError !== undefined && l?.enumerationError !== null;
   try {
     out.requests++;
     const pages = (await bridge.request("children", { ref: "DataPool.Pages", fields: ["No"], asText: false, limit: MAX_REFERENCE_PAGES }, timeoutMs)) as Listing;
+    if (strict && enumFailed(pages)) problems.push(`the pages could not be listed: ${String(pages.enumerationError)}`);
     const items = pages?.items ?? [];
     for (const pg of items) {
-      if (!pg.addr) continue;
+      if (!pg.addr) {
+        if (strict) problems.push(`a page${pg.index !== undefined ? ` (index ${pg.index})` : ""} has no readable address`);
+        continue;
+      }
       out.requests++;
       const execs = (await bridge.request("children", { ref: pg.addr, fields: ["No", "Object"], asText: false, limit: 10000 }, timeoutMs)) as Listing;
       out.pagesScanned++;
       const pageNo = leadingInt(pg.fields?.No) ?? pg.index;
+      if (strict) {
+        const label = `page ${pageNo ?? pg.addr}`;
+        if (pageNo === undefined) problems.push(`${label} has no readable number`);
+        if (enumFailed(execs)) problems.push(`the executors of ${label} could not be listed: ${String(execs.enumerationError)}`);
+        const got = execs?.items?.length ?? 0;
+        if (typeof execs?.total === "number" && execs.total > got) problems.push(`only ${got} of ${execs.total} executors of ${label} were read`);
+      }
       for (const x of execs?.items ?? []) {
+        if (strict) {
+          const errs = (x.fieldErrors ?? {}) as Record<string, unknown>;
+          const bad = Object.keys(errs).filter((k) => errs[k] !== undefined && errs[k] !== null);
+          if (x.invalid) {
+            problems.push(`an executor of page ${pageNo ?? pg.addr} could not be read (invalid handle)`);
+            continue;
+          }
+          if (bad.length) {
+            problems.push(`executor ${leadingInt(x.fields?.No) ?? "?"} of page ${pageNo ?? pg.addr}: ${bad.map((k) => `${k} could not be read (${String(errs[k])})`).join(", ")}`);
+            continue;
+          }
+          if (leadingInt(x.fields?.No) === undefined) {
+            problems.push(`an executor of page ${pageNo ?? pg.addr} has no readable number`);
+            continue;
+          }
+        }
         const obj = toAssigned(x.fields?.Object);
         const execNo = leadingInt(x.fields?.No);
         if (obj?.addr && match(obj.addr) && pageNo !== undefined && execNo !== undefined) out.executors.push({ page: pageNo, executor: execNo, ref: executorRef(pageNo, execNo), addr: obj.addr });
@@ -289,6 +327,10 @@ export async function findReferencesWhere(bridge: Gma3Bridge, match: (addr: stri
     const total = pages?.total ?? items.length;
     out.complete = total <= items.length;
     if (!out.complete) out.error = `only the first ${items.length} of ${total} pages were scanned`;
+    if (problems.length) {
+      out.complete = false;
+      out.error = [...(out.error ? [out.error] : []), ...problems.slice(0, 10), ...(problems.length > 10 ? [`and ${problems.length - 10} more`] : [])].join("; ");
+    }
   } catch (err) {
     out.error = err instanceof Error ? err.message : String(err);
   }

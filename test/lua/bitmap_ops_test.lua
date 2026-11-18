@@ -247,6 +247,21 @@ check("bitmap.imageName refuses a missing image", r.ok == false and r.code == "n
 r = request("bitmap.imageName", { image = 1, name = 'a"b' })
 check("bitmap.imageName refuses quotes", r.ok == false and r.code == "bad-args", J(r))
 
+-- Show-object writes go through input admission like cmd and set; reads and file uploads do not.
+do
+  local savedRunning, savedControl, savedEnabled = state.running, state.modules.control, state.control.enabled
+  state.running, state.control.enabled = true, true
+  state.modules.control = { instance = { admission = function() return { description = "a surface gesture of conn-9", reason = "gesture", owner = "conn-9" } end } }
+  local heightBefore = cfg.props.height
+  r = request("bitmap.set", { bitmap = 1, config = { height = 9 } })
+  check("bitmap.set is refused as busy while input ownership is active, before any Set", r.ok == false and r.code == "busy" and cfg.props.height == heightBefore, J(r))
+  r = request("bitmap.imageName", { image = 1, name = "Other" })
+  check("bitmap.imageName is refused as busy too", r.ok == false and r.code == "busy" and img.name == "Rainbow", J(r))
+  r = request("bitmap.list", { bitmap = 1 })
+  check("bitmap.list stays available", r.ok and r.result.bitmapFound == true, J(r))
+  state.running, state.modules.control, state.control.enabled = savedRunning, savedControl, savedEnabled
+end
+
 os.execute('rm -rf "' .. LIBDIR .. '"')
 print(string.format("%d passed, %d failed", passes, failures))
 if failures == 0 then print("ALL PASSED") end
