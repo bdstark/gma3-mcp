@@ -46,6 +46,8 @@ export interface BatchItem {
   key?: string;
   /** More objects the item changes (a copy's destination): tracked like `key`. */
   keys?: string[];
+  /** Objects the item uses without changing them (an appearance it assigns): it is skipped once an earlier item changing one of them did not succeed, but its own failure does not mark them. */
+  depends?: string[];
   run: () => Promise<OperationResult>;
 }
 
@@ -116,6 +118,8 @@ export interface BatchCall {
   key?: (item: Record<string, unknown>) => string | undefined;
   /** Every object an item changes, when more than one (a copy's source and destination); used together with `key`. */
   keys?: (item: Record<string, unknown>) => string[];
+  /** Objects an item uses without changing them; see BatchItem.depends. */
+  depends?: (item: Record<string, unknown>) => string[];
   /** One item through the single form, with the context to use (its lock is the batch's held span). */
   run: (item: Record<string, unknown>, ctx: ToolContext) => Promise<OperationResult>;
   /** Checks across items (duplicates); any reason refuses the whole call before anything is sent. */
@@ -132,7 +136,7 @@ export async function runBatchCall(args: Record<string, unknown>, c: BatchCall):
   return c.ctx.mutations.run(() =>
     runBatch(
       c.operation,
-      split.items.map((item, i) => ({ label: c.label(item, i), key: c.key?.(item), keys: c.keys?.(item), run: () => c.run(item, held) })),
+      split.items.map((item, i) => ({ label: c.label(item, i), key: c.key?.(item), keys: c.keys?.(item), depends: c.depends?.(item), run: () => c.run(item, held) })),
       { stopOnFailure: args.stop_on_failure === true, detail: args.detail === true },
     ),
   );
@@ -160,7 +164,7 @@ export async function runBatch(operation: string, items: BatchItem[], o: BatchOp
         continue;
       }
       const itemKeys = [...(item.key !== undefined ? [item.key] : []), ...(item.keys ?? [])];
-      const failedOn = itemKeys.find((k) => failedKeys.has(k));
+      const failedOn = [...itemKeys, ...(item.depends ?? [])].find((k) => failedKeys.has(k));
       if (failedOn !== undefined) {
         entries.push({ label: item.label, skipped: `not attempted: item ${failedKeys.get(failedOn)} on ${failedOn} did not succeed` });
         continue;
