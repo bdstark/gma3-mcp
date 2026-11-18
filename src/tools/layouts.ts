@@ -51,6 +51,16 @@ const ALIGN_H = ["Left", "Center", "Right", "OutsideLeft", "OutsideRight"] as co
 const ALIGN_V = ["Top", "Center", "Bottom", "Above", "Below"] as const;
 const TEXT_SIZES = ["Default", "10", "12", "14", "16", "18", "20", "24", "28", "32"] as const;
 
+/** Highest object number per keyword: pool objects go to 9999, fixture IDs further. */
+const maxNumber = (keyword: string) => (keyword === "Fixture" ? 99999999 : 9999);
+
+/** A parsed number, refused unless it is a whole number from 1 to `max` (no Infinity or unsafe integers). */
+function objectNumber(text: string, what: string, max: number): number {
+  const n = Number(text);
+  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new Error(`${what}: ${text.length > 12 ? `${text.slice(0, 12)}...` : text} is not a number from 1 to ${max}`);
+  return n;
+}
+
 /** A parsed element object: the command-line reference the Assign uses. */
 export interface ObjectRef {
   keyword: string;
@@ -63,8 +73,8 @@ export function parseObject(raw: string): ObjectRef {
   if (!m) throw new Error(`${JSON.stringify(raw)} is not one object ("Group 5", "Sequence 3", "Preset 4.12", "Fixture 101"); give one object per element, ranges go in grid.objects`);
   const keyword = KEYWORDS[m[1].toLowerCase()];
   if (!keyword) throw new Error(`${JSON.stringify(raw)}: ${m[1]} is not an object a layout element shows here (${[...new Set(Object.values(KEYWORDS))].join(", ")})`);
-  const a = Number(m[2]);
-  const b = m[3] !== undefined ? Number(m[3]) : undefined;
+  const a = objectNumber(m[2], JSON.stringify(raw), keyword === "Preset" ? 9999 : maxNumber(keyword));
+  const b = m[3] !== undefined ? objectNumber(m[3], JSON.stringify(raw), 9999) : undefined;
   if (keyword === "Preset") {
     if (b === undefined) throw new Error(`${JSON.stringify(raw)}: a preset is "Preset <pool>.<number>", e.g. "Preset 4.12"`);
     return { keyword, ref: `Preset ${a}.${b}` };
@@ -83,10 +93,12 @@ export function expandRange(raw: string): ObjectRef[] {
     const isPreset = keyword === "Preset";
     if (isPreset && thru[3] === undefined) throw new Error('grid.objects: a preset range is "Preset <pool>.<a> Thru <b>" (or Thru <pool>.<b>)');
     if (!isPreset && (thru[3] !== undefined || thru[4] !== undefined)) throw new Error(`grid.objects: a ${keyword} range is "${keyword} <a> Thru <b>"`);
-    const pool = Number(thru[2]);
-    if (isPreset && thru[4] !== undefined && Number(thru[4]) !== pool) throw new Error("grid.objects: a preset range stays in one preset pool");
-    const from = isPreset ? Number(thru[3]) : pool;
-    const to = Number(thru[5]);
+    // Every number is a bounded safe integer before the loop below counts from one to the other.
+    const max = isPreset ? 9999 : maxNumber(keyword);
+    const pool = objectNumber(thru[2], "grid.objects", max);
+    if (isPreset && thru[4] !== undefined && objectNumber(thru[4], "grid.objects", 9999) !== pool) throw new Error("grid.objects: a preset range stays in one preset pool");
+    const from = isPreset ? objectNumber(thru[3], "grid.objects", 9999) : pool;
+    const to = objectNumber(thru[5], "grid.objects", max);
     if (to < from) throw new Error("grid.objects: the range must go upwards");
     if (to - from + 1 > MAX_ELEMENTS) throw new Error(`grid.objects: at most ${MAX_ELEMENTS} objects`);
     const out: ObjectRef[] = [];

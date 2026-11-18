@@ -163,6 +163,14 @@ test("parsing: one object per element, ranges and + lists for the grid; visibili
   assert.deepEqual(expandRange("Preset 4.1 + 5").map((r) => r.ref), ["Preset 4.1", "Preset 4.5"]);
   assert.throws(() => expandRange("Preset 4.1 Thru 5.3"), /one preset pool/);
   assert.throws(() => expandRange("Sequence 5 Thru 1"), /upwards/);
+  // #159 review: endpoints are bounded safe integers before any counting (2^53 + n++ never ends; 400 digits is Infinity).
+  assert.throws(() => expandRange("Group 9007199254740992 Thru 9007199254740992"), /not a number from 1 to 9999/);
+  assert.throws(() => expandRange(`Group 1 Thru ${"9".repeat(400)}`), /not a number from 1 to 9999/);
+  assert.throws(() => expandRange("Fixture 9007199254740992 Thru 9007199254740993"), /not a number from 1 to 99999999/);
+  assert.throws(() => expandRange("Preset 4.9007199254740992 Thru 4.9007199254740992"), /not a number from 1 to 9999/);
+  assert.throws(() => expandRange("Sequence 0 Thru 3"), /not a number from 1 to 9999/);
+  assert.throws(() => parseObject("Group 10000"), /not a number from 1 to 9999/);
+  assert.equal(parseObject("Fixture 50001").ref, "Fixture 50001");
   assert.deepEqual(
     gridElements({ objects: "", columns: 2, width: 100, height: 50, gap: 10 }, expandRange("Sequence 1 Thru 3")),
     [
@@ -305,6 +313,8 @@ test("validation: no elements, too many, bad values", async () => {
   for (const re of [/width must be/, /text_color must be/, /align_v must be/, /text_size must be/, /action must be/]) assert.match(r.text, re);
   r = await h.callJson("gma3_store_layout", { layout: 3, grid: { objects: "Sequence 1 Thru 500", columns: 10 } });
   assert.match(r.text, /at most 200 objects/);
+  r = await h.callJson("gma3_store_layout", { layout: 3, preview: true, grid: { objects: "Group 9007199254740992 Thru 9007199254740992", columns: 1 } });
+  assert.match(r.text, /not a number from 1 to 9999/);
   assert.deepEqual(h.fake.commands, []);
 });
 
