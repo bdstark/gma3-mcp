@@ -246,11 +246,44 @@ async function dialogStep(bridge: Gma3Bridge, name: string, t: number): Promise<
 type Planned = { name: string; command?: string; set?: { ref: string; property: string; value: string }; dialogCheck?: boolean };
 
 /** Send the plan in order; stops at the first step that did not succeed. */
+/**
+ * Whether the value a set op read back is the one written: an Attributes mask by its exact text ("All" for a mask of only
+ * 1s), numbers by value, other text case aside (Yes/No, an image mode).
+ */
+export function setTaken(property: string, want: string, got: unknown): boolean {
+  if (typeof got !== "string" && typeof got !== "number" && typeof got !== "boolean") return false;
+  const g = String(got).trim();
+  // An Attributes mask is a positional bit string, never a number: exact text, or All for a mask of only 1s (#163 review).
+  if (/^attributes$/i.test(property)) return /^all$/i.test(g) ? /^1+$/.test(want) : g === want.trim();
+  if (/^-?\d+(\.\d+)?$/.test(want)) return g !== "" && Number(g) === Number(want);
+  return g.toLowerCase() === want.trim().toLowerCase();
+}
+
+/**
+ * A set step judged by what the console read back right after the write: a value it did not take (the console keeps
+ * the old one without an error) or a read-back that failed is a failed step, so nothing after it is sent (#161 review:
+ * an ignored BackR must not let the Assign run).
+ */
+const interpretSet = (name: string, set: { ref: string; property: string; value: string }) => (res: unknown): StepResult => {
+  const r = (res ?? {}) as { value?: unknown; readOk?: unknown; readError?: unknown };
+  const base = { name, op: "set", detail: res };
+  if (r.value === undefined || r.value === null) {
+    const why = r.readOk === true ? "reads empty" : `could not be read back${typeof r.readError === "string" ? ` (${r.readError})` : ""}`;
+    // The write reached the console; what it holds now is not known: unknown, which also stops a batch.
+    return { ...base, status: r.readOk === true ? "failed" : "unknown", error: `${set.property} of ${set.ref} ${why} after the write, so whether the console took ${JSON.stringify(set.value.length > 40 ? `${set.value.slice(0, 37)}...` : set.value)} is unknown; nothing more was sent` };
+  }
+  if (!setTaken(set.property, set.value, r.value)) {
+    const shown = (v: string) => JSON.stringify(v.length > 40 ? `${v.slice(0, 37)}...` : v);
+    return { ...base, status: "failed", error: `the console did not take ${set.property} = ${shown(set.value)} on ${set.ref}: it reads ${shown(String(r.value))}; nothing more was sent` };
+  }
+  return { ...base, status: "succeeded" };
+};
+
 async function sendPlan(bridge: Gma3Bridge, plan: Planned[], steps: StepResult[], t: number): Promise<boolean> {
   for (const p of plan) {
     const step = p.command
       ? await commandStep(bridge, p.name, p.command, t)
-      : await requestStep(bridge, p.name, "set", { ref: p.set!.ref, property: p.set!.property, value: p.set!.value }, undefined, t);
+      : await requestStep(bridge, p.name, "set", { ref: p.set!.ref, property: p.set!.property, value: p.set!.value }, interpretSet(p.name, p.set!), t);
     steps.push(step);
     if (step.status !== "succeeded") return false;
     if (p.dialogCheck) {
