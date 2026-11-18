@@ -84,7 +84,10 @@ Steps:
    (`/Overwrite` when the target exists and `store.overwrite` is set), then `read_store`: the target exists. Its
    content is not compared (`verification: "unverified"`).
 
-The result's `verification` covers steps 3 to 5 only; warnings say that apply and store are unverified.
+The result's `verification` covers steps 3 to 5 only; warnings say that apply and store are unverified. The summary
+names each of them from its step: "command accepted; … unverified" only when the console accepted it, "FAILED" when
+it refused, "got no clear answer" on no reply, and "not stored … (skipped …)" when an earlier step stopped it (a store
+is never attempted after an apply that did not succeed).
 
 Unverified on a console: channel replacement (`Acquire("BitmapChannel")` to add, `Delete` to remove), setting
 `Attribute` by handle (the bridge falls back to the attribute's name), `SpeedMaster` values, `Interpolate` / `Alpha`

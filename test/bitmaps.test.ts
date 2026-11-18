@@ -42,6 +42,9 @@ class Console {
   /** Feedback for Store Bitmap; "none" stores nothing. */
   storeFeedback = "OK";
   storeDoes = true;
+  /** Feedback for Group <g> At Bitmap <n> (SILENT: no reply) and for Store Preset. */
+  applyFeedback: string | typeof SILENT = "OK";
+  presetFeedback = "OK";
 
   install(h: Harness) {
     h.fake.on("patch.libraryStat", (a) => {
@@ -146,9 +149,10 @@ class Console {
       }
       m = /^Delete Bitmap (\d+) \/NoConfirmation$/.exec(cmd);
       if (m) return this.bitmaps.delete(Number(m[1])) ? "OK" : "Failed";
-      if (/^Group \d+ At Bitmap \d+$/.test(cmd)) return "OK";
+      if (/^Group \d+ At Bitmap \d+$/.test(cmd)) return this.applyFeedback;
       m = /^Store Preset (\S+)( \/Overwrite)? \/NoConfirmation$/.exec(cmd);
       if (m) {
+        if (this.presetFeedback !== "OK") return this.presetFeedback;
         this.presets.add(m[1]);
         return "OK";
       }
@@ -350,7 +354,7 @@ test("gma3_build_bitmap: overwrite deletes the old bitmap; apply and store repor
     assert.equal(result.steps.find((s: any) => s.name === "read_store").detail.verification, "unverified");
     assert.match(result.warnings.join(" "), /apply is unverified/);
     assert.match(result.warnings.join(" "), /store is unverified/);
-    assert.match(result.summary, /\(unverified\)/);
+    assert.match(result.summary, /programmer content unverified\).*content unverified\)/);
     assert.equal(result.verification.status, "matched");
     assert.match(result.verification.checked, /apply and store are not part of this check/);
   } finally {
@@ -452,6 +456,60 @@ test("gma3_build_bitmap (#157 review): an unanswered Store Bitmap is resolved by
     assert.match(result.steps.at(-1).error, /got no clear answer and Bitmap 5 is not there; nothing was configured/);
     assert.equal(h.fake.requests.filter((x) => x.op === "bitmap.set").length, 0);
     assert.deepEqual(h.fake.commands, ["Store Bitmap 5 /NoConfirmation"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_build_bitmap (#157 late finding): the summary says what apply and store actually did", async () => {
+  const args = { bitmap: 5, image: 1, width: 40, apply: { group: 1 }, store: { preset: "4.9" } };
+  // Apply refused: no store is attempted, and the summary says so.
+  let { h, con } = await setup();
+  try {
+    con.images.set(1, { ...IMG });
+    con.applyFeedback = "Syntax Error";
+    const { result } = await h.callJson("gma3_build_bitmap", args);
+    assert.deepEqual(h.fake.commands, ["Store Bitmap 5 /NoConfirmation", "Group 1 At Bitmap 5"]);
+    assert.ok(stepNames(result).includes("apply:failed") && stepNames(result).includes("store_look:skipped"), stepNames(result).join(" "));
+    assert.match(result.summary, /applying to Group 1 FAILED/);
+    assert.match(result.summary, /not stored into Preset 4\.9 \(skipped: the apply step was failed/);
+    assert.doesNotMatch(result.summary, /applied to Group 1 \(|stored into Preset 4\.9 \(command/);
+    assert.equal(con.presets.has("4.9"), false);
+  } finally {
+    await h.close();
+  }
+  // Apply timed out (no reply): unknown, no store.
+  ({ h, con } = await setup());
+  try {
+    con.images.set(1, { ...IMG });
+    con.applyFeedback = SILENT;
+    const { result } = await h.callJson("gma3_build_bitmap", args);
+    assert.ok(stepNames(result).includes("apply:unknown") && stepNames(result).includes("store_look:skipped"), stepNames(result).join(" "));
+    assert.match(result.summary, /applying to Group 1 got no clear answer/);
+    assert.match(result.summary, /not stored into Preset 4\.9/);
+    assert.equal(h.fake.commands.some((c) => c.startsWith("Store Preset")), false);
+  } finally {
+    await h.close();
+  }
+  // Store refused: applied, but the summary says the store failed and no "store is unverified" warning is given.
+  ({ h, con } = await setup());
+  try {
+    con.images.set(1, { ...IMG });
+    con.presetFeedback = "Error #72: Command not executed";
+    const { result } = await h.callJson("gma3_build_bitmap", args);
+    assert.ok(stepNames(result).includes("store_look:failed"), stepNames(result).join(" "));
+    assert.match(result.summary, /applied to Group 1 \(command accepted; programmer content unverified\)/);
+    assert.match(result.summary, /storing into Preset 4\.9 FAILED/);
+    assert.doesNotMatch(result.warnings.join(" "), /store is unverified/);
+  } finally {
+    await h.close();
+  }
+  // Both accepted: the summary says sent, content unverified.
+  ({ h, con } = await setup());
+  try {
+    con.images.set(1, { ...IMG });
+    const { result } = await h.callJson("gma3_build_bitmap", args);
+    assert.match(result.summary, /applied to Group 1 \(command accepted; programmer content unverified\); stored into Preset 4\.9 \(command accepted, Preset 4\.9 exists; content unverified\)\./);
   } finally {
     await h.close();
   }
