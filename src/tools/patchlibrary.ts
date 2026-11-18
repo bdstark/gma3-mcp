@@ -289,6 +289,54 @@ interface AddArgs {
 
 const hex = (n: number) => n.toString(16).padStart(8, "0");
 
+export interface UploadedFile {
+  path?: string;
+  size?: number;
+  crc32?: string;
+  replaced?: boolean;
+  kind?: string;
+  format?: string;
+}
+
+/**
+ * Send a file's bytes over the bridge in chunks (patch.libraryAdd): kind "fixture" (default) into the user fixture
+ * library, "image" into gma3_library/media/images (bridge 0.57.0). Pushes a "write" step, or the failed step and a
+ * best-effort "clean_up" of the part file. Never retries.
+ */
+export async function uploadChunks(
+  ctx: ToolContext,
+  o: { file: string; bytes: Buffer; crc32: string; replace: boolean; kind?: "fixture" | "image" },
+  steps: StepResult[],
+): Promise<{ ok: true; added?: UploadedFile } | { ok: false; lost: boolean }> {
+  const t = ctx.requestTimeoutMs;
+  const chunks = Math.ceil(o.bytes.length / LIBRARY_ADD_CHUNK);
+  // The bridge keeps each upload's bytes apart by this id, so another client sending the same name cannot mix in.
+  const upload = randomBytes(8).toString("hex");
+  const kind = o.kind && o.kind !== "fixture" ? { kind: o.kind } : {};
+  let added: UploadedFile | undefined;
+  for (let i = 0; i < chunks; i++) {
+    const piece = o.bytes.subarray(i * LIBRARY_ADD_CHUNK, (i + 1) * LIBRARY_ADD_CHUNK);
+    try {
+      const res = (await ctx.bridge.request("patch.libraryAdd", { file: o.file, ...kind, upload, offset: i * LIBRARY_ADD_CHUNK, data: piece.toString("base64"), total: o.bytes.length, crc32: o.crc32, replace: o.replace, final: i === chunks - 1 }, t)) as UploadedFile;
+      if (i === chunks - 1) added = res;
+    } catch (err) {
+      const step = stepFromError("write", err, { op: "patch.libraryAdd", detail: { chunk: i + 1, chunks } });
+      steps.push(step);
+      // The bridge removes its part file on a refusal; after a lost reply it is removed here, best effort.
+      let partLeft: boolean | undefined;
+      try {
+        partLeft = ((await ctx.bridge.request("patch.libraryAdd", { file: o.file, ...kind, upload, abort: true }, t)) as { partLeft?: boolean }).partLeft;
+      } catch {
+        partLeft = undefined;
+      }
+      steps.push(asRead({ name: "clean_up", status: partLeft === false ? "succeeded" : "unknown", op: "patch.libraryAdd", detail: { partLeft: partLeft ?? "unknown" } }));
+      return { ok: false, lost: step.status === "unknown" };
+    }
+  }
+  steps.push({ name: "write", status: "succeeded", op: "patch.libraryAdd", detail: { chunks, ...added } });
+  return { ok: true, added };
+}
+
 export async function patchLibraryAdd(ctx: ToolContext, raw: AddArgs): Promise<OperationResult> {
   const op = "patch_library_add";
   const errors: string[] = [];
@@ -372,30 +420,9 @@ export async function patchLibraryAdd(ctx: ToolContext, raw: AddArgs): Promise<O
     }
     steps.push(asRead({ name: "check_library", status: "succeeded", op: "patch.libraryStat", detail: before }));
 
-    const chunks = Math.ceil(bytes.length / LIBRARY_ADD_CHUNK);
-    // The bridge keeps each upload's bytes apart by this id, so another client sending the same name cannot mix in.
-    const upload = randomBytes(8).toString("hex");
-    let added: { path?: string; size?: number; crc32?: string; replaced?: boolean } | undefined;
-    for (let i = 0; i < chunks; i++) {
-      const piece = bytes.subarray(i * LIBRARY_ADD_CHUNK, (i + 1) * LIBRARY_ADD_CHUNK);
-      try {
-        const res = (await ctx.bridge.request("patch.libraryAdd", { file, upload, offset: i * LIBRARY_ADD_CHUNK, data: piece.toString("base64"), total: bytes.length, crc32: sum, replace: raw.replace === true, final: i === chunks - 1 }, t)) as typeof added;
-        if (i === chunks - 1) added = res;
-      } catch (err) {
-        const step = stepFromError("write", err, { op: "patch.libraryAdd", detail: { chunk: i + 1, chunks } });
-        steps.push(step);
-        // The bridge removes its part file on a refusal; after a lost reply it is removed here, best effort.
-        let partLeft: boolean | undefined;
-        try {
-          partLeft = ((await ctx.bridge.request("patch.libraryAdd", { file, upload, abort: true }, t)) as { partLeft?: boolean }).partLeft;
-        } catch {
-          partLeft = undefined;
-        }
-        steps.push(asRead({ name: "clean_up", status: partLeft === false ? "succeeded" : "unknown", op: "patch.libraryAdd", detail: { partLeft: partLeft ?? "unknown" } }));
-        return buildResult({ operation: op, target, steps, verification: unavailable(step.status === "unknown" ? "the last chunk's reply was lost; read the library with gma3_patch_library" : "the file was not written") });
-      }
-    }
-    steps.push({ name: "write", status: "succeeded", op: "patch.libraryAdd", detail: { chunks, ...added } });
+    const sent = await uploadChunks(ctx, { file, bytes, crc32: sum, replace: raw.replace === true }, steps);
+    if (!sent.ok) return buildResult({ operation: op, target, steps, verification: unavailable(sent.lost ? "the last chunk's reply was lost; read the library with gma3_patch_library" : "the file was not written") });
+    const added = sent.added;
 
     let after: Stat | undefined;
     let entry: LibraryEntry | undefined;

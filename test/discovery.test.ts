@@ -16,6 +16,8 @@ const NOT_MAPPED = new Set([
   "gma3_status", "gma3_start_bridge", "gma3_command", "gma3_lua", "gma3_lua_api", "gma3_help", "gma3_dump", "gma3_set_property",
   "gma3_pool", "gma3_fixtures", "gma3_executors", "gma3_executor_settings", "gma3_get_fader", "gma3_label_executor", "gma3_store_cue_part",
   "gma3_input_interaction", "gma3_hardkey", "gma3_keyboard", "gma3_type", "gma3_input_sequence", "gma3_hardkeys_status", "gma3_hardkeys_release_all", "gma3_feedback",
+  // read-only, named in gma3_build_bitmap's description
+  "gma3_bitmaps",
 ]);
 
 const fake = new FakeBridge();

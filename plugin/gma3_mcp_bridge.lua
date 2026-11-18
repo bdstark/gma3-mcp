@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.55.0"
+local VERSION      = "0.57.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -5233,12 +5233,65 @@ do
     end
   end
 
-  -- args: { file }. Read-only: the user-library file's size and CRC-32, and every library that lists the name.
+  -- #143 (bridge 0.57.0): kind "image" puts a .png / .jpg into gma3_library/media/images, the folder
+  -- Import Image 3.<n> /File "<file>" reads (probe on onPC 2.5.1.1, 2026-11-17). 10 MiB: the Images pool's limit per object
+  -- (POOLOBJECTCONTENTSIZELIMITATION 10485760).
+  local IMAGE_ADD_MAX_BYTES = 10 * 1024 * 1024
+  local function imageFileName(file)
+    if type(file) ~= "string" or file == "" then raise("[bad-args] file is required: <name>.png, .jpg or .jpeg") end
+    if #file > 128 then raise("[bad-name] the file name is longer than 128 characters") end
+    if file:find("[<>:\"/\\|%?%*%c]") or file:sub(1, 1) == "." or file:find("..", 1, true) then raise("[bad-name] the file name must not contain < > : \" / \\ | ? * .. or a control character, nor start with a dot") end
+    local ext = file:match("%.(%w+)$")
+    if ext ~= "png" and ext ~= "jpg" and ext ~= "jpeg" then raise("[bad-name] the file name must end in .png, .jpg or .jpeg (lower case)") end
+    return ext
+  end
+  -- gma3_library/media/images, next to the user fixture library (gma3_library/fixturetypes, SU-03); PathType UserImages
+  -- only when that folder is not the usual one (the path type's folder is unverified).
+  local function imageLibrary()
+    local ok, fx = pcall(userLibrary)
+    local root = ok and type(fx) == "string" and fx:match("^(.*)[/\\]fixturetypes[/\\]?$") or nil
+    if root then return root .. "/media/images", "derived" end
+    local pt = Enums.PathType and Enums.PathType.UserImages
+    if pt ~= nil then
+      local okP, pth = pcall(GetPath, pt)
+      if okP and type(pth) == "string" and pth ~= "" then return pth, "UserImages" end
+    end
+    raise("[no-library] the images folder (gma3_library/media/images) cannot be found")
+  end
+  -- Files in the images folder equal to this name ignoring case (one file on macOS and Windows).
+  local function imageSameName(base, file)
+    local ok, list = pcall(DirList, base, "*")
+    if not ok or type(list) ~= "table" then raise({ code = "scan-incomplete", message = "the images folder " .. base .. " cannot be listed, so a file of the same name cannot be ruled out; nothing was written" }) end
+    local out, want = {}, file:lower()
+    for _, e in ipairs(list) do
+      if type(e.name) == "string" and e.name:lower() == want then out[#out + 1] = { source = "images", file = e.name } end
+    end
+    return out
+  end
+  -- What an upload writes: its folder, size limit and extension, by kind (default fixture).
+  local function uploadTarget(args)
+    if args.kind == nil or args.kind == "fixture" then
+      local ext = libraryFileName(args.file)
+      return { kind = "fixture", ext = ext, base = userLibrary(), max = LIB_ADD_MAX_BYTES }
+    elseif args.kind == "image" then
+      local ext = imageFileName(args.file)
+      local base, how = imageLibrary()
+      return { kind = "image", ext = ext, base = base, how = how, max = IMAGE_ADD_MAX_BYTES }
+    end
+    raise("[bad-args] kind must be fixture or image")
+  end
+
+  -- args: { file, kind? }. Read-only: the user-library (or images-folder) file's size and CRC-32, and every library that lists the name.
   ops["patch.libraryStat"] = function(args)
-    libraryFileName(args.file)
-    local base = userLibrary()
-    local path = base .. "/" .. args.file
+    local tgt = uploadTarget(args)
+    local path = tgt.base .. "/" .. args.file
     local size, crc = fileCrc(path)
+    if tgt.kind == "image" then
+      local matches = imageSameName(tgt.base, args.file)
+      local listed = {}
+      for _, m in ipairs(matches) do if m.file == args.file then listed[#listed + 1] = m.source end end
+      return { file = args.file, kind = "image", path = path, folder = tgt.base, folderFrom = tgt.how, exists = size ~= nil, size = size, crc32 = crc, listedIn = emptyArray(listed), matches = emptyArray(matches), maxBytes = tgt.max }
+    end
     local listed, matches = {}, sameName(args.file)
     for _, m in ipairs(matches) do if m.file == args.file then listed[#listed + 1] = m.source end end
     -- listedIn: the libraries with exactly this name; matches: every entry equal ignoring case.
@@ -5274,10 +5327,11 @@ do
   -- every chunk must start where the part file ends. The final chunk checks total and crc32 against the part file and
   -- the libraries again, then moves it into place. abort removes the upload's part file.
   ops["patch.libraryAdd"] = function(args)
-    local ext = libraryFileName(args.file)
+    local tgt = uploadTarget(args)
+    local ext = tgt.ext
     if type(args.upload) ~= "string" or not args.upload:match("^%x+$") or #args.upload ~= 16 then raise("[bad-args] upload must be an id of 16 hex digits") end
     local id = args.upload:lower()
-    local base = userLibrary()
+    local base = tgt.base
     local path = base .. "/" .. args.file
     local part = path .. "." .. id .. PART_SUFFIX
     local now = os.time()
@@ -5287,8 +5341,8 @@ do
       uploads[id] = nil
       return { aborted = true, removed = had, partLeft = fileSize(part) ~= nil }
     end
-    local total = integerArg(args.total, "total", 1, LIB_ADD_MAX_BYTES)
-    local offset = integerArg(args.offset, "offset", 0, LIB_ADD_MAX_BYTES)
+    local total = integerArg(args.total, "total", 1, tgt.max)
+    local offset = integerArg(args.offset, "offset", 0, tgt.max)
     if type(args.crc32) ~= "string" or not args.crc32:match("^%x%x%x%x%x%x%x%x$") then raise("[bad-args] crc32 must be 8 hex digits") end
     if type(args.data) ~= "string" then raise("[bad-args] data (base64) is required") end
     if #args.data > LIB_ADD_MAX_CHUNK * 4 // 3 + 4 then raise("[bad-args] a chunk is at most " .. LIB_ADD_MAX_CHUNK .. " bytes") end
@@ -5296,9 +5350,14 @@ do
     if bytes == nil then raise("[bad-args] data is not valid base64") end
     local function fail(err) os.remove(part); uploads[id] = nil; raise(err) end
     local exists = fileSize(path) ~= nil
-    if exists and args.replace ~= true then fail("[exists] " .. args.file .. " is already in the user library; pass replace to overwrite it") end
+    if exists and args.replace ~= true then fail("[exists] " .. args.file .. " is already in the " .. (tgt.kind == "image" and "images folder" or "user library") .. "; pass replace to overwrite it") end
     -- The library scan (about 11 500 grandMA2 entries) runs at the start and before the move only, not per chunk.
-    if offset == 0 or args.final == true then
+    if (offset == 0 or args.final == true) and tgt.kind == "image" then
+      for _, m in ipairs(imageSameName(base, args.file)) do
+        if m.file ~= args.file then fail({ code = "ambiguous-file", message = args.file .. " differs only in case from " .. m.file .. " in the images folder (one file on macOS and Windows)", sources = { "images" }, collidesWith = m.file }) end
+      end
+    end
+    if (offset == 0 or args.final == true) and tgt.kind == "fixture" then
       local other = otherLibrary(args.file)
       if other then
         fail({ code = "ambiguous-file", message = (other.file == args.file and (args.file .. " is already in the " .. other.source .. " library") or (args.file .. " differs only in case from " .. other.file .. " in the " .. other.source .. " library (one file on macOS and Windows)")) .. "; Import Library could not tell the two apart", sources = { other.source }, collidesWith = other.file })
@@ -5347,7 +5406,240 @@ do
       if key:sub(1, #path + 1) == path .. "|" then headerCache[key] = nil end
     end
     local finalSize, finalCrc = fileCrc(path)
-    return { file = args.file, path = path, format = ext, size = finalSize, crc32 = finalCrc, replaced = exists }
+    return { file = args.file, kind = tgt.kind, path = path, format = ext, size = finalSize, crc32 = finalCrc, replaced = exists }
+  end
+  end)()
+
+  -- #143 (bridge 0.57.0): Bitmaps (DataPool.GeneratorTypes.Bitmaps) and the Images pool (ShowData.MediaPools.Images,
+  -- image pool 3). Probe on onPC 2.5.1.1 (2026-11-17): Store Bitmap <n> creates class Bitmap with BitmapConfigs
+  -- (BitmapConfig 1: Content handle, Width, Height, ContentMode, Interpolate, Alpha, Control*) and BitmapChannels (five
+  -- defaults: Dimmer<-Intensity, Dimmer<-Const, ColorRGB_R/G/B<-Red/Green/Blue); Set('Content', <UserImage>), Set('Width'),
+  -- Set('Height') and Set('ContentMode') read back as set. Replacing channels (Acquire / Delete) is unverified.
+  ;(function()
+  local function handleLike(v) return isHandle(v) or (type(v) == "table" and type(v.Get) == "function") end
+  local function numberOf(c)
+    local n = tonumber(safeProp(c, "no"))
+    if n then return n end
+    local d = displayProp(c, "No")
+    return d and tonumber(d:match("^%s*(%d+)")) or nil
+  end
+  local function rawGet(o, k)
+    local ok, v = pcall(function() return o:Get(k) end)
+    if ok then return v end
+    return nil
+  end
+  local function child(o, name, class)
+    local v = safeProp(o, name)
+    if handleLike(v) then return v end
+    for _, c in ipairs(o:Children()) do if safeCall(c, "GetClass") == class then return c end end
+    return nil
+  end
+  local function findNo(pool, no)
+    for _, c in ipairs(pool:Children()) do if numberOf(c) == no then return c end end
+    return nil
+  end
+  local function bitmapsPool()
+    local gt = safeProp(DataPool(), "GeneratorTypes")
+    local p = gt and child(gt, "Bitmaps", "Bitmaps")
+    if not p then raise("[no-pool] DataPool.GeneratorTypes.Bitmaps cannot be read") end
+    return p
+  end
+  local function imagesPool()
+    local mp = safeProp(ShowData(), "MediaPools")
+    local p = mp and child(mp, "Images", "Images")
+    if not p then raise("[no-pool] ShowData.MediaPools.Images cannot be read") end
+    return p
+  end
+  local function num(o, k)
+    local v = rawGet(o, k)
+    if type(v) == "number" then return v end
+    local d = displayProp(o, k)
+    return d and tonumber(d:match("^%s*(%-?[%d%.]+)")) or nil
+  end
+  local function imageEntry(img)
+    local no = numberOf(img)
+    return { no = no, ref = no and ("3." .. no) or nil, name = tostring(safeProp(img, "name") or ""), class = safeCall(img, "GetClass"),
+      fileName = displayProp(img, "FileName"), fileSize = displayProp(img, "FileSize"), width = num(img, "Width"), height = num(img, "Height") }
+  end
+  local function contentRef(h)
+    if not handleLike(h) then return nil end
+    local no = numberOf(h)
+    local cls = safeCall(h, "GetClass")
+    return { class = cls, name = safeProp(h, "name"), no = no, ref = (cls == "UserImage" and no) and ("3." .. no) or nil }
+  end
+  local CONFIG_TEXT = { "ContentMode", "Interpolate", "Alpha" }
+  local CONFIG_NUM = { "Width", "Height", "ControlX", "ControlY", "ControlZoom", "ControlAspect", "ControlRotate" }
+  local function configEntry(cfg, i)
+    local e = { index = i, content = contentRef(rawGet(cfg, "Content")) }
+    for _, k in ipairs(CONFIG_NUM) do e[k:sub(1, 1):lower() .. k:sub(2)] = num(cfg, k) end
+    for _, k in ipairs(CONFIG_TEXT) do e[k:sub(1, 1):lower() .. k:sub(2)] = displayProp(cfg, k) end
+    return e
+  end
+  local function channelEntry(c, i)
+    local a = rawGet(c, "Attribute")
+    return { index = i, attribute = handleLike(a) and safeProp(a, "name") or nil, source = displayProp(c, "Source"), low = num(c, "ValueLow"), high = num(c, "ValueHigh") }
+  end
+  local function bitmapEntry(b)
+    local configs, channels = {}, {}
+    local cf = child(b, "BitmapConfigs", "BitmapConfigs")
+    local ch = child(b, "BitmapChannels", "BitmapChannels")
+    if cf then for i, c in ipairs(cf:Children()) do configs[#configs + 1] = configEntry(c, i) end end
+    if ch then for i, c in ipairs(ch:Children()) do channels[#channels + 1] = channelEntry(c, i) end end
+    return { no = numberOf(b), name = tostring(safeProp(b, "name") or ""), class = safeCall(b, "GetClass"), speedMaster = displayProp(b, "SpeedMaster"),
+      configs = emptyArray(configs), channels = emptyArray(channels) }
+  end
+
+  -- args: { bitmap?, image?, images? }. Read-only. bitmap / image: that slot (found false when empty); without bitmap every
+  -- bitmap; images: true lists the Images pool too.
+  ops["bitmap.list"] = function(args)
+    local out = {}
+    local bp = bitmapsPool()
+    if args.bitmap ~= nil then
+      local no = integerArg(args.bitmap, "bitmap", 1, 9999)
+      local b = findNo(bp, no)
+      out.bitmapFound = b ~= nil
+      if b then out.bitmap = bitmapEntry(b) end
+    else
+      local all = {}
+      for _, b in ipairs(bp:Children()) do all[#all + 1] = bitmapEntry(b) end
+      out.bitmaps = emptyArray(all)
+    end
+    if args.image ~= nil or args.images == true then
+      local ip = imagesPool()
+      if args.image ~= nil then
+        local img = findNo(ip, integerArg(args.image, "image", 1, 9999))
+        out.imageFound = img ~= nil
+        if img then out.image = imageEntry(img) end
+      end
+      if args.images == true then
+        local all = {}
+        for _, img in ipairs(ip:Children()) do all[#all + 1] = imageEntry(img) end
+        out.images = emptyArray(all)
+      end
+    end
+    return out
+  end
+
+  -- args: { image, name }. The image's name (Import Image names it "[<file>_png]").
+  ops["bitmap.imageName"] = function(args)
+    local name = nameArg(args.name, "name")
+    if name == nil then raise("[bad-args] name is required") end
+    local img = findNo(imagesPool(), integerArg(args.image, "image", 1, 9999))
+    if not img then raise("[no-image] no image 3." .. tostring(args.image)) end
+    local ok, err = pcall(function() img:Set("Name", name) end)
+    return { image = imageEntry(img), setError = (not ok) and tostring(err) or nil }
+  end
+
+  local function findAttribute(name)
+    local lp = ShowData().LivePatch
+    local defs = lp and safeProp(lp, "AttributeDefinitions")
+    local attrs = defs and safeProp(defs, "Attributes")
+    if not handleLike(attrs) then raise("[no-attributes] the show's attribute definitions cannot be read") end
+    local want = name:lower()
+    for _, a in ipairs(attrs:Children()) do
+      local n = safeProp(a, "name")
+      if type(n) == "string" and n:lower() == want then return a, n end
+    end
+    return nil
+  end
+  local SOURCES = { intensity = true, const = true, red = true, green = true, blue = true, alpha = true, hue = true, saturation = true, brightness = true }
+
+  -- args: { bitmap, name?, speedMaster?, config = { image?, width?, height?, contentMode?, interpolate?, alpha?, controlX?,
+  -- controlY?, controlZoom?, controlAspect?, controlRotate? }, channels? = [{ attribute, source, low?, high? }] }.
+  -- Everything is checked before anything is set; each Set runs on its own and a refusal is reported in setErrors.
+  -- Returns the bitmap as it reads afterwards.
+  ops["bitmap.set"] = function(args)
+    local no = integerArg(args.bitmap, "bitmap", 1, 9999)
+    local b = findNo(bitmapsPool(), no)
+    if not b then raise("[no-bitmap] no bitmap " .. no .. "; store it first") end
+    local name = nameArg(args.name, "name")
+    local cfgArgs = type(args.config) == "table" and args.config or {}
+    local cf = child(b, "BitmapConfigs", "BitmapConfigs")
+    local cfg = cf and cf:Children()[1]
+    if not cfg then raise("[no-config] bitmap " .. no .. " has no BitmapConfig 1") end
+    local img
+    if cfgArgs.image ~= nil then
+      img = findNo(imagesPool(), integerArg(cfgArgs.image, "config.image", 1, 9999))
+      if not img then raise("[no-image] no image 3." .. tostring(cfgArgs.image)) end
+    end
+    local sets = {}
+    for _, k in ipairs(CONFIG_NUM) do
+      local key = k:sub(1, 1):lower() .. k:sub(2)
+      local v = cfgArgs[key]
+      if v ~= nil then
+        if type(v) ~= "number" then raise("[bad-args] config." .. key .. " must be a number") end
+        sets[#sets + 1] = { field = "config." .. key, obj = cfg, prop = k, value = tostring(v) }
+      end
+    end
+    for _, k in ipairs(CONFIG_TEXT) do
+      local key = k:sub(1, 1):lower() .. k:sub(2)
+      local v = cfgArgs[key]
+      if v ~= nil then
+        if type(v) == "boolean" then v = v and "Yes" or "No" end
+        if type(v) ~= "string" or v == "" or v:find("[%c\"]") then raise("[bad-args] config." .. key .. " must be a word") end
+        sets[#sets + 1] = { field = "config." .. key, obj = cfg, prop = k, value = v }
+      end
+    end
+    local chans
+    if args.channels ~= nil then
+      if type(args.channels) ~= "table" or #args.channels == 0 or #args.channels > 32 then raise("[bad-args] channels must be a list of 1 to 32 channels") end
+      chans = {}
+      for i, c in ipairs(args.channels) do
+        if type(c) ~= "table" or type(c.attribute) ~= "string" or c.attribute == "" then raise("[bad-args] channels[" .. i .. "].attribute is required") end
+        local a, aname = findAttribute(c.attribute)
+        if not a then raise({ code = "no-attribute", message = "channels[" .. i .. "]: the show has no attribute " .. c.attribute, attribute = c.attribute }) end
+        if type(c.source) ~= "string" or not SOURCES[c.source:lower()] then raise("[bad-args] channels[" .. i .. "].source must be one of Intensity, Const, Red, Green, Blue, Alpha, Hue, Saturation, Brightness") end
+        for _, k in ipairs({ "low", "high" }) do
+          if c[k] ~= nil and (type(c[k]) ~= "number" or c[k] < -100000 or c[k] > 100000) then raise("[bad-args] channels[" .. i .. "]." .. k .. " must be a number") end
+        end
+        chans[i] = { attr = a, attrName = aname, source = c.source, low = c.low, high = c.high }
+      end
+    end
+    if args.speedMaster ~= nil and (type(args.speedMaster) ~= "string" or args.speedMaster:find("[%c\"]")) then raise("[bad-args] speedMaster must be text") end
+
+    local errs = {}
+    local function try(field, f)
+      local ok, err = pcall(f)
+      if not ok then errs[#errs + 1] = { field = field, error = tostring(err) } end
+    end
+    if name then try("name", function() b:Set("Name", name) end) end
+    if args.speedMaster ~= nil then try("speedMaster", function() b:Set("SpeedMaster", args.speedMaster) end) end
+    if img then try("config.image", function() cfg:Set("Content", img) end) end
+    for _, s in ipairs(sets) do try(s.field, function() s.obj:Set(s.prop, s.value) end) end
+    if chans then
+      local holder = child(b, "BitmapChannels", "BitmapChannels")
+      if not holder then
+        errs[#errs + 1] = { field = "channels", error = "bitmap " .. no .. " has no BitmapChannels" }
+      else
+        -- Grow first (Acquire appends a channel), then drop the extra ones from the end.
+        local guard = 0
+        while holder:Count() < #chans and guard < 40 do
+          guard = guard + 1
+          local ok, err = pcall(function() return holder:Acquire("BitmapChannel") end)
+          if not ok then errs[#errs + 1] = { field = "channels", error = "a channel could not be added: " .. tostring(err) }; break end
+        end
+        for j = holder:Count(), #chans + 1, -1 do
+          local ok, err = pcall(function() holder:Delete(j) end)
+          if not ok then errs[#errs + 1] = { field = "channels", error = "channel " .. j .. " could not be removed: " .. tostring(err) }; break end
+        end
+        local kids = holder:Children()
+        for i, c in ipairs(chans) do
+          local h = kids[i]
+          if not h then errs[#errs + 1] = { field = "channels[" .. i .. "]", error = "the channel is missing" }
+          else
+            try("channels[" .. i .. "].attribute", function()
+              local ok = pcall(function() h:Set("Attribute", c.attr) end)
+              local now = rawGet(h, "Attribute")
+              if not ok or not handleLike(now) or safeProp(now, "name") ~= c.attrName then h:Set("Attribute", c.attrName) end
+            end)
+            try("channels[" .. i .. "].source", function() h:Set("Source", c.source) end)
+            if c.low ~= nil then try("channels[" .. i .. "].low", function() h:Set("ValueLow", tostring(c.low)) end) end
+            if c.high ~= nil then try("channels[" .. i .. "].high", function() h:Set("ValueHigh", tostring(c.high)) end) end
+          end
+        end
+      end
+    end
+    return { bitmap = bitmapEntry(b), setErrors = emptyArray(errs) }
   end
   end)()
 

@@ -13,7 +13,7 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "patch fixtures and stages (readdress, rename, nest, retype)", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list", "gma3_patch_move", "gma3_patch_retype", "gma3_patch_stages"] },
   { task: "a fixture type's modes, cells, channels, size", tools: ["gma3_patch_type_structure"] },
   { task: "place fixtures in 3D (position, rotation, mirror)", tools: ["gma3_place_fixtures", "gma3_fixture_positions"] },
-  { task: "a fixture's cell layout (string lights, pixel strands)", tools: ["gma3_layout_cells", "gma3_assign_cell_layout"] },
+  { task: "pixels: cell layouts, bitmaps", tools: ["gma3_layout_cells", "gma3_assign_cell_layout", "gma3_build_bitmap", "gma3_image_add"] },
   { task: "select fixtures, set values (a look in one call)", tools: ["gma3_select", "gma3_set_attributes", "gma3_set_color", "gma3_set_position", "gma3_set_attribute", "gma3_clear_programmer"] },
   { task: "presets", tools: ["gma3_apply_preset", "gma3_store_preset", "gma3_preset", "gma3_release_attributes"] },
   { task: "groups and MAtricks", tools: ["gma3_store_group", "gma3_selection_grid", "gma3_configure_matricks", "gma3_matricks"] },
