@@ -34,7 +34,7 @@ layers are not stages: `stage` puts every fixture on one stage, `layer_stages` c
 | `check_library` | read | `patch.libraryStat` for each GDTF to import, as `manufacturer@name[@revision].gdtf` from its own FixtureType: the same bytes already there are not sent again; different bytes, or the name in another library, are refused |
 | `check_mvr` | read | The verdict: every fixture with a problem is listed (no number, duplicate number, taken FID, DMX overlap, missing GDTF or mode, multi-break). With any, nothing is changed, unless `skip_unusable: true`, which leaves those out with a warning |
 | `library_add`, `import_type` | mutation | `gma3_patch_library_add` and `gma3_patch_import` for each GDTF the show lacks |
-| `recheck_patch` | read | The imported types' modes and footprints from the console, and their fixtures' ranges checked again before anything is added |
+| `recheck_patch` | read | The imported types' modes and footprints from the console, then every planned fixture's range checked again (a new footprint can overlap a fixture of a type the show already had) before anything is added |
 | `add` | mutation | `gma3_patch_add` per block: same type, mode and stage, consecutive FIDs, consecutive addresses in one universe (or all unpatched) |
 | `name` | mutation | `gma3_patch_set` with the names (unless `names: false`) |
 | `place` | mutation | `gma3_place_fixtures` with positions and rotations in metres and degrees (unless `place: false`) |

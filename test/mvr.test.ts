@@ -502,6 +502,36 @@ test("gma3_patch_import_mvr: an imported type whose footprint makes a range over
   }
 });
 
+test("gma3_patch_import_mvr: the recheck after an import covers fixtures of types the show already had (review of #162)", async () => {
+  const { h, w } = await harness();
+  try {
+    // Spot Basic: 4 channels in the GDTF, 12 on the console after the import, so 1.101-1.112 reaches the Wash at 1.109.
+    const { deps, calls } = recorder(w, {
+      importType: () => {
+        const type = { no: 9, name: "Spot 300", manufacturer: "ACME", modes: [{ no: 1, name: "Standard", footprint: 8 }, { no: 2, name: "Basic", footprint: 12 }] };
+        w.types.push(type);
+        return ok("patch_import", { type });
+      },
+    });
+    const file = mvr({
+      Front: {
+        fixtures: [
+          { name: "Spot 1", fid: 101, mode: "Basic", addresses: [[0, "1.101"]] },
+          { name: "Wash 1", fid: 201, spec: "Glow_Co@Wash_7.gdtf", mode: "8ch", addresses: [[0, "1.109"]] },
+        ],
+      },
+    });
+    const res = await mvrImport(h.ctx, { content_base64: b64(file), exclusive: true }, deps);
+    assert.deepEqual(calls.map((c) => c.tool), ["libraryAdd", "importType"]);
+    const recheck = h.fake.requests.filter((r) => r.op === "patch.check").at(-1);
+    assert.deepEqual(recheck?.args.ranges, [{ fid: 101, address: "1.101", footprint: 12 }, { fid: 201, address: "1.109", footprint: 8 }]);
+    assert.match(String(res.steps.find((s) => s.name === "recheck_patch")?.error), /FID 101 .*overlaps MVR fixture 201.*no fixture was added/);
+    assert.deepEqual(res.steps.filter((s) => s.status === "skipped").map((s) => s.name), ["add", "name", "place"]);
+  } finally {
+    await h.close();
+  }
+});
+
 test("gma3_patch_import_mvr validation: path or content, exclusive unless preview, known layers", async () => {
   const { h, w } = await harness();
   try {

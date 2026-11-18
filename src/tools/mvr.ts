@@ -17,7 +17,7 @@
  *   read    check_library             patch.libraryStat for each GDTF to import
  *   ---     preview stops here; otherwise, stopping at the first failure:
  *   mut.    library_add, import_type  gma3_patch_library_add + gma3_patch_import per GDTF the show does not have
- *   read    recheck_patch             the ranges of imported types with the console's own footprints
+ *   read    recheck_patch             every planned range again, with the imported types' footprints from the console
  *   mut.    add                       gma3_patch_add per block (same type, mode and stage, consecutive FIDs and addresses)
  *   mut.    name                      gma3_patch_set: the MVR names (characters the console strips are removed)
  *   mut.    place                     gma3_place_fixtures: positions and rotations (metres, degrees)
@@ -425,7 +425,7 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
       if (typeof no === "number") for (const f of go) if (f.spec === p.spec) f.typeNo = no;
     }
 
-    // Imported types: their modes and footprints from the console, and their ranges checked again.
+    // Imported types: their modes and footprints from the console; then every planned range checked again.
     if (imports.length && !failed) {
       try {
         const now = ((await ctx.bridge.request("patch.types", {}, t)) as { types: TypeRow[] }).types;
@@ -441,8 +441,10 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
             if (p.address !== undefined && typeof p.footprint !== "number") flag(p.fixture, `the DMX footprint of mode "${m.name}" is unknown`);
           }
         }
-        const again = await checkRanges("recheck_patch", fresh.filter((p) => !problems.has(p.fixture)));
-        const late = fresh.filter((p) => problems.has(p.fixture));
+        // Every planned fixture, not only the imported types': a new footprint can overlap a fixture of a type the show
+        // already had (review of #162).
+        const again = await checkRanges("recheck_patch", go.filter((p) => !problems.has(p.fixture)));
+        const late = go.filter((p) => problems.has(p.fixture));
         if (again.status !== "succeeded" || late.length) {
           steps.push({ ...again, status: "failed", error: again.error ?? `after the import: ${list(late.map((p) => `${label(p.fixture)}: ${(problems.get(p.fixture) as string[]).join(", ")}`))}; the types are imported, no fixture was added` });
           failed = true;
