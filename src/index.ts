@@ -51,6 +51,7 @@ import { registerPoolObjectTools } from "./tools/poolobjects.js";
 import { registerBitmapTools } from "./tools/bitmaps.js";
 import { registerLayoutTools } from "./tools/layouts.js";
 import { registerAgendaTools } from "./tools/agenda.js";
+import { registerWorldFilterTools } from "./tools/worldsfilters.js";
 import { UndoGroups, inToolScope } from "./undo.js";
 import { withProgress } from "./progress.js";
 
@@ -740,6 +741,7 @@ registerPoolObjectTools(server, toolContext);
 registerBitmapTools(server, toolContext);
 registerLayoutTools(server, toolContext);
 registerAgendaTools(server, toolContext);
+registerWorldFilterTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",
