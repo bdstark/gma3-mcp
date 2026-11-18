@@ -64,6 +64,11 @@ export interface AttributeCatalog {
   byName: Map<string, number>;
   /** Lower-case feature group name to its name and attribute indexes. */
   groups: Map<string, { name: string; indices: number[] }>;
+  /**
+   * Why the feature groups' members are not known in full (an attribute whose Feature could not be read, a feature in
+   * no group, a feature of a group without a readable name). Non-empty: no group is resolved or reported as complete.
+   */
+  groupGaps: string[];
 }
 
 interface ChildrenResult {
@@ -87,13 +92,22 @@ export async function readCatalog(bridge: Gma3Bridge, t: number): Promise<Attrib
   const groupItems = await fullListing(bridge, FEATURE_GROUPS_REF, ["Name"], t);
   const featureGroup = new Map<string, string>();
   const groups = new Map<string, { name: string; indices: number[] }>();
+  const groupGaps: string[] = [];
   for (const g of groupItems) {
-    const gname = typeof g.fields?.Name === "string" ? g.fields.Name : g.name;
+    const gname = g.fieldErrors?.Name === undefined && typeof g.fields?.Name === "string" && g.fields.Name ? g.fields.Name : undefined;
     if (!gname || !g.addr) throw new Error(`a feature group of ${FEATURE_GROUPS_REF} has no readable name or address`);
     groups.set(gname.toLowerCase(), { name: gname, indices: [] });
-    for (const f of await fullListing(bridge, g.addr, ["Name"], t)) {
-      const fname = typeof f.fields?.Name === "string" ? f.fields.Name : f.name;
+    let features: NonNullable<ChildrenResult["items"]>;
+    try {
+      features = await fullListing(bridge, g.addr, ["Name"], t);
+    } catch (err) {
+      groupGaps.push(`the features of feature group ${gname} could not be listed (${err instanceof Error ? err.message : String(err)})`);
+      continue;
+    }
+    for (const f of features) {
+      const fname = f.fieldErrors?.Name === undefined && typeof f.fields?.Name === "string" && f.fields.Name ? f.fields.Name : undefined;
       if (fname) featureGroup.set(fname.toLowerCase(), gname);
+      else groupGaps.push(`a feature of feature group ${gname} has no readable name`);
     }
   }
   const byIndex = new Map<number, { name: string; feature?: string; group?: string }>();
@@ -101,14 +115,17 @@ export async function readCatalog(bridge: Gma3Bridge, t: number): Promise<Attrib
   for (const a of attrs) {
     const name = typeof a.fields?.Name === "string" ? a.fields.Name : a.name;
     if (typeof a.index !== "number" || !name) throw new Error(`an attribute definition of ${ATTRIBUTES_REF} has no readable index or name`);
-    const feature = typeof a.fields?.Feature === "string" && a.fields.Feature ? a.fields.Feature : undefined;
+    const feature = a.fieldErrors?.Feature === undefined && typeof a.fields?.Feature === "string" && a.fields.Feature ? a.fields.Feature : undefined;
     const group = feature ? featureGroup.get(feature.toLowerCase()) : undefined;
+    // Its group is unknown, so any group may be missing it (#161 review).
+    if (!feature) groupGaps.push(`the feature of attribute ${name} could not be read${a.fieldErrors?.Feature !== undefined ? ` (${String(a.fieldErrors.Feature)})` : ""}`);
+    else if (!group) groupGaps.push(`the feature ${feature} of attribute ${name} is in no feature group that could be read`);
     byIndex.set(a.index, { name, ...(feature ? { feature } : {}), ...(group ? { group } : {}) });
     byName.set(name.toLowerCase(), a.index);
     if (group) groups.get(group.toLowerCase())?.indices.push(a.index);
   }
   const count = Math.max(attrs.length, ...byIndex.keys());
-  return { count, byIndex, byName, groups };
+  return { count, byIndex, byName, groups, groupGaps };
 }
 
 /** The Attributes text as the set of passing definition indexes: "All" is every one; null when it is not that form. */
@@ -131,7 +148,8 @@ export function encodeAttributes(indices: Set<number>, count: number): string {
 /** A decoded attribute set for a reader: "all", or the feature groups it covers fully and the names. */
 export function describeAttributes(set: Set<number>, cat: AttributeCatalog, max = 60): Record<string, unknown> | "all" {
   if (set.size === cat.count) return "all";
-  const full = [...cat.groups.values()].filter((g) => g.indices.length > 0 && g.indices.every((i) => set.has(i))).map((g) => g.name);
+  // Without every member of every group known, no group is claimed as fully passed.
+  const full = cat.groupGaps.length ? [] : [...cat.groups.values()].filter((g) => g.indices.length > 0 && g.indices.every((i) => set.has(i))).map((g) => g.name);
   const names = [...set].sort((a, b) => a - b).map((i) => cat.byIndex.get(i)?.name ?? `#${i}`);
   return { count: set.size, ...(full.length ? { featureGroups: full } : {}), attributes: names.slice(0, max), ...(names.length > max ? { truncated: true } : {}) };
 }
@@ -140,6 +158,11 @@ export function describeAttributes(set: Set<number>, cat: AttributeCatalog, max 
 export function resolveAttributes(cat: AttributeCatalog, attributes: string[], groups: string[], exclude: string[]): { indices: Set<number>; errors: string[] } {
   const indices = new Set<number>();
   const errors: string[] = [];
+  if (groups.length && cat.groupGaps.length) {
+    const gaps = cat.groupGaps.slice(0, 5).join("; ") + (cat.groupGaps.length > 5 ? `; and ${cat.groupGaps.length - 5} more` : "");
+    errors.push(`the members of the feature groups cannot be established in full (${gaps}), so feature_groups could leave attributes out; name the attributes instead`);
+    groups = [];
+  }
   for (const g of groups) {
     const hit = cat.groups.get(g.trim().toLowerCase());
     if (!hit) errors.push(`feature group ${JSON.stringify(g)} does not exist (the show has ${[...cat.groups.values()].map((x) => x.name).join(", ")})`);

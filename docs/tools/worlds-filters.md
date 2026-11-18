@@ -21,7 +21,7 @@ Read-only probe of onPC 2.5.1.1 (Festoon Demo, 2026-11-17):
 
 ## gma3_store_filter
 
-Choose the attributes the filter passes by attribute name (`attributes`), by feature group (`feature_groups`), or both. Use `exclude` to take attributes out again. `layers` picks the value layers. Unknown names refuse the item before anything is sent, and so do a filter that would pass nothing, a taken number (unless `on_taken: "update"`), a locked filter, a name another filter has (unless `on_name_taken: "allow_suffix"`) and an open dialog.
+Choose the attributes the filter passes by attribute name (`attributes`), by feature group (`feature_groups`), or both. Use `exclude` to take attributes out again. `layers` picks the value layers. Feature groups fail closed: if any attribute's feature, or any group's list of features, cannot be read, `feature_groups` is refused (name the attributes instead), and `gma3_pool_details` claims no group as fully passed. Unknown names refuse the item before anything is sent, and so do a filter that would pass nothing, a taken number (unless `on_taken: "update"`), a locked filter, a name another filter has (unless `on_name_taken: "allow_suffix"`) and an open dialog.
 
 The steps:
 

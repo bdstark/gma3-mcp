@@ -37,6 +37,10 @@ class Console {
   dialogAfter?: RegExp;
   dialogOpen = false;
   attributesUnreadable = false;
+  /** Attributes whose Feature read fails (fieldErrors.Feature). */
+  featureUnreadable = new Set<string>();
+  /** Feature groups whose features cannot be listed. */
+  groupUnlistable = new Set<string>();
 
   constructor() {
     this.objects.set("Filter 1", { class: "Filter", name: "All", fields: { Attributes: "All", Absolute: "Yes", Relative: "Yes", Timing: "Yes", Phaser: "Yes", HasDynamicFilterRules: "No" } });
@@ -81,9 +85,14 @@ class Console {
   }
 
   children(ref: string) {
-    if (ref === "ShowData.LivePatch.AttributeDefinitions.Attributes") return { total: ATTRS.length, items: ATTRS.map(([i, n, f]) => ({ name: n, index: i, fields: { Name: n, Feature: f } })) };
+    if (ref === "ShowData.LivePatch.AttributeDefinitions.Attributes")
+      return {
+        total: ATTRS.length,
+        items: ATTRS.map(([i, n, f]) => (this.featureUnreadable.has(n) ? { name: n, index: i, fields: { Name: n }, fieldErrors: { Feature: "read failed" } } : { name: n, index: i, fields: { Name: n, Feature: f } })),
+      };
     if (ref === "ShowData.LivePatch.AttributeDefinitions.FeatureGroups") return { total: 4, items: Object.keys(GROUPS).map((g, i) => ({ name: g, index: i + 1, addr: `fg:${g}`, fields: { Name: g } })) };
     const fg = ref.match(/^fg:(\w+)$/);
+    if (fg && this.groupUnlistable.has(fg[1])) return { total: 0, items: [], enumerationError: "Children() raised" };
     if (fg) return { total: GROUPS[fg[1]].length, items: GROUPS[fg[1]].map((f, i) => ({ name: f, index: i + 1, fields: { Name: f } })) };
     const pool = { "DataPool.Filters": "Filter", "ShowData.Appearances": "Appearance" }[ref];
     if (pool) {
@@ -162,7 +171,7 @@ beforeEach(() => install());
 const catalog = (): AttributeCatalog => {
   const byIndex = new Map(ATTRS.map(([i, n, f]) => [i, { name: n, feature: f, group: Object.keys(GROUPS).find((g) => GROUPS[g].includes(f)) }]));
   const groups = new Map(Object.entries(GROUPS).map(([g, fs]) => [g.toLowerCase(), { name: g, indices: ATTRS.filter(([, , f]) => fs.includes(f)).map(([i]) => i) }]));
-  return { count: ATTRS.length, byIndex, byName: new Map(ATTRS.map(([i, n]) => [n.toLowerCase(), i])), groups };
+  return { count: ATTRS.length, byIndex, byName: new Map(ATTRS.map(([i, n]) => [n.toLowerCase(), i])), groups, groupGaps: [] };
 };
 
 test("attribute strings: one character per definition, All is every one; names and feature groups resolve, unknown ones are errors", () => {
@@ -344,4 +353,25 @@ test("validation: nothing to do, create on a named appearance, bad colour and al
   assert.match(r.text, /needs attributes or feature_groups/);
   assert.deepEqual(h.fake.commands, []);
   void SILENT;
+});
+
+test("feature groups fail closed (#161 review): an unreadable attribute Feature or feature listing refuses feature_groups before anything is sent; named attributes still store", async () => {
+  c.featureUnreadable.add("ColorRGB_G");
+  let r = await h.callJson("gma3_store_filter", { filter: 9, feature_groups: ["Color"] });
+  assert.equal(r.result.outcome, "failed", r.text);
+  assert.match(r.text, /members of the feature groups cannot be established in full .*the feature of attribute ColorRGB_G could not be read \(read failed\)/);
+  assert.deepEqual(h.fake.commands, []);
+  assert.equal(h.fake.requests.filter((q) => q.op === "set").length, 0);
+  r = await h.callJson("gma3_store_filter", { filter: 9, attributes: ["ColorRGB_R", "ColorRGB_G", "ColorRGB_B"] });
+  assert.equal(r.result.verification.status, "matched", r.text);
+  assert.equal(c.objects.get("Filter 9")!.fields.Attributes, "0001110");
+  // A reader does not claim a group it cannot establish in full.
+  r = await h.callJson("gma3_pool_details", { kind: "filters", range: "Filter 9" });
+  assert.equal(r.result.filters[0].attributes.featureGroups, undefined, r.text);
+  install();
+  c.groupUnlistable.add("Color");
+  r = await h.callJson("gma3_store_filter", { filter: 10, feature_groups: ["Position"] });
+  assert.equal(r.result.outcome, "failed", r.text);
+  assert.match(r.text, /the features of feature group Color could not be listed/);
+  assert.deepEqual(h.fake.commands, []);
 });
