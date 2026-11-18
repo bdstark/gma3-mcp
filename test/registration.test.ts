@@ -88,6 +88,10 @@ const WORKFLOW_TOOLS = [
   "gma3_patch_remove_type",
   // SU-22 user-library upload
   "gma3_patch_library_add",
+  // #143 bitmaps
+  "gma3_bitmaps",
+  "gma3_image_add",
+  "gma3_build_bitmap",
   // SU-07 fixture-type structure
   "gma3_patch_type_structure",
   // SU-08 cell layouts

@@ -118,6 +118,9 @@ require `exclusive: true` and have no undo; details in [`tools/patch.md`](tools/
 | `gma3_place_fixtures` | Place fixtures in 3D: positions, rotations (written as one quaternion), mesh mirroring; line, arc and mirror-pair layouts; preview; read back by quaternion; returns a restore list (no undo). A fixture inside a grouping fixture only while every grouping fixture above it is at the origin with no rotation |
 | `gma3_layout_cells` | Lay out a fixture's cells (string lights, pixel strands) along a line, square wave, zigzag or points, in explicit units: shared (the type's layout; `affects` must name every fixture that moves) or own (a copy of the type for some fixtures); read back per cell; returns the previous positions (bridge 0.29.0) |
 | `gma3_assign_cell_layout` | Move fixtures to another layout type of their fixture (a copy, or back to the original) in an isolated patch session (bridge 0.29.0) |
+| `gma3_image_add` | Put a `.png` / `.jpg` into the Images pool (`Image 3.<n>`): uploaded over the bridge into `gma3_library/media/images`, imported with `Import Image 3.<n> /File`, read back by file name and size (bridge 0.57.0; [tools/bitmaps.md](tools/bitmaps.md)) |
+| `gma3_build_bitmap` | Store a Bitmap (pixel mapping) on an image: canvas size, content mode, control values, channels, name, speed master, each read back; `apply` (group) and `store` (preset or cue) are reported but unverified (bridge 0.57.0) |
+| `gma3_bitmaps` | Read-only: bitmaps with their configs and channels, and the Images pool (bridge 0.57.0) |
 | `gma3_dialog` | Read the console's top dialog (title, message, buttons) or press one button by its text, only while the dialog still shows what was read; reports whether it closed (bridge 0.42.0) |
 
 Console feedback (KB-06; needs plugin v0.8.0; read-only, works with Lua and input disabled and while another client

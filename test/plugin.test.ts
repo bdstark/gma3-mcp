@@ -103,3 +103,12 @@ test("timecode ops Lua harness (SB-08)", { skip: lua ? false : "no Lua 5.4+ inte
   assert.match(output, /ALL PASSED/, output);
   assert.doesNotMatch(output, /^FAIL /m, output);
 });
+
+const bitmapHarness = path.join("test", "lua", "bitmap_ops_test.lua");
+test("bridge plugin Lua harness: bitmap ops and image uploads (#143)", { skip: lua ? false : "no Lua 5.4+ interpreter on PATH" }, () => {
+  const r = spawnSync(lua!, [bitmapHarness], { cwd: root, encoding: "utf8" });
+  const output = `${r.stdout}${r.stderr}`;
+  assert.equal(r.status, 0, `harness failed:\n${output}`);
+  assert.match(output, /ALL PASSED/, output);
+  assert.doesNotMatch(output, /^FAIL /m, output);
+});
