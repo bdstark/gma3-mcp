@@ -350,7 +350,6 @@ export interface StoreAgendaArgs {
   every_year?: unknown;
   overwrite?: unknown;
   preview?: unknown;
-  verify?: unknown;
 }
 
 type TargetKind = "sequence" | "macro" | "plugin";
@@ -571,7 +570,6 @@ export async function storeAgenda(ctx: ToolContext, raw: StoreAgendaArgs): Promi
     throw err;
   }
   const preview = raw.preview === true;
-  const verify = raw.verify !== false;
   const target = { agenda: spec.no };
   const { bridge } = ctx;
 
@@ -725,33 +723,63 @@ export async function storeAgenda(ctx: ToolContext, raw: StoreAgendaArgs): Promi
     }
     const p = props;
 
-    // 8. Disable, assign, write each property, enable last.
-    const setStep = async (name: string, role: AgendaRole, value: string): Promise<StepResult> =>
-      requestStep(bridge, name, "set", { ref: spec.ref, property: p[role], value }, (res) => ({ name, status: "succeeded", op: "set", detail: { property: p[role], value, read: (res as { value?: unknown })?.value } }));
-    const plan: Array<{ name: string; run: () => Promise<StepResult> }> = [{ name: "disable_while_configuring", run: () => setStep("disable_while_configuring", "enabled", "No") }];
+    // 8. Disable (confirmed), assign, write each property (each write checked against what it reads back).
+    const disabledSpec: AgendaSpec = { ...spec, enabled: false };
+    const setChecked = async (name: string, role: AgendaRole, value: string, want: AgendaSpec): Promise<StepResult> =>
+      requestStep(bridge, name, "set", { ref: spec.ref, property: p[role], value }, (res) => {
+        const r = (res ?? {}) as { value?: unknown; readOk?: unknown; readError?: unknown };
+        const detail = { property: p[role], value, read: r.value ?? null };
+        if (r.readOk === false || r.value === undefined || r.value === null) {
+          return { name, status: "failed", op: "set", detail, error: `${p[role]} could not be read back after the write${r.readError ? ` (${String(r.readError)})` : ""}, so whether the console took ${JSON.stringify(value)} is unknown` };
+        }
+        const cmp = compareRole(role, want, r.value);
+        if (cmp === "differs") return { name, status: "failed", op: "set", detail, error: `the console did not take ${p[role]} = ${JSON.stringify(value)}: it reads ${JSON.stringify(r.value)}` };
+        if (cmp === "unknown") return { name, status: "failed", op: "set", detail, error: `${p[role]} reads ${JSON.stringify(r.value)} after the write, a form this tool cannot compare with ${JSON.stringify(value)}` };
+        return { name, status: "succeeded", op: "set", detail };
+      });
+    const runPlan = async (plan: Array<{ name: string; run: () => Promise<StepResult> }>): Promise<StepResult | null> => {
+      for (const item of plan) {
+        let step: StepResult;
+        try {
+          step = await item.run();
+        } catch (err) {
+          step = stepFromError(item.name, err);
+        }
+        steps.push(step);
+        if (step.status !== "succeeded") {
+          for (const l of plan.slice(plan.indexOf(item) + 1)) steps.push({ name: l.name, status: "skipped", error: `not attempted: an earlier step was ${step.status}` });
+          return step;
+        }
+      }
+      return null;
+    };
+    const leftDisabled = `${spec.ref} was stored and left disabled: it is not fully configured`;
+
+    const disable = await setChecked("disable_while_configuring", "enabled", "No", disabledSpec).catch((err) => stepFromError("disable_while_configuring", err));
+    steps.push(disable);
+    if (disable.status !== "succeeded") {
+      // A new entry starts at the console's current date and time: one that may still be enabled must not stay.
+      const undo = await commandStep(bridge, "delete_unconfirmed", `Delete ${spec.ref} /NoConfirmation`);
+      steps.push(undo);
+      if (undo.status !== "succeeded") warnings.push(`${spec.ref} may be enabled with the console's current date and time and could not be deleted again (the delete ${undo.status}): check it now`);
+      return buildResult({ operation: op, target, steps, warnings, summary: `store_agenda failed: ${spec.ref} could not be confirmed disabled (${disable.error ?? disable.status}); it was ${undo.status === "succeeded" ? "deleted again" : "not deleted"} and nothing was configured` });
+    }
+    const plan: Array<{ name: string; run: () => Promise<StepResult> }> = [];
     if (spec.target) plan.push({ name: "assign", run: () => commandStep(bridge, "assign", `Assign ${spec.target!.ref} At ${spec.ref}`) });
-    for (const role of sets) if (role !== "enabled") plan.push({ name: `set_${role}`, run: () => setStep(`set_${role}`, role, valueFor(role, spec)) });
-    plan.push({ name: "set_enabled", run: () => setStep("set_enabled", "enabled", spec.enabled ? "Yes" : "No") });
-    for (const item of plan) {
-      let step: StepResult;
-      try {
-        step = await item.run();
-      } catch (err) {
-        step = stepFromError(item.name, err);
-      }
-      steps.push(step);
-      if (step.status !== "succeeded") {
-        const left = plan.slice(plan.indexOf(item) + 1);
-        for (const l of left) steps.push({ name: l.name, status: "skipped", error: `not attempted: an earlier step was ${step.status}` });
-        if (item.name !== "disable_while_configuring") warnings.push(`${spec.ref} was stored and left disabled: it is not fully configured`);
-        return buildResult({ operation: op, target, steps, warnings });
-      }
+    for (const role of sets) if (role !== "enabled") plan.push({ name: `set_${role}`, run: () => setChecked(`set_${role}`, role, valueFor(role, spec), spec) });
+    const failedWrite = await runPlan(plan);
+    if (failedWrite) {
+      warnings.push(leftDisabled);
+      // A write the console answered with another value is a mismatch; one that got no answer or no read is not judged.
+      const judged = failedWrite.op === "set" && /did not take/.test(failedWrite.error ?? "");
+      return buildResult({ operation: op, target, steps, warnings, ...(judged ? { verification: { status: "mismatched", checked: "each write's read-back", detail: failedWrite.error } } : {}) });
     }
 
-    // 9. Read back every written property, and the Object as a handle.
-    if (!verify) return buildResult({ operation: op, target, steps, warnings });
+    // 9. While it is still disabled: read back every written property and the Object by address. Only a full match
+    // enables it: an entry is never switched on unchecked.
     let verification: Verification;
     const extra: Record<string, unknown> = {};
+    const checked = "every written property of the entry while it was disabled, and its Object by address";
     try {
       const back = await readObject(bridge, spec.ref);
       const pr = back.properties ?? {};
@@ -760,11 +788,16 @@ export async function storeAgenda(ctx: ToolContext, raw: StoreAgendaArgs): Promi
       const actual: Record<string, unknown> = {};
       for (const role of rolesFor(spec)) {
         if (role === "object") continue;
+        const want = role === "enabled" ? disabledSpec : spec;
         const got = pr[p[role] as string];
         actual[role] = got ?? null;
-        const r = compareRole(role, spec, got);
-        if (r === "differs") mismatches.push(`${p[role]}: sent ${JSON.stringify(valueFor(role, spec))}, reads ${JSON.stringify(got ?? null)}`);
-        else if (r === "unknown") unknown.push(`${p[role]} reads ${JSON.stringify(got)}, a form this tool cannot compare with ${JSON.stringify(valueFor(role, spec))}`);
+        if (got === undefined || got === null) {
+          unknown.push(`${p[role]} could not be read`);
+          continue;
+        }
+        const r = compareRole(role, want, got);
+        if (r === "differs") mismatches.push(`${p[role]}: expected ${JSON.stringify(role === "enabled" ? "No" : valueFor(role, spec))}, reads ${JSON.stringify(got)}`);
+        else if (r === "unknown") unknown.push(`${p[role]} reads ${JSON.stringify(got)}, a form this tool cannot compare with ${JSON.stringify(valueFor(role, want))}`);
       }
       if (spec.target) {
         const objField = p.object as string;
@@ -772,18 +805,35 @@ export async function storeAgenda(ctx: ToolContext, raw: StoreAgendaArgs): Promi
         const h = res?.items?.[0]?.fields?.[objField] as { addr?: string; name?: string; class?: string } | undefined;
         actual.object = h ?? null;
         if (!h || typeof h !== "object") mismatches.push(`${objField}: reads nothing, not ${spec.target.ref}`);
-        else if (targetAddr !== undefined && h.addr !== targetAddr) mismatches.push(`${objField}: reads ${h.name ?? h.addr} (${h.addr}), not ${spec.target.ref} (${targetAddr})`);
+        else if (targetAddr === undefined || h.addr === undefined) unknown.push(`${objField} reads ${JSON.stringify(h.name ?? null)}, but ${targetAddr === undefined ? `${spec.target.ref}'s address` : "its address"} could not be read, so whether it is ${spec.target.ref} is unknown`);
+        else if (h.addr !== targetAddr) mismatches.push(`${objField}: reads ${h.name ?? h.addr} (${h.addr}), not ${spec.target.ref} (${targetAddr})`);
       }
       const describeIt = describeEntry(spec.no, pr);
       if (describeIt.planned) extra.planned = describeIt.planned;
-      const checked = "every written property of the entry, and its Object by address";
       if (mismatches.length) verification = { status: "mismatched", checked, actual, detail: mismatches.join("; ") };
       else if (unknown.length) verification = { status: "unavailable", checked, actual, detail: unknown.join("; ") };
       else verification = { status: "matched", checked, actual };
     } catch (err) {
-      verification = { status: "unavailable", detail: `the entry could not be read back: ${err instanceof Error ? err.message : String(err)}` };
+      verification = { status: "unavailable", checked, detail: `the entry could not be read back: ${err instanceof Error ? err.message : String(err)}` };
     }
-    return buildResult({ operation: op, target, steps, warnings, verification, extra });
+    if (verification.status !== "matched") {
+      steps.push({ name: "check_before_enable", kind: "read", status: "failed", op: "object", error: `${verification.detail ?? verification.status}; ${spec.ref} stays disabled` });
+      if (spec.enabled) steps.push({ name: "set_enabled", status: "skipped", error: "not attempted: the configuration did not read back as requested" });
+      warnings.push(leftDisabled);
+      return buildResult({ operation: op, target, steps, warnings, verification, extra });
+    }
+    steps.push({ name: "check_before_enable", kind: "read", status: "succeeded", op: "object" });
+
+    // 10. Enable last, when asked; the write is checked like the others.
+    if (spec.enabled) {
+      const en = await setChecked("set_enabled", "enabled", "Yes", spec).catch((err) => stepFromError("set_enabled", err));
+      steps.push(en);
+      if (en.status !== "succeeded") {
+        warnings.push(`${spec.ref} is configured as requested but could not be confirmed enabled: ${en.error ?? en.status}`);
+        return buildResult({ operation: op, target, steps, warnings, verification: { status: "mismatched", checked: `${checked}, then Enabled`, detail: en.error ?? "Enabled did not read Yes" }, extra });
+      }
+    }
+    return buildResult({ operation: op, target, steps, warnings, verification: { ...verification, checked: spec.enabled ? `${checked}, then Enabled read Yes` : checked }, extra });
   };
   return preview ? body() : ctx.mutations.run(body);
 }
@@ -795,7 +845,7 @@ export async function storeAgenda(ctx: ToolContext, raw: StoreAgendaArgs): Promi
 const STORE_DESCRIPTION =
   "Create an Agenda entry (or with overwrite: true replace one): a time of day (mode absolute, date + time) or a twilight time (dawn, sunrise, sunset, dusk, date + offset_minutes) that runs a sequence, macro or plugin (with an action such as Go+ or Off) or a command. " +
   "Repeat: until_date / until_time, every_minutes, every_year. Checks first: the number is free (or overwrite), the target exists, the entry's property names (read from an existing entry's schema, else from the new one). " +
-  "Sends Store Agenda n, disables it while it is configured, Assign <target> At Agenda n, sets each property, enables it last; reads every property back and the Object by address, and reports the planned date and time. " +
+  "Sends Store Agenda n and confirms it disabled (otherwise deletes it again), Assign <target> At Agenda n, sets each property and checks what each write reads; then reads the whole entry back while it is still disabled (the Object by address) and enables it only when everything matched, so a misconfigured entry never fires; reports the planned date and time. " +
   "Twilight times use the console's location (Date and Time settings): the result warns while it is the factory one. Day-of-week patterns are not set by this tool. preview: true plans without sending. " +
   BATCH_NOTE;
 
@@ -893,7 +943,6 @@ export const registerAgendaTools: RegisterTools = (server, ctx) => {
         every_year: z.boolean().optional().describe("Repeat every year."),
         overwrite: z.boolean().optional().describe("Replace an existing entry at this number (deleted first). Default false: a taken number is refused."),
         preview: z.boolean().optional().describe("Read and plan only; nothing is sent."),
-        verify: z.boolean().optional().describe("Read back (default true)."),
         entries: z.array(z.object(itemShape)).optional().describe("Batch form: several entries, each with its own no."),
         ...batchOptionShape,
       },

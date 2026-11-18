@@ -275,16 +275,93 @@ test("on an empty agenda a schema without a needed property is found on the new 
   assert.equal(c.entries.has(1), false);
 });
 
-test("a value the console ignores reads back as a mismatch; an ignored Assign is caught by address", async () => {
-  c.ignore.add("STARTDATE");
-  let r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
+test("an ignored write stops the entry disabled: it is never enabled with the console's default time (review of #160)", async () => {
+  c.ignore.add("STARTTIME");
+  const r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "20:00", sequence: 5 });
+  assert.equal(r.result.outcome, "partial", r.text);
   assert.equal(r.result.verification.status, "mismatched", r.text);
-  assert.match(r.result.verification.detail, /STARTDATE: sent "24.12.2026", reads "17.11.2026"/);
-  install();
+  const bad = r.result.steps.find((x: { name: string }) => x.name === "set_time");
+  assert.equal(bad.status, "failed");
+  assert.match(bad.error, /did not take STARTTIME = "20:00:00": it reads "18:42:42"/);
+  assert.equal(c.entries.get(1)?.props.ENABLED, "No", "left disabled");
+  assert.equal(c.entries.get(1)?.props.STARTTIME, "18:42:42");
+  assert.ok(!sets().includes("ENABLED=Yes"), "never enabled");
+  assert.match(JSON.stringify(r.result.warnings), /left disabled/);
+});
+
+test("an ignored Assign is caught by address while the entry is disabled, and it is not enabled", async () => {
   c.ignoreCmd = /^Assign/;
-  r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
+  const r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
   assert.equal(r.result.verification.status, "mismatched", r.text);
   assert.match(r.result.verification.detail, /OBJECT: reads nothing, not Sequence 5/);
+  const check = r.result.steps.find((x: { name: string }) => x.name === "check_before_enable");
+  assert.equal(check.status, "failed");
+  assert.equal(c.entries.get(1)?.props.ENABLED, "No");
+  assert.ok(!sets().includes("ENABLED=Yes"));
+});
+
+test("an ignored disable deletes the new entry again: nothing is assigned or configured on an entry that may be live", async () => {
+  c.ignore.add("ENABLED");
+  const r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
+  assert.notEqual(r.result.outcome, "succeeded");
+  assert.match(r.result.summary, /could not be confirmed disabled .* deleted again/);
+  assert.deepEqual(h.fake.commands, ["Store Agenda 1 /NoConfirmation", "Delete Agenda 1 /NoConfirmation"]);
+  assert.deepEqual(sets(), ["ENABLED=No"]);
+  assert.equal(c.entries.has(1), false);
+});
+
+test("an unreadable write or an unreadable entry before enabling leaves it disabled", async () => {
+  h.fake.on("set", (a) => {
+    const res = c.set(a);
+    return a.property === "STARTDATE" ? { ...res, value: undefined, readOk: false, readError: "read failed" } : res;
+  });
+  let r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
+  assert.equal(r.result.outcome, "partial", r.text);
+  assert.match(r.text, /STARTDATE could not be read back after the write \(read failed\)/);
+  assert.equal(c.entries.get(1)?.props.ENABLED, "No");
+  install();
+  // Every write reads back, but the whole entry cannot be read before enabling.
+  h.fake.on("object", (a) => {
+    if (String(a.ref) === "Agenda 1" && a.properties !== false && !a.schema) throw new Error("read timed out on the console");
+    return c.object(a);
+  });
+  r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
+  assert.equal(r.result.verification.status, "unavailable", r.text);
+  assert.equal(c.entries.get(1)?.props.ENABLED, "No");
+  assert.ok(!sets().includes("ENABLED=Yes"));
+});
+
+test("a value read back in a form the tool cannot compare is not enabled either", async () => {
+  h.fake.on("set", (a) => {
+    const res = c.set(a);
+    if (a.property === "STARTDATE") {
+      c.entries.get(1)!.props.STARTDATE = "Thursday";
+      return { ...res, value: "Thursday" };
+    }
+    return res;
+  });
+  const r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
+  assert.equal(r.result.outcome, "partial", r.text);
+  assert.match(r.text, /a form this tool cannot compare/);
+  assert.equal(c.entries.get(1)?.props.ENABLED, "No");
+});
+
+test("enabled: false stores the entry configured and disabled, without an enabling write", async () => {
+  const r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5, enabled: false });
+  assert.equal(r.result.outcome, "succeeded", r.text);
+  assert.equal(r.result.verification.status, "matched", r.text);
+  assert.equal(c.entries.get(1)?.props.ENABLED, "No");
+  assert.equal(sets().filter((x) => x.startsWith("ENABLED")).length, 1);
+});
+
+test("an enable the console ignores is a mismatch", async () => {
+  h.fake.on("set", (a) => {
+    if (a.property === "ENABLED" && a.value === "Yes") return { ref: a.ref, property: "ENABLED", value: "No", readOk: true };
+    return c.set(a);
+  });
+  const r = await h.callJson("gma3_store_agenda", { no: 1, date: "2026-12-24", time: "19:30", sequence: 5 });
+  assert.equal(r.result.verification.status, "mismatched", r.text);
+  assert.match(JSON.stringify(r.result.warnings), /could not be confirmed enabled/);
 });
 
 test("a write that fails stops the entry, leaves it disabled and skips the rest", async () => {
@@ -298,7 +375,8 @@ test("a write that fails stops the entry, leaves it disabled and skips the rest"
   assert.match(JSON.stringify(r.result.warnings), /left disabled/);
   assert.equal(c.entries.get(1)?.props.ENABLED, "No");
   const skipped = r.result.steps.filter((x: { status: string }) => x.status === "skipped").map((x: { name: string }) => x.name);
-  assert.ok(skipped.includes("set_command") && skipped.includes("set_enabled"), skipped.join(", "));
+  assert.ok(skipped.includes("set_command"), skipped.join(", "));
+  assert.ok(!sets().includes("ENABLED=Yes"));
 });
 
 test("an unclear Store is resolved by reading the slot; a missing entry stops", async () => {

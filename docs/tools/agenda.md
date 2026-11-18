@@ -58,13 +58,11 @@ call's target, and its own twilight mode drops the call's `time`.
    - the property names, from the replaced entry's or another entry's schema. If any property the request needs is missing, the request is refused before anything is sent.
 2. **Replace:** with `overwrite`, `Delete Agenda n /NoConfirmation`, then read the slot back as free.
 3. **Store:** `Store Agenda n /NoConfirmation`, then read that it is an agenda entry. If no entry existed before, the property names come from this new one; if one is missing, the new entry is deleted again.
-4. **Disable:** set `Enabled` to `No`. A new entry starts with the console's date and time, so it must not fire half-configured.
+4. **Disable, confirmed:** set `Enabled` to `No` and check that it reads `No`. A new entry starts with the console's date and time and may be enabled, so if the disable can't be confirmed the new entry is deleted again and nothing else is sent.
 5. **Assign:** `Assign <target> At Agenda n`.
-6. **Write:** set each property with the bridge's `set` op: mode, start date, start time or offset, valid duration, action or command, end date and time, minute interval, repeat every year, name.
-7. **Enable:** set `Enabled` last.
-8. **Read back:** every written property, plus the `Object` by address. The result also carries the planned next date and time.
-
-A write that fails stops the entry. It is left disabled and the remaining steps are reported as skipped.
+6. **Write:** set each property with the bridge's `set` op and check what each write reads back: mode, start date, start time or offset, valid duration, action or command, end date and time, minute interval, repeat every year, name. A write the console ignores, answers in a form the tool can't compare, or can't read back stops the entry, which stays disabled; the remaining steps are reported as skipped.
+7. **Check before enabling:** while the entry is still disabled, read back the whole entry, including the `Object` by address. Anything that doesn't match, or can't be read, leaves it disabled. This check always runs, so an entry is never switched on unchecked.
+8. **Enable:** only now, and only when `enabled` isn't false, set `Enabled` to `Yes` and check it reads `Yes`. The result also carries the planned next date and time.
 
 ## Not verified on a console
 
