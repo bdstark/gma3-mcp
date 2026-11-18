@@ -49,6 +49,7 @@ import { registerPoolUsageTools, shapeListing } from "./tools/poolusage.js";
 import { registerAnalysisTools } from "./tools/analysis.js";
 import { registerPoolObjectTools } from "./tools/poolobjects.js";
 import { registerBitmapTools } from "./tools/bitmaps.js";
+import { registerMvrTools } from "./tools/mvr.js";
 import { UndoGroups, inToolScope } from "./undo.js";
 import { withProgress } from "./progress.js";
 
@@ -736,6 +737,7 @@ registerPoolUsageTools(server, toolContext);
 registerAnalysisTools(server, toolContext);
 registerPoolObjectTools(server, toolContext);
 registerBitmapTools(server, toolContext);
+registerMvrTools(server, toolContext);
 
 server.registerResource(
   "cheatsheet",
