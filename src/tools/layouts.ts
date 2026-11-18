@@ -476,6 +476,9 @@ export async function storeLayout(ctx: ToolContext, a: StoreLayoutArgs): Promise
       }
       count = total;
       placed.push({ p, index: total });
+      // The Assign is its own (succeeded) step, so a property write that fails after it leaves a partial outcome,
+      // never a failed one that hides the element it added (#159 review).
+      steps.push({ ...assign, name: `${name}_assign`, detail: { object: p.ref, element: total } });
       // Properties: one set each on the element's address; the set op reads each back.
       const sets: Record<string, unknown> = {};
       const setErrors: string[] = [];
@@ -492,15 +495,15 @@ export async function storeLayout(ctx: ToolContext, a: StoreLayoutArgs): Promise
         }
         if (stopped) break;
       }
-      steps.push({
-        name,
-        status: setErrors.length ? (stopped ? "unknown" : "failed") : "succeeded",
-        op: "cmd",
-        command: assign.command,
-        feedback: assign.feedback,
-        detail: { object: p.ref, element: total, ...(Object.keys(sets).length ? { set: sets } : {}) },
-        ...(setErrors.length ? { error: setErrors.join("; ") } : {}),
-      });
+      if (Object.keys(sets).length || setErrors.length) {
+        steps.push({
+          name: `${name}_set`,
+          status: setErrors.length ? (stopped ? "unknown" : "failed") : "succeeded",
+          op: "set",
+          detail: { object: p.ref, element: total, ...(Object.keys(sets).length ? { set: sets } : {}) },
+          ...(setErrors.length ? { error: setErrors.join("; ") } : {}),
+        });
+      }
     }
 
     // The layout's name.

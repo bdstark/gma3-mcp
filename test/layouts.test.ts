@@ -33,6 +33,8 @@ class Console {
   ignoreDelete = false;
   /** Text-field read errors on every element. */
   fieldError?: string;
+  /** Properties whose set the console refuses (the set op throws). */
+  refuseProps = new Set<string>();
 
   constructor() {
     this.objects.set("Group 1", { class: "Group", name: "Front" });
@@ -120,6 +122,7 @@ class Console {
     const em = ref.match(/^el:(\d+):(\d+)$/);
     if (!em) throw new Error(`path not found: ${ref}`);
     const e = this.layouts.get(Number(em[1]))!.elements[Number(em[2]) - 1];
+    if (this.refuseProps.has(property)) throw new Error(`Set failed: illegal value for ${property}`);
     if (!this.ignoreProps.has(property)) e.props[property] = /^(PosX|PosY|Width|Height)$/.test(property) ? Number(value) : value;
     return { ref, property, value: e.props[property] ?? null, readOk: true };
   }
@@ -288,6 +291,19 @@ test("a property the console ignores, or cannot be read, is a mismatch", async (
   r = await h.callJson("gma3_store_layout", { layout: 8, elements: [{ object: "Group 1", text: "Front" }] });
   assert.equal(r.result.verification.status, "mismatched", r.text);
   assert.match(r.text, /CustomTextText could not be read \(read failed\)/);
+});
+
+test("a property write the console refuses after a confirmed Assign leaves a partial outcome, with the Assign kept as its own succeeded step", async () => {
+  c.refuseProps.add("Action");
+  const r = await h.callJson("gma3_store_layout", { layout: 11, elements: [{ object: "Sequence 1", action: "Wobble", x: 5 }] });
+  assert.equal(r.result.outcome, "partial", r.text);
+  assert.equal(r.result.verification.status, "mismatched", r.text);
+  const steps = r.result.steps as Array<{ name: string; status: string; error?: string }>;
+  assert.equal(steps.find((s) => s.name === "element_1_assign")?.status, "succeeded");
+  const set = steps.find((s) => s.name === "element_1_set");
+  assert.equal(set?.status, "failed");
+  assert.match(set?.error ?? "", /Action: .*illegal value/);
+  assert.equal(c.layouts.get(11)!.elements[0].props.PosX, 5, "the other property was still written");
 });
 
 test("an unanswered Assign stops the call as unknown and is not retried", async () => {
