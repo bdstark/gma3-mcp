@@ -49,6 +49,7 @@ import { registerPoolUsageTools, shapeListing } from "./tools/poolusage.js";
 import { registerAnalysisTools } from "./tools/analysis.js";
 import { registerPoolObjectTools } from "./tools/poolobjects.js";
 import { registerBitmapTools } from "./tools/bitmaps.js";
+import { registerLayoutTools } from "./tools/layouts.js";
 import { registerWorldFilterTools } from "./tools/worldsfilters.js";
 import { UndoGroups, inToolScope } from "./undo.js";
 import { withProgress } from "./progress.js";
@@ -737,6 +738,7 @@ registerPoolUsageTools(server, toolContext);
 registerAnalysisTools(server, toolContext);
 registerPoolObjectTools(server, toolContext);
 registerBitmapTools(server, toolContext);
+registerLayoutTools(server, toolContext);
 registerWorldFilterTools(server, toolContext);
 
 server.registerResource(

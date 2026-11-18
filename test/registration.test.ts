@@ -92,6 +92,9 @@ const WORKFLOW_TOOLS = [
   "gma3_bitmaps",
   "gma3_image_add",
   "gma3_build_bitmap",
+  // #146 layouts
+  "gma3_layouts",
+  "gma3_store_layout",
   // SU-07 fixture-type structure
   "gma3_patch_type_structure",
   // SU-08 cell layouts
