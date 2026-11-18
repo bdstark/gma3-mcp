@@ -164,7 +164,7 @@ local function crc32(s)
 end
 
 local r = request("ping", {})
-check("ping reports bridge 0.57.0", r.ok and r.result.bridgeVersion == "0.61.0", J(r))
+check("ping reports bridge 0.57.0", r.ok and r.result.bridgeVersion == "0.58.0", J(r))
 
 -- Image uploads go to gma3_library/media/images, next to the user fixture library.
 local PNG = "\137PNG\r\n\26\n" .. string.rep("x", 150)

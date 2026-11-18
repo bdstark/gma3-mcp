@@ -435,7 +435,7 @@ test("gma3_patch_import_mvr: a missing stage, an ambiguous type and an old bridg
     try {
       const res = await mvrImport(h.ctx, { content_base64: b64(RIG()), preview: true }, recorder(w).deps);
       assert.equal(res.outcome, "failed");
-      assert.match(String(res.steps.at(-1)?.error), /bridge 0\.61\.0/);
+      assert.match(String(res.steps.at(-1)?.error), /bridge 0\.58\.0/);
     } finally {
       await h.close();
     }

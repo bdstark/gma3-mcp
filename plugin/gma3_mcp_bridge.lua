@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.61.0"
+local VERSION      = "0.58.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4212,7 +4212,7 @@ ops["patch.check"] = function(args)
     end
     res.fixtures = emptyArray(rows)
   elseif type(args.ranges) == "table" then
-    -- #149 (bridge 0.61.0): fixtures that are not in the show yet (an MVR import), each { fid, address?, footprint? }:
+    -- #149 (bridge 0.58.0): fixtures that are not in the show yet (an MVR import), each { fid, address?, footprint? }:
     -- per FID whether it is free, and every DMX range against the live patch and the other requested ranges.
     local proposed, rows = {}, {}
     for _, e in ipairs(args.ranges) do

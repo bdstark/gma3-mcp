@@ -11,7 +11,7 @@
  *   read    check_mvr                 per fixture: a fixture number, one DMX break, its GDTF and mode, a usable matrix
  *   read    check_console             stages (patch.state), fixture types (patch.types): the show's type for each GDTF
  *                                     (by manufacturer and name, or the types override), else it is imported
- *   read    check_patch               patch.check { ranges } (bridge 0.61.0): every FID free, every DMX range free of the
+ *   read    check_patch               patch.check { ranges } (bridge 0.58.0): every FID free, every DMX range free of the
  *                                     live patch and of the other fixtures (a range whose footprint is only known after
  *                                     the import is checked again then)
  *   read    check_library             patch.libraryStat for each GDTF to import
@@ -71,7 +71,7 @@ export interface MvrImportArgs {
   detail?: boolean;
 }
 
-const NEEDS_BRIDGE = "the console runs an older bridge plugin without patch.check ranges (bridge 0.61.0); update the plugin";
+const NEEDS_BRIDGE = "the console runs an older bridge plugin without patch.check ranges (bridge 0.58.0); update the plugin";
 /** Per sub-call: gma3_patch_add takes 256 fixtures, gma3_patch_set 256 edits, gma3_place_fixtures 256 fixtures. */
 const CHUNK = 256;
 const MAX_LISTED = 25;
@@ -573,7 +573,7 @@ export const registerMvrTools: RegisterTools = (server, ctx) => {
       description:
         "Patch and place the fixtures of an MVR file (My Virtual Rig: a venue plan from Vectorworks, Capture, a visualiser ...). The file is read here, not by the console's Partial Show Read. " +
         "Per fixture: its number (FixtureIDNumeric or FixtureID), name, GDTF type and mode (from the GDTFs inside the MVR), its DMX address (one break; an integer address is absolute, 513 = 2.001) and its position and rotation (Matrix, millimetres, with every parent group and layer). " +
-        "Everything is checked before anything changes: every fixture usable (or skip_unusable: true leaves those out and says why), stages exist, each GDTF matched to one fixture type in the show by manufacturer and name (types overrides it), every FID free, every DMX range free of the patch and of the other fixtures (bridge 0.61.0). " +
+        "Everything is checked before anything changes: every fixture usable (or skip_unusable: true leaves those out and says why), stages exist, each GDTF matched to one fixture type in the show by manufacturer and name (types overrides it), every FID free, every DMX range free of the patch and of the other fixtures (bridge 0.58.0). " +
         "Then, stopping at the first problem: gma3_patch_library_add + gma3_patch_import for each GDTF the show lacks, gma3_patch_add in blocks, gma3_patch_set for the names (characters the console strips are removed), gma3_place_fixtures for positions and rotations. Each reads back; the result lists every call. " +
         "preview: true reports the plan and sends nothing. Layers are not stages: stage (or layer_stages) chooses them. Trusses and other scene objects are not imported. A committed patch has no undo.",
       inputSchema: {
