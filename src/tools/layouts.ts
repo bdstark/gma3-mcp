@@ -337,6 +337,14 @@ export async function storeLayout(ctx: ToolContext, a: StoreLayoutArgs): Promise
     } catch (err) {
       errors.push((err as Error).message);
     }
+    // The positions the grid generates obey the same bounds as explicit elements (#159 review). The full range is
+    // checked: skip_missing only closes the grid up, so its positions are a subset of these.
+    if (!errors.length && gridRefs.length) {
+      const before = errors.length;
+      gridElements(g, gridRefs).forEach((e, i) => {
+        if (errors.length - before < 3) checkElement(e, `grid element ${i + 1} (${e.object})`, errors);
+      });
+    }
   }
   if ((a.elements?.length ?? 0) + gridRefs.length > MAX_ELEMENTS) errors.push(`at most ${MAX_ELEMENTS} elements per call`);
   const target: Record<string, unknown> = { layout: a.layout, ...(a.name !== undefined ? { name: a.name } : {}) };

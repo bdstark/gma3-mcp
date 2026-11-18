@@ -329,6 +329,12 @@ test("validation: no elements, too many, bad values", async () => {
   for (const re of [/width must be/, /text_color must be/, /align_v must be/, /text_size must be/, /action must be/]) assert.match(r.text, re);
   r = await h.callJson("gma3_store_layout", { layout: 3, grid: { objects: "Sequence 1 Thru 500", columns: 10 } });
   assert.match(r.text, /at most 200 objects/);
+  // #159 review: positions a grid generates obey the explicit elements' bounds, refused before any Delete.
+  r = await h.callJson("gma3_store_layout", { layout: 2, overwrite: true, grid: { objects: "Group 1 + 2", columns: 2, x: 32000 } });
+  assert.match(r.text, /grid element 2 \(Group 2\)\.x must be a whole number from -32000 to 32000/);
+  r = await h.callJson("gma3_store_layout", { layout: 2, overwrite: true, preview: true, grid: { objects: "Sequence 1 Thru 200", columns: 1, height: 1000, gap: 1000 } });
+  assert.match(r.text, /grid element \d+ \(Sequence \d+\)\.y must be/);
+  assert.ok(c.layouts.has(2), "the existing layout is untouched");
   r = await h.callJson("gma3_store_layout", { layout: 3, preview: true, grid: { objects: "Group 9007199254740992 Thru 9007199254740992", columns: 1 } });
   assert.match(r.text, /not a number from 1 to 9999/);
   assert.deepEqual(h.fake.commands, []);
