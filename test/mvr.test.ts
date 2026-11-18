@@ -589,6 +589,44 @@ test("gma3_patch_import_mvr: a stage named loosely is sent as the show spells it
   }
 });
 
+test("gma3_patch_import_mvr: two GDTFs of one fixture type share one import when identical, and are refused when they differ (review of #162)", async () => {
+  {
+    const { h, w } = await harness();
+    try {
+      const { deps, calls } = recorder(w);
+      const file = mvr(
+        { Front: { fixtures: [{ name: "Spot 1", fid: 101, addresses: [[0, "1.101"]] }, { name: "Spot 2", fid: 102, spec: "ACME@Spot_300@copy.gdtf", addresses: [[0, "1.109"]] }] } },
+        { "ACME@Spot_300.gdtf": SPOT, "ACME@Spot_300@copy.gdtf": SPOT },
+      );
+      const preview = await mvrImport(h.ctx, { content_base64: b64(file), preview: true }, deps);
+      assert.deepEqual((preview.plan as { types: unknown[] }).types, [{ gdtf: "ACME@Spot_300.gdtf", import: "ACME@Spot_300.gdtf", inLibrary: false }, { gdtf: "ACME@Spot_300@copy.gdtf", sameAs: "ACME@Spot_300.gdtf" }]);
+      const res = await mvrImport(h.ctx, { content_base64: b64(file), exclusive: true, names: false, place: false }, deps);
+      assert.equal(res.outcome, "succeeded", res.summary);
+      assert.deepEqual(calls.map((c) => c.tool), ["libraryAdd", "importType", "add"]);
+      assert.deepEqual([calls[2].args.type, calls[2].args.fid, calls[2].args.count], [4, 101, 2]);
+    } finally {
+      await h.close();
+    }
+  }
+  {
+    const { h, w } = await harness();
+    try {
+      const { deps, calls } = recorder(w);
+      const SPOT_V2 = gdtf("ACME", "Spot 300", [{ name: "Standard", offsets: ["1", "2", "3", "4", "5", "6", "7", "8"] }]);
+      const file = mvr(
+        { Front: { fixtures: [{ name: "Spot 1", fid: 101, addresses: [[0, "1.101"]] }, { name: "Spot 2", fid: 102, spec: "ACME@Spot_300@v2.gdtf", addresses: [[0, "1.109"]] }] } },
+        { "ACME@Spot_300.gdtf": SPOT, "ACME@Spot_300@v2.gdtf": SPOT_V2 },
+      );
+      const res = await mvrImport(h.ctx, { content_base64: b64(file), exclusive: true }, deps);
+      assert.equal(res.outcome, "failed");
+      assert.equal(calls.length, 0);
+      assert.match(String(res.steps.find((x) => x.name === "check_mvr")?.error), /2 different GDTFs of ACME \/ Spot 300 \(ACME@Spot_300\.gdtf, ACME@Spot_300@v2\.gdtf\)/);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
 test("gma3_patch_import_mvr validation: path or content, exclusive unless preview, known layers", async () => {
   const { h, w } = await harness();
   try {

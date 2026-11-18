@@ -132,6 +132,8 @@ interface TypePlan {
   file?: string;
   /** The user library already holds exactly these bytes: only the import is needed. */
   inLibrary?: boolean;
+  /** Another GDTF of the file with the same bytes: that one's import is used (no file of its own). */
+  sameAs?: string;
 }
 
 const addressAbs = (a: string) => {
@@ -311,6 +313,26 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
     else if (hit.length === 1) typePlans.set(spec, { spec, gdtf: g, existing: hit[0] });
     else typePlans.set(spec, { spec, gdtf: g, file: gdtfLibraryName(g) });
   }
+  // Two GDTFs of the file for one fixture type (manufacturer and name): after the first import the second would be
+  // refused as a duplicate (review of #162). The same bytes share one import; different revisions are refused here.
+  const identity = (h: MvrGdtf["header"]) => [h?.manufacturer, h?.name].map((x) => (x ?? "").toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ").trim()).join("\u0000");
+  const byIdentity = new Map<string, TypePlan[]>();
+  for (const p of typePlans.values()) if (p.file !== undefined) byIdentity.set(identity(p.gdtf.header), [...(byIdentity.get(identity(p.gdtf.header)) ?? []), p]);
+  for (const group of byIdentity.values()) {
+    if (group.length < 2) continue;
+    const sums = new Set(group.map((p) => `${p.gdtf.bytes?.length}:${crc32(p.gdtf.bytes as Buffer)}`));
+    if (sums.size === 1) {
+      for (const p of group.slice(1)) {
+        p.sameAs = group[0].spec;
+        delete p.file;
+      }
+    } else {
+      const h = group[0].gdtf.header;
+      for (const p of group) typeProblem.set(p.spec, `the MVR holds ${group.length} different GDTFs of ${h?.manufacturer ?? "?"} / ${h?.name ?? "?"} (${group.map((x) => x.spec).join(", ")}) and only one can be imported: import the one wanted (gma3_patch_library_add, gma3_patch_import) and name it with types for each`);
+    }
+  }
+  /** The GDTF specs an import serves: its own and those that share its bytes. */
+  const serves = (p: TypePlan, spec: string) => spec === p.spec || typePlans.get(spec)?.sameAs === p.spec;
 
   const planned: PlannedFixture[] = [];
   for (const f of chosen) {
@@ -366,7 +388,7 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
   steps.push(rangeStep);
 
   // 5. The user library, for the GDTFs to import.
-  const toImport = [...typePlans.values()].filter((p) => p.file !== undefined && chosen.some((f) => f.gdtfSpec === p.spec && !problems.has(f)));
+  const toImport = [...typePlans.values()].filter((p) => p.file !== undefined && chosen.some((f) => serves(p, f.gdtfSpec) && !problems.has(f)));
   for (const p of toImport) {
     try {
       const st = (await ctx.bridge.request("patch.libraryStat", { file: p.file }, t)) as { exists: boolean; size?: number; crc32?: string; listedIn?: string[] };
@@ -377,7 +399,7 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
         : st.exists && !(st.size === p.gdtf.bytes?.length && st.crc32 === sum)
           ? `the user library already has a different ${p.file}; import that one and name the type with types["${p.spec}"], or remove it`
           : undefined;
-      if (why) for (const f of chosen) if (f.gdtfSpec === p.spec) flag(f, why);
+      if (why) for (const f of chosen) if (serves(p, f.gdtfSpec)) flag(f, why);
       p.inLibrary = st.exists && !why;
     } catch (err) {
       return stop(asRead(stepFromError("check_library", err, { op: "patch.libraryStat" })));
@@ -400,10 +422,10 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
   if (renamed.length && raw.names !== false) warnings.push(`names changed for the console (it keeps none of ${NAME_FORBIDDEN_CHARS}): ${list(renamed)}`);
 
   const usedSpecs = new Set(go.map((p) => p.spec));
-  const imports = toImport.filter((p) => usedSpecs.has(p.spec));
+  const imports = toImport.filter((p) => [...usedSpecs].some((spec) => serves(p, spec)));
   const plan = {
     fixtures: go.map((p) => ({ fid: p.fid, name: p.name, layer: p.fixture.layer, ...(p.stage ? { stage: p.stage } : {}), gdtf: p.spec, mode: p.mode, address: p.address ?? null, position: p.fixture.position, rotation: p.fixture.rotation, ...(typePlans.get(p.spec)?.existing ? { type: typePlans.get(p.spec)?.existing?.no } : {}) })),
-    types: [...typePlans.values()].filter((p) => usedSpecs.has(p.spec)).map((p) => (p.existing ? { gdtf: p.spec, use: { no: p.existing.no, name: p.existing.name } } : { gdtf: p.spec, import: p.file, inLibrary: p.inLibrary === true })),
+    types: [...typePlans.values()].filter((p) => usedSpecs.has(p.spec)).map((p) => (p.existing ? { gdtf: p.spec, use: { no: p.existing.no, name: p.existing.name } } : p.sameAs ? { gdtf: p.spec, sameAs: p.sameAs } : { gdtf: p.spec, import: p.file, inLibrary: p.inLibrary === true })),
     byLayer: Object.fromEntries(scene.layers.map((l) => [l, go.filter((p) => p.fixture.layer === l).length]).filter(([, n]) => (n as number) > 0)),
   };
   if (preview) {
@@ -448,14 +470,14 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
         failed = true;
         steps[steps.length - 1] = { ...steps[steps.length - 1], status: "unknown", error: `${p.file} was imported but the result names no type number` };
       }
-      if (typeof no === "number") for (const f of go) if (f.spec === p.spec) f.typeNo = no;
+      if (typeof no === "number") for (const f of go) if (serves(p, f.spec)) f.typeNo = no;
     }
 
     // Imported types: their modes and footprints from the console; then every planned range checked again.
     if (imports.length && !failed) {
       try {
         const now = ((await ctx.bridge.request("patch.types", {}, t)) as { types: TypeRow[] }).types;
-        const fresh = go.filter((p) => imports.some((i) => i.spec === p.spec));
+        const fresh = go.filter((p) => imports.some((i) => serves(i, p.spec)));
         for (const p of fresh) {
           const ty = now.find((x) => x.no === p.typeNo);
           const m = ty?.modes.find((x) => x.name === p.mode) ?? ty?.modes.find((x) => sameName(x.name, p.mode));
