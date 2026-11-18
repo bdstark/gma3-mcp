@@ -38,6 +38,7 @@ class Console {
   dialogOpen = false;
   attributesUnreadable = false;
   selectionUnreadable = false;
+  viewsUnlistable = false;
   /** Attributes whose Feature read fails (fieldErrors.Feature). */
   featureUnreadable = new Set<string>();
   /** Feature groups whose features cannot be listed. */
@@ -108,6 +109,7 @@ class Console {
       const items = [...this.objects.keys()].filter((k) => k.startsWith(`${pool} `)).map((k) => ({ name: this.objects.get(k)!.name, addr: this.addr(k), fields: { No: k.split(" ")[1], Name: this.objects.get(k)!.name } }));
       return { total: items.length, items };
     }
+    if (ref === "addr:View 2" && this.viewsUnlistable) return { total: 0, items: [], enumerationError: "Children() raised" };
     if (ref === "addr:View 2") return { total: 2, items: [{ name: "WindowPresetPool", fields: { Name: "WindowPresetPool", X: "0", Y: "0", W: "36", H: "6" } }, { name: "WindowGroupPool", fields: { Name: "WindowGroupPool", X: "0", Y: "14", W: "36", H: "6" } }] };
     throw new Error(`path not found: ${ref}`);
   }
@@ -461,4 +463,12 @@ test("#161 review: a world whose selection cannot be read is not reported as all
   assert.equal(r.result.appearances.length, 1, r.text);
   assert.equal(r.result.appearances[0].no, 5);
   assert.equal(r.result.appearances[0].background, "#ff0000");
+});
+
+test("#161 review: a view whose windows cannot be listed reads windows: null with a warning, not an empty view", async () => {
+  c.viewsUnlistable = true;
+  const r = await h.callJson("gma3_pool_details", { kind: "views" });
+  assert.equal(r.result.outcome, "succeeded", r.text);
+  assert.equal(r.result.views[0].windows, null, r.text);
+  assert.match(JSON.stringify(r.result.warnings), /the windows of view 2 could not be read .*Children\(\) raised/);
 });

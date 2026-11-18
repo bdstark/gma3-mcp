@@ -365,8 +365,11 @@ export async function poolDetails(ctx: ToolContext, raw: { kind?: unknown; range
       if (raw.windows !== false && it.addr && windowsRead < MAX_VIEWS_WITH_WINDOWS) {
         windowsRead++;
         try {
-          const w = (await bridge.request("children", { ref: it.addr, fields: ["Name", "X", "Y", "W", "H"], limit: 100 }, t)) as ChildrenResult | null;
-          row.windows = (w?.items ?? []).map((x) => ({ window: x.fields?.Name ?? x.name, x: Number(x.fields?.X), y: Number(x.fields?.Y), w: Number(x.fields?.W), h: Number(x.fields?.H) }));
+          // A listing cut short or raised (enumerationError) is unreadable, never an empty view (#161 review).
+          const items = await fullListing(bridge, it.addr, ["Name", "X", "Y", "W", "H"], t);
+          const num = (x: (typeof items)[number], k: string) => (x.fieldErrors?.[k] !== undefined || x.fields?.[k] === undefined || x.fields?.[k] === "" || Number.isNaN(Number(x.fields?.[k])) ? null : Number(x.fields?.[k]));
+          row.windows = items.map((x) => ({ window: x.fields?.Name ?? x.name, x: num(x, "X"), y: num(x, "Y"), w: num(x, "W"), h: num(x, "H") }));
+          if (items.some((x) => ["X", "Y", "W", "H"].some((k) => num(x, k) === null))) warnings.push(`view ${String(row.no)}: the position of some windows could not be read (null)`);
         } catch (err) {
           row.windows = null;
           warnings.push(`the windows of view ${String(row.no)} could not be read (${err instanceof Error ? err.message : String(err)})`);
