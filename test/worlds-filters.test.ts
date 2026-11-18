@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
 import { SILENT } from "./helpers/fake-bridge.ts";
-import { decodeAttributes, encodeAttributes, objectRef, parseColor, parseTargetObject, registerWorldFilterTools, resolveAttributes, type AttributeCatalog } from "../src/tools/worldsfilters.ts";
+import { decodeAttributes, encodeAttributes, objectRef, parseColor, parseTargetObject, setTaken, registerWorldFilterTools, resolveAttributes, type AttributeCatalog } from "../src/tools/worldsfilters.ts";
 
 /** Attribute definitions as in a small show: index (1-based), name, feature. */
 const ATTRS: Array<[number, string, string]> = [
@@ -33,6 +33,8 @@ class Console {
   atFilterDynamic = false;
   /** Properties the console does not take (set answers but keeps the old value). */
   ignoreSet = new Set<string>();
+  /** Properties whose read-back after a set fails (readOk false, no value). */
+  unreadableSet = new Set<string>();
   /** A command that opens a dialog. */
   dialogAfter?: RegExp;
   dialogOpen = false;
@@ -121,6 +123,7 @@ class Console {
       // A filter passing every attribute reads "All".
       o.fields[property] = property === "Attributes" && /^1+$/.test(value) ? "All" : value;
     }
+    if (this.unreadableSet.has(property)) return { ref, property, readOk: false, readError: "read failed" };
     return { ref, property, value: o.fields[property], readOk: true };
   }
 
@@ -256,16 +259,19 @@ test("gma3_store_filter: a taken number is refused unless on_taken update; a loc
   assert.equal(h.fake.requests.filter((q) => q.op === "set").length, 0);
 });
 
-test("gma3_store_filter update in place: only what was asked is written; a value the console ignores is a mismatch", async () => {
+test("gma3_store_filter update in place: only what was asked is written; a value the console ignores fails its set step and stops", async () => {
   let r = await h.callJson("gma3_store_filter", { filter: 3, feature_groups: ["Position"], on_taken: "update" });
   assert.equal(r.result.verification.status, "matched", r.text);
   assert.deepEqual(h.fake.commands, []);
   assert.deepEqual(h.fake.requests.filter((q) => q.op === "set").map((q) => q.args.property), ["Attributes"]);
   assert.equal(c.objects.get("Filter 3")!.fields.Attributes, "0110000");
   c.ignoreSet.add("Attributes");
-  r = await h.callJson("gma3_store_filter", { filter: 3, attributes: ["Gobo1"], on_taken: "update" });
-  assert.equal(r.result.verification.status, "mismatched", r.text);
-  assert.match(r.text, /does not pass Gobo1.*also passes Pan, Tilt/);
+  h.fake.requests.length = 0;
+  r = await h.callJson("gma3_store_filter", { filter: 3, attributes: ["Gobo1"], on_taken: "update", layers: { phaser: false } });
+  assert.notEqual(r.result.outcome, "succeeded", r.text);
+  assert.match(r.text, /the console did not take Attributes = \\"0000001\\" on Filter 3: it reads \\"0110000\\"; nothing more was sent/);
+  // The layer write after it is not sent.
+  assert.deepEqual(h.fake.requests.filter((q) => q.op === "set").map((q) => q.args.property), ["Attributes"]);
 });
 
 test("gma3_store_filter: dynamic rules carried from the At Filter are reported; an unreadable read-back is unavailable, not matched", async () => {
@@ -392,7 +398,7 @@ test("feature groups fail closed (#161 review): an unreadable attribute Feature 
 test("assignments depend on the appearance they assign (#161 review): a failed create skips them; a failed assignment does not skip other assignments of it", async () => {
   c.ignoreSet.add("BackR");
   let r = await h.callJson("gma3_set_appearance", { assignments: [{ appearance: 26, create: { color: "#FF0000" } }, { object: "Group 3", appearance: "26" }] });
-  assert.equal(r.result.items[0].verification, "mismatched", r.text);
+  assert.notEqual(r.result.items[0].outcome, "succeeded", r.text);
   assert.equal(r.result.items[1].outcome, "not_attempted", r.text);
   assert.match(r.result.items[1].summary, /item 1 on appearance 26 did not succeed/);
   assert.equal(h.fake.commands.some((x) => x.startsWith("Assign Appearance")), false);
@@ -471,4 +477,42 @@ test("#161 review: a view whose windows cannot be listed reads windows: null wit
   assert.equal(r.result.outcome, "succeeded", r.text);
   assert.equal(r.result.views[0].windows, null, r.text);
   assert.match(JSON.stringify(r.result.warnings), /the windows of view 2 could not be read .*Children\(\) raised/);
+});
+
+test("#161 late review: a colour the console ignores or cannot read back stops before the Assign; the object keeps its appearance", async () => {
+  c.ignoreSet.add("BackR");
+  let r = await h.callJson("gma3_set_appearance", { object: "Group 3", appearance: 40, create: { color: "#FF8000" } });
+  assert.notEqual(r.result.outcome, "succeeded", r.text);
+  assert.match(r.text, /the console did not take BackR = \\"255\\" on Appearance 40: it reads \\"0\\"; nothing more was sent/);
+  assert.deepEqual(h.fake.commands, ["Store Appearance 40 /NoConfirmation"]);
+  assert.equal(c.objects.get("Group 3")!.fields.Appearance, null);
+  install();
+  c.unreadableSet.add("ImageMode");
+  r = await h.callJson("gma3_set_appearance", { object: "Group 3", appearance: 1, create: { image_mode: "Tile" }, on_taken: "update" });
+  assert.notEqual(r.result.outcome, "succeeded", r.text);
+  assert.match(r.text, /ImageMode of Appearance 1 could not be read back \(read failed\) after the write, so whether the console took \\"Tile\\" is unknown; nothing more was sent/);
+  assert.equal(r.result.steps.find((x: any) => x.name === "set_imagemode").status, "unknown");
+  assert.deepEqual(h.fake.commands, []);
+  assert.equal(c.objects.get("Group 3")!.fields.Appearance, null);
+});
+
+test("setTaken: All for all-ones Attributes, numbers by value, text case aside", () => {
+  assert.equal(setTaken("Attributes", "1111111", "All"), true);
+  assert.equal(setTaken("Attributes", "1011111", "All"), false);
+  assert.equal(setTaken("BackR", "255", "255"), true);
+  assert.equal(setTaken("BackR", "255", 255), true);
+  assert.equal(setTaken("BackR", "255", "0"), false);
+  assert.equal(setTaken("BackR", "0", ""), false);
+  assert.equal(setTaken("Phaser", "No", "no"), true);
+  assert.equal(setTaken("ImageMode", "Crop", "Bar"), false);
+  assert.equal(setTaken("BackR", "1", undefined), false);
+});
+
+test("#161 late review: gma3_store_filter stops at a layer write it cannot read back (unknown, nothing after it is sent)", async () => {
+  c.unreadableSet.add("Relative");
+  const r = await h.callJson("gma3_store_filter", { filter: 41, attributes: ["Dimmer"] });
+  assert.notEqual(r.result.outcome, "succeeded", r.text);
+  const sets = h.fake.requests.filter((q) => q.op === "set").map((q) => q.args.property);
+  assert.deepEqual(sets, ["Attributes", "Absolute", "Relative"], "Timing and Phaser are not written after the unreadable Relative");
+  assert.equal(r.result.steps.find((x: any) => x.name === "set_relative").status, "unknown");
 });

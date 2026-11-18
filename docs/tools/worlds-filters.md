@@ -33,6 +33,10 @@ A new filter, including one `on_taken: "update"` lands on because the number is 
 
 **Not run on a console:** whether `set` takes the whole `Attributes` string. The manual's Index keyword page writes one character at a time (`Set Filter 6 Property "Attributes" Index 0 "0"`). If the console does not take the whole string, the read-back shows it and the item fails. Using a filter in a store (`Store ... /Filter`, a sequence's or preset's input/output filter) is left to a follow-up.
 
+## Property writes
+
+Each `set` is judged by the value the console reads right after the write. A value it did not take fails that step, and nothing after it is sent, so an Assign never runs after an ignored colour. A read-back that failed makes the step `unknown`, which also stops a batch. `Attributes` reading `All` counts as all `1`s.
+
 ## gma3_set_appearance
 
 - `appearance` is a number, or the name of an existing appearance.
