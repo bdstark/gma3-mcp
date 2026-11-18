@@ -10,14 +10,14 @@
 /** Setup and show tasks, each with the tools that do it (the first one is usually the one to start with). */
 export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] }> = [
   { task: "import fixture types", tools: ["gma3_patch_library", "gma3_patch_import", "gma3_patch_library_add", "gma3_patch_types", "gma3_patch_remove_type"] },
-  { task: "patch fixtures and stages", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list", "gma3_patch_move", "gma3_patch_retype", "gma3_patch_stages"] },
+  { task: "patch fixtures, stages, MVR", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list", "gma3_patch_move", "gma3_patch_retype", "gma3_patch_stages", "gma3_patch_import_mvr"] },
   { task: "fixture type modes, cells, channels", tools: ["gma3_patch_type_structure"] },
   { task: "place fixtures in 3D", tools: ["gma3_place_fixtures", "gma3_fixture_positions"] },
   { task: "cell layouts, bitmaps, layout views", tools: ["gma3_layout_cells", "gma3_assign_cell_layout", "gma3_build_bitmap", "gma3_image_add", "gma3_store_layout"] },
   { task: "select fixtures, set a look", tools: ["gma3_select", "gma3_set_attributes", "gma3_set_color", "gma3_set_position", "gma3_set_attribute", "gma3_clear_programmer"] },
   { task: "presets", tools: ["gma3_apply_preset", "gma3_store_preset", "gma3_preset", "gma3_release_attributes"] },
-  { task: "groups and MAtricks", tools: ["gma3_store_group", "gma3_selection_grid", "gma3_configure_matricks", "gma3_matricks"] },
-  { task: "phasers (movement, colour effects)", tools: ["gma3_build_phaser", "gma3_phaser_release"] },
+  { task: "groups, MAtricks", tools: ["gma3_store_group", "gma3_selection_grid", "gma3_configure_matricks", "gma3_matricks"] },
+  { task: "phasers (movement, colour)", tools: ["gma3_build_phaser", "gma3_phaser_release"] },
   { task: "cues and cue lists", tools: ["gma3_store_cues", "gma3_edit_cues", "gma3_store_cue", "gma3_set_cue_timing", "gma3_set_cue_trigger", "gma3_cue_contents", "gma3_delete_cue"] },
   { task: "chases", tools: ["gma3_build_chase"] },
   { task: "executors and sequence playback", tools: ["gma3_assign_to_executor", "gma3_configure_executor", "gma3_configure_sequence", "gma3_playback", "gma3_goto_cue", "gma3_set_fader"] },
@@ -33,13 +33,13 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "tempo-sync plugin, ReSync", tools: ["gma3_tempo_sync_status", "gma3_configure_tempo_sync"] },
   { task: "preset usage, cue diffs, leaks", tools: ["gma3_preset_usage", "gma3_cue_diff", "gma3_tracking_leaks"] },
   { task: "pool objects: copy, move, delete, rename; filters, worlds, appearances, views", tools: ["gma3_pool_objects", "gma3_store_filter", "gma3_set_appearance", "gma3_pool_details"] },
-  { task: "read show data and live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences", "gma3_pool_usage"] },
+  { task: "read show data, live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences", "gma3_pool_usage"] },
 ];
 
 /** Tools that watch the console over time on the server side: no Lua loop, no Lua time budget. */
 export const OBSERVING_TOOLS: ReadonlyArray<{ tool: string; what: string }> = [
   { tool: "gma3_observe_tempo", what: "how fast running sequences (chases) advance" },
-  { tool: "gma3_observe_values", what: "fixtures' programmer or DMX output values as they change" },
+  { tool: "gma3_observe_values", what: "programmer or DMX output values over time" },
   { tool: "gma3_build_chase", what: "one cycle of the chase it built" },
   { tool: "gma3_run_macro", what: "a macro's running line" },
   { tool: "gma3_timecode_transport", what: "a timecode show's cursor, the sequences it fires" },

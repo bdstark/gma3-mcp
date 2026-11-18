@@ -63,6 +63,10 @@ export interface XmlElement {
   attrs: Record<string, string>;
   /** 0 for the root element. */
   depth: number;
+  /** Index of the parent element in the returned list (undefined for the root). */
+  parent?: number;
+  /** The element's own character data (entities decoded, CDATA included), when it has any (#149: MVR keeps values as text). */
+  text?: string;
 }
 
 const XML_NAME = "[A-Za-z_:][\\w:.-]*";
@@ -93,6 +97,13 @@ export function parseXml(text: string): XmlElement[] {
   const s = text.startsWith("﻿") ? text.slice(1) : text;
   const out: XmlElement[] = [];
   const stack: string[] = [];
+  /** out-index of each open element, parallel to stack. */
+  const open: number[] = [];
+  const addText = (t: string) => {
+    if (t === "" || open.length === 0) return;
+    const el = out[open[open.length - 1]];
+    el.text = (el.text ?? "") + t;
+  };
   let roots = 0;
   let i = 0;
   const fail = (why: string): never => {
@@ -121,8 +132,9 @@ export function parseXml(text: string): XmlElement[] {
     const lt = s.indexOf("<", i);
     const chunk = lt < 0 ? s.slice(i) : s.slice(i, lt);
     if (stack.length === 0 && /[^ \t\r\n]/.test(chunk)) fail("text outside the root element");
-    decode(chunk);
+    const decoded = decode(chunk);
     if (chunk.includes("]]>")) fail("]]> outside a CDATA section");
+    addText(decoded);
     if (lt < 0) break;
     i = lt;
     if (s.startsWith("<!--", i)) {
@@ -135,6 +147,7 @@ export function parseXml(text: string): XmlElement[] {
       if (stack.length === 0) fail("CDATA outside the root element");
       const e = s.indexOf("]]>", i + 9);
       if (e < 0) fail("an unclosed CDATA section");
+      addText(s.slice(i + 9, e));
       i = e + 3;
     } else if (s.startsWith("<!", i)) {
       fail("a DOCTYPE or other declaration (refused: no entities are resolved)");
@@ -153,8 +166,9 @@ export function parseXml(text: string): XmlElement[] {
     } else if (s.startsWith("</", i)) {
       END_TAG.lastIndex = i;
       const m = END_TAG.exec(s) ?? fail("a malformed end tag");
-      const open = stack.pop();
-      if (open !== m[1]) fail(open ? `</${m[1]}> closing <${open}>` : `</${m[1]}> with no open element`);
+      const closing = stack.pop();
+      open.pop();
+      if (closing !== m[1]) fail(closing ? `</${m[1]}> closing <${closing}>` : `</${m[1]}> with no open element`);
       i = END_TAG.lastIndex;
     } else {
       START_TAG.lastIndex = i;
@@ -168,8 +182,11 @@ export function parseXml(text: string): XmlElement[] {
         if (c) {
           i = TAG_CLOSE.lastIndex;
           if (stack.length === 0 && ++roots > 1) fail("a second root element");
-          out.push({ name, attrs, depth: stack.length });
-          if (!c[1]) stack.push(name);
+          out.push({ name, attrs, depth: stack.length, ...(open.length ? { parent: open[open.length - 1] } : {}) });
+          if (!c[1]) {
+            stack.push(name);
+            open.push(out.length - 1);
+          }
           break;
         }
         ATTRIBUTE.lastIndex = i;

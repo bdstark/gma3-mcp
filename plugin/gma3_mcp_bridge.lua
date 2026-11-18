@@ -157,7 +157,7 @@ local my_handle     = select(4, ...)
 local socket = require("socket")
 local json   = require("json")
 
-local VERSION      = "0.57.0"
+local VERSION      = "0.58.0"
 local DEFAULT_PORT = 9800
 -- Execution policy defaults for the "lua" op (see header). Changed per start with the
 -- "luatime=<ms>" / "luasteps=<n>" tokens, or at runtime with "lua on|off".
@@ -4211,8 +4211,24 @@ ops["patch.check"] = function(args)
       rows[#rows + 1] = entry and { fid = fid, exists = true, current = fixtureRow(entry) } or { fid = fid, exists = false }
     end
     res.fixtures = emptyArray(rows)
+  elseif type(args.ranges) == "table" then
+    -- #149 (bridge 0.58.0): fixtures that are not in the show yet (an MVR import), each { fid, address?, footprint? }:
+    -- per FID whether it is free, and every DMX range against the live patch and the other requested ranges.
+    local proposed, rows = {}, {}
+    for _, e in ipairs(args.ranges) do
+      local fid = integerArg(e.fid, "ranges[].fid", 1, PATCH_MAX_FID)
+      rows[#rows + 1] = { fid = fid, free = CheckFIDCollision(fid, 1) == true }
+      if e.address ~= nil then
+        local start = parseDmx(e.address)
+        if not start then raise("[bad-args] ranges[].address must be U.AAA (universe 1-1024, address 1-512)") end
+        local fp = integerArg(e.footprint, "ranges[].footprint", 1, 512)
+        proposed[#proposed + 1] = { fid = fid, first = start.abs, last = start.abs + fp - 1 }
+      end
+    end
+    res.fids = emptyArray(rows)
+    res.conflicts, res.occupancyUnknown = rangeConflicts(lp, proposed, {})
   else
-    raise("[bad-args] patch.check needs add, edits or fids")
+    raise("[bad-args] patch.check needs add, edits, fids or ranges")
   end
   return res
 end

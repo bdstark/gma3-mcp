@@ -91,7 +91,7 @@ local function request(op, args)
 end
 
 local r = request("ping")
-check("ping reports bridge 0.57.0", r.ok and r.result.bridgeVersion == "0.57.0", J(r))
+check("ping reports bridge 0.57.0", r.ok and r.result.bridgeVersion == "0.58.0", J(r))
 
 r = request("recipe.editState")
 check("editState: mode off, Part Zero empty, no dialog, last command", r.ok and r.result.editing == false and r.result.editingRaw == "No" and #r.result.partZeroLines == 0 and r.result.modal == false and r.result.lastCommand == "OK: ClearAll" and r.result.environment == "Normal", J(r))

@@ -562,7 +562,7 @@ end
 -------------------------------------------------------------------------------
 
 local r = request("ping")
-check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.57.0", J(r))
+check("ping reports bridge 0.30.0", r.ok and r.result.bridgeVersion == "0.58.0", J(r))
 
 r = request("patch.state")
 check("patch.state at Root: copy closed, stages listed", r.ok and r.result.destination == "Root" and r.result.copyOpen == false and r.result.atRoot == true and r.result.stages[1] == "Stage 1" and r.result.modal == false, J(r))
@@ -597,6 +597,20 @@ r = request("patch.check", { edits = { { fid = 401, address = "1.009" }, { fid =
 check("patch.check edits: a swap of two fixtures is no conflict", r.ok and #r.result.conflicts == 0, J(r))
 r = request("patch.check", { fids = { 501, 777 } })
 check("patch.check fids: existence per FID", r.ok and r.result.fixtures[1].exists and r.result.fixtures[2].exists == false, J(r))
+r = request("patch.check", { ranges = { { fid = 901, address = "2.001", footprint = 8 }, { fid = 902, address = "2.009", footprint = 8 }, { fid = 903 } } })
+check("patch.check ranges (#149): free FIDs, adjacent free ranges and an unpatched fixture are no conflict", r.ok and #r.result.fids == 3 and r.result.fids[1].free and r.result.fids[3].free and #r.result.conflicts == 0 and #r.result.occupancyUnknown == 0, J(r))
+r = request("patch.check", { ranges = { { fid = 402, address = "1.020", footprint = 4 }, { fid = 904, address = "2.001", footprint = 8 }, { fid = 905, address = "2.005", footprint = 8 }, { fid = 906, address = "1.510", footprint = 8 } } })
+local withPatch, overlap, crossing = false, false, false
+if r.ok then
+  for _, c in ipairs(r.result.conflicts) do
+    if c.fid == 402 and c.with == 403 then withPatch = true end
+    if c.fid == 904 and c.with == 905 and c.reason == "two requested ranges overlap" then overlap = true end
+    if c.fid == 906 and (c.reason or ""):find("crosses the end of universe 1") then crossing = true end
+  end
+end
+check("patch.check ranges (#149): a taken FID, a range over a patched fixture, two overlapping ranges and a universe crossing are reported", r.ok and r.result.fids[1].free == false and withPatch and overlap and crossing, J(r))
+r = request("patch.check", { ranges = { { fid = 907, address = "9.999", footprint = 4 } } })
+check("patch.check ranges (#149): a bad address is refused", r.ok == false and r.code == "bad-args", J(r))
 
 -------------------------------------------------------------------------------
 -- Session: refusals, enter, add, set, remove, fingerprint, commit
