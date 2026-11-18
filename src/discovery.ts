@@ -9,12 +9,12 @@
 
 /** Setup and show tasks, each with the tools that do it (the first one is usually the one to start with). */
 export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] }> = [
-  { task: "find and import fixture types", tools: ["gma3_patch_library", "gma3_patch_import", "gma3_patch_library_add", "gma3_patch_types", "gma3_patch_remove_type"] },
-  { task: "patch fixtures and stages (readdress, rename, nest, retype)", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list", "gma3_patch_move", "gma3_patch_retype", "gma3_patch_stages"] },
+  { task: "import fixture types", tools: ["gma3_patch_library", "gma3_patch_import", "gma3_patch_library_add", "gma3_patch_types", "gma3_patch_remove_type"] },
+  { task: "patch fixtures and stages", tools: ["gma3_patch_add", "gma3_patch_set", "gma3_patch_remove", "gma3_patch_list", "gma3_patch_move", "gma3_patch_retype", "gma3_patch_stages"] },
   { task: "fixture type modes, cells, channels, size", tools: ["gma3_patch_type_structure"] },
   { task: "place fixtures in 3D (rotation, mirror)", tools: ["gma3_place_fixtures", "gma3_fixture_positions"] },
   { task: "cell layouts, bitmaps", tools: ["gma3_layout_cells", "gma3_assign_cell_layout", "gma3_build_bitmap", "gma3_image_add"] },
-  { task: "select fixtures, set values (a look in one call)", tools: ["gma3_select", "gma3_set_attributes", "gma3_set_color", "gma3_set_position", "gma3_set_attribute", "gma3_clear_programmer"] },
+  { task: "select fixtures, set values", tools: ["gma3_select", "gma3_set_attributes", "gma3_set_color", "gma3_set_position", "gma3_set_attribute", "gma3_clear_programmer"] },
   { task: "presets", tools: ["gma3_apply_preset", "gma3_store_preset", "gma3_preset", "gma3_release_attributes"] },
   { task: "groups and MAtricks", tools: ["gma3_store_group", "gma3_selection_grid", "gma3_configure_matricks", "gma3_matricks"] },
   { task: "phasers (movement, colour effects)", tools: ["gma3_build_phaser", "gma3_phaser_release"] },
@@ -27,12 +27,12 @@ export const TASK_TOOLS: ReadonlyArray<{ task: string; tools: readonly string[] 
   { task: "console variables ($name)", tools: ["gma3_variables", "gma3_set_variable"] },
   { task: "tags, kill types, tagged objects", tools: ["gma3_tags", "gma3_assign_tag", "gma3_store_tag", "gma3_delete_tag", "gma3_configure_tag", "gma3_playback"] },
   { task: "timecode shows", tools: ["gma3_build_timecode", "gma3_timecode_transport", "gma3_timecodes"] },
-  { task: "DMX output (universes, grants, Art-Net, sACN)", tools: ["gma3_dmx_output", "gma3_configure_dmx_output", "gma3_dmx", "gma3_fixture_output", "gma3_network_output"] },
+  { task: "DMX output, Art-Net, sACN", tools: ["gma3_dmx_output", "gma3_configure_dmx_output", "gma3_dmx", "gma3_fixture_output", "gma3_network_output"] },
   { task: "OSC input and output", tools: ["gma3_osc", "gma3_configure_osc", "gma3_test_osc_input"] },
   { task: "save, load, list show files; undo tool calls", tools: ["gma3_save_show", "gma3_load_show", "gma3_show_files", "gma3_undo"] },
   { task: "tempo-sync plugin, phaser ReSync", tools: ["gma3_tempo_sync_status", "gma3_configure_tempo_sync", "gma3_playback"] },
-  { task: "show analysis: preset usage, cue diffs, leaks", tools: ["gma3_preset_usage", "gma3_cue_diff", "gma3_tracking_leaks"] },
-  { task: "copy, move, delete, rename pool objects", tools: ["gma3_pool_objects"] },
+  { task: "preset usage, cue diffs, leaks", tools: ["gma3_preset_usage", "gma3_cue_diff", "gma3_tracking_leaks"] },
+  { task: "pool objects: copy, move, delete, rename; filters, worlds, appearances, views", tools: ["gma3_pool_objects", "gma3_store_filter", "gma3_set_appearance", "gma3_pool_details"] },
   { task: "read show data and live state", tools: ["gma3_objects", "gma3_get_object", "gma3_list_children", "gma3_programmer", "gma3_fixture_attributes", "gma3_cues", "gma3_sequences", "gma3_pool_usage"] },
 ];
 
