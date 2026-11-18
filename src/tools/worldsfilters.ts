@@ -297,7 +297,8 @@ export async function poolDetails(ctx: ToolContext, raw: { kind?: unknown; range
   });
   let range: string | undefined;
   if (kind) {
-    range = typeof raw.range === "string" && raw.range.trim() ? raw.range.trim().replace(/\s+/g, " ") : `${KEYWORD[kind]} Thru`;
+    // Whitespace inside a quoted name is part of the name (#161 review).
+    range = typeof raw.range === "string" && raw.range.trim() ? raw.range.trim().replace(/("[^"]*")|\s+/g, (m, q) => q ?? " ") : `${KEYWORD[kind]} Thru`;
     if (!new RegExp(`^${KEYWORD[kind]}\\b`, "i").test(range)) v.fail(`range must name ${KEYWORD[kind].toLowerCase()}s, e.g. "${KEYWORD[kind]} 1 Thru 20" (got ${JSON.stringify(range)})`);
   }
   const limit = raw.limit === undefined ? 200 : typeof raw.limit === "number" && Number.isInteger(raw.limit) && raw.limit >= 1 && raw.limit <= 1000 ? raw.limit : (v.fail("limit must be a whole number from 1 to 1000"), 200);
@@ -331,17 +332,27 @@ export async function poolDetails(ctx: ToolContext, raw: { kind?: unknown; range
   for (const it of items) {
     if (it.invalid) continue;
     const f = (it.fields ?? {}) as Record<string, unknown>;
+    const errs = ((it as { fieldErrors?: Record<string, unknown> }).fieldErrors ?? {}) as Record<string, unknown>;
     const row: Record<string, unknown> = { no: leadingNumber(f.No) ?? it.index, name: typeof f.Name === "string" ? f.Name : it.name };
+    // A field the console could not read is reported as such, never as a default (#161 review).
+    const unreadable = Object.keys(errs);
+    if (unreadable.length) {
+      row.unreadable = unreadable;
+      warnings.push(`${KEYWORD[kind]} ${String(row.no)}: ${unreadable.join(", ")} could not be read`);
+    }
     if (lockState(f.Lock)) row.locked = true;
     if (kind === "filters" || kind === "worlds") {
       const count = cat?.count ?? (typeof f.Attributes === "string" ? f.Attributes.trim().length : 0);
-      const set = decodeAttributes(f.Attributes, count);
-      row.attributes = set && cat ? describeAttributes(set, cat) : set && set.size === count ? "all" : f.Attributes ?? null;
+      const set = errs.Attributes !== undefined ? null : decodeAttributes(f.Attributes, count);
+      row.attributes = errs.Attributes !== undefined ? null : set && cat ? describeAttributes(set, cat) : set && set.size === count ? "all" : f.Attributes ?? null;
       if (kind === "filters") {
         row.layers = Object.fromEntries(LAYERS.map((l) => [l, yesNo(f[LAYER_PROPERTY[l]])]));
         const dyn = yesNo(f.HasDynamicFilterRules);
         if (dyn) row.dynamicRules = true;
-      } else if (typeof f.SelectionData === "string" && f.SelectionData.trim()) row.fixtures = "a selection (SelectionData)";
+        else if (dyn === null) row.dynamicRules = null;
+      } else if (errs.SelectionData !== undefined || (f.SelectionData !== undefined && typeof f.SelectionData !== "string")) row.fixtures = null;
+      else if (f.SelectionData === undefined) row.fixtures = null;
+      else if (f.SelectionData.trim()) row.fixtures = "a selection (SelectionData)";
       else row.fixtures = "all";
     } else if (kind === "appearances") {
       const [r, g, b] = [hex2(f.BackR), hex2(f.BackG), hex2(f.BackB)];

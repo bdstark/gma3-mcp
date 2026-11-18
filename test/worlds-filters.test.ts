@@ -37,6 +37,7 @@ class Console {
   dialogAfter?: RegExp;
   dialogOpen = false;
   attributesUnreadable = false;
+  selectionUnreadable = false;
   /** Attributes whose Feature read fails (fieldErrors.Feature). */
   featureUnreadable = new Set<string>();
   /** Feature groups whose features cannot be listed. */
@@ -67,6 +68,7 @@ class Console {
       else if (k === "Lock") f.Lock = o.lock ?? "";
       else if (k === "No") f.No = ref.split(/[ .]/).pop();
       else if (k === "Attributes" && this.attributesUnreadable) errs.Attributes = "read failed";
+      else if (k === "SelectionData" && this.selectionUnreadable) errs.SelectionData = "read failed";
       else if (k === "Appearance") {
         const a = o.fields.Appearance as string | null;
         if (a && this.objects.has(a)) f.Appearance = asText ? this.objects.get(a)!.name : { name: this.objects.get(a)!.name, addr: this.addr(a), class: "Appearance" };
@@ -441,4 +443,22 @@ test("#161 review: on_taken update on a free filter still needs attributes; quot
   assert.match(r.text, /appearance 27 is created or changed by more than one item/);
   assert.equal(objectRef("group 03"), objectRef("Group 3"));
   assert.notEqual(objectRef('Group "A  B"'), objectRef('Group "A B"'));
+});
+
+test("#161 review: a world whose selection cannot be read is not reported as all fixtures; ranges keep whitespace inside quoted names", async () => {
+  c.selectionUnreadable = true;
+  let r = await h.callJson("gma3_pool_details", { kind: "worlds" });
+  assert.equal(r.result.worlds[0].fixtures, null, r.text);
+  assert.deepEqual(r.result.worlds[0].unreadable, ["SelectionData"]);
+  assert.match(JSON.stringify(r.result.warnings), /World 1: SelectionData could not be read/);
+  c.attributesUnreadable = true;
+  r = await h.callJson("gma3_pool_details", { kind: "filters", range: "Filter 3" });
+  assert.equal(r.result.filters[0].attributes, null, r.text);
+  install();
+  c.objects.set("Appearance 5", { class: "Appearance", name: "Front  Wash", fields: { Image: "", ImageMode: "Bar", BackR: "255", BackG: "0", BackB: "0", BackAlpha: "255" } });
+  c.objects.set("Appearance 6", { class: "Appearance", name: "Front Wash", fields: { Image: "", ImageMode: "Bar", BackR: "0", BackG: "0", BackB: "255", BackAlpha: "255" } });
+  r = await h.callJson("gma3_pool_details", { kind: "appearances", range: '  Appearance   "Front  Wash" ' });
+  assert.equal(r.result.appearances.length, 1, r.text);
+  assert.equal(r.result.appearances[0].no, 5);
+  assert.equal(r.result.appearances[0].background, "#ff0000");
 });
