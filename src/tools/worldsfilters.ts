@@ -247,13 +247,14 @@ type Planned = { name: string; command?: string; set?: { ref: string; property: 
 
 /** Send the plan in order; stops at the first step that did not succeed. */
 /**
- * Whether the value a set op read back is the one written: "All" for a string of only 1s (an Attributes filter passing
- * every attribute), numbers by value, other text case aside (Yes/No, an image mode).
+ * Whether the value a set op read back is the one written: an Attributes mask by its exact text ("All" for a mask of only
+ * 1s), numbers by value, other text case aside (Yes/No, an image mode).
  */
 export function setTaken(property: string, want: string, got: unknown): boolean {
   if (typeof got !== "string" && typeof got !== "number" && typeof got !== "boolean") return false;
   const g = String(got).trim();
-  if (/^attributes$/i.test(property) && /^all$/i.test(g)) return /^1+$/.test(want);
+  // An Attributes mask is a positional bit string, never a number: exact text, or All for a mask of only 1s (#163 review).
+  if (/^attributes$/i.test(property)) return /^all$/i.test(g) ? /^1+$/.test(want) : g === want.trim();
   if (/^-?\d+(\.\d+)?$/.test(want)) return g !== "" && Number(g) === Number(want);
   return g.toLowerCase() === want.trim().toLowerCase();
 }

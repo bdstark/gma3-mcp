@@ -506,6 +506,13 @@ test("setTaken: All for all-ones Attributes, numbers by value, text case aside",
   assert.equal(setTaken("Phaser", "No", "no"), true);
   assert.equal(setTaken("ImageMode", "Crop", "Bar"), false);
   assert.equal(setTaken("BackR", "1", undefined), false);
+  // Masks are bit strings (#163 review): 356 characters would both be Infinity as numbers, 18 lose precision.
+  const want = "1" + "0".repeat(355);
+  assert.equal(setTaken("Attributes", want, "1" + "0".repeat(354) + "1"), false);
+  assert.equal(setTaken("Attributes", want, want), true);
+  assert.equal(setTaken("Attributes", "100000000000000001", "100000000000000000"), false);
+  assert.equal(setTaken("Attributes", "0110000", "110000"), false, "a leading zero is a position, not a numeric no-op");
+  assert.equal(setTaken("Attributes", "0110000", "0110000"), true);
 });
 
 test("#161 late review: gma3_store_filter stops at a layer write it cannot read back (unknown, nothing after it is sent)", async () => {
@@ -515,4 +522,15 @@ test("#161 late review: gma3_store_filter stops at a layer write it cannot read 
   const sets = h.fake.requests.filter((q) => q.op === "set").map((q) => q.args.property);
   assert.deepEqual(sets, ["Attributes", "Absolute", "Relative"], "Timing and Phaser are not written after the unreadable Relative");
   assert.equal(r.result.steps.find((x: any) => x.name === "set_relative").status, "unknown");
+});
+
+test("#163 review: an ignored Attributes write in a long mask stops before the layer writes", async () => {
+  // The console keeps a mask that differs only in the last position.
+  c.objects.get("Filter 3")!.fields.Attributes = "1000001";
+  c.ignoreSet.add("Attributes");
+  h.fake.requests.length = 0;
+  const r = await h.callJson("gma3_store_filter", { filter: 3, attributes: ["Dimmer"], on_taken: "update", layers: { phaser: false } });
+  assert.notEqual(r.result.outcome, "succeeded", r.text);
+  assert.match(r.text, /did not take Attributes = \\"1000000\\" on Filter 3: it reads \\"1000001\\"/);
+  assert.deepEqual(h.fake.requests.filter((q) => q.op === "set").map((q) => q.args.property), ["Attributes"]);
 });
