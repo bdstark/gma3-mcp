@@ -133,6 +133,15 @@ and a cook at the end. This tool checks the references once, writes per cue part
    (this tool does not write them back).
 3. `check_references`, once for the whole call: every group, preset and MAtricks a line names is in the show (each read
    once, the missing ones listed with the first line that uses them). An empty group is a warning.
+   `compare_existing` (`replace` only, #145): a cue part whose lines already read as asked (group, values, MAtricks or
+   none, Enabled, the name and selection mode as given or a new line's (no name, Strict), no Filter, SelectionFromValue
+   No, the given columns, and every column the request leaves out
+   as a new line has it: the MAtricks settings None, X / Y / Z None, the other MAtricks properties at their reset
+   values) and whose cue name and note match is **already done**: its item says so, is `matched`, and nothing is sent for it.
+   Sending the same call again after a lost answer (a client timeout while the console finished) therefore rewrites
+   only what differs. A field or column that could not be read, or a list read in part, is never taken for a new line's
+   default: that part is written. `append` always writes (a repeat cannot be told from a wanted second copy). A `cook` still cooks
+   every part.
 4. Each cue part is a batch item, in order, inside one span of the mutation lock (see
    [Batch forms](README.md#batch-forms-su-12)):
    - `replace`: `Delete <part>.<L> /NoConfirmation` for every line, from the last;
@@ -152,8 +161,9 @@ and a cook at the end. This tool checks the references once, writes per cue part
    `gma3_cook_recipes` (its inspection, its `replace_uncooked` refusal and, unless `verify_cook: false`, its read-back),
    one after the other. A cook that does not succeed leaves the call `partial`; the parts stay written.
 
-`preview: true` runs steps 1–3 and returns the plan per part (lines before, deletions, lines, requests; `detail: true`
-every command and write). No `exclusive`: like `gma3_edit_recipe`, nothing goes through the programmer, the selection
+`preview: true` runs steps 1–3 and returns the plan per part (lines before, deletions, lines, requests, `alreadyDone`;
+`detail: true` every command and write). The call sends progress notifications when the client asks for them: one
+unit per part written, then one per part cooked ([reference](../reference.md#long-calls-progress-and-client-timeouts)). No `exclusive`: like `gma3_edit_recipe`, nothing goes through the programmer, the selection
 or Preview. Phaser recipe lines (`PhaserRecipe`, e.g. in the Show Start's phaser presets) are out of scope.
 
 ## `gma3_cook_recipes`

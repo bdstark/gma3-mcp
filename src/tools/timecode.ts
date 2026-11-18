@@ -21,6 +21,7 @@
  *     writing Cursor seeks. LoopMode Loop (the default) repeats, Off stops at the end. TCSlot -1 is internal, 0..15 slots 1-16.
  *   - Deleting a track's target removes the track's command subtrack with its events; the track stays, without a target.
  */
+import { progressSteps } from "../progress.js";
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { exists } from "./common.js";
@@ -393,6 +394,9 @@ export function parseSettings(raw: unknown): Settings {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Events per timecode.edit add_events request: a longer track is sent in several requests, in time order (#145). */
+export const TC_EVENTS_PER_REQUEST = 100;
+
 /** Runs `timecode.edit`, retrying a not-ready step (the console builds children on the next frame). */
 async function edit(bridge: Gma3Bridge, args: Record<string, unknown>, t: number, name: string): Promise<StepResult> {
   for (let attempt = 0; ; attempt++) {
@@ -535,10 +539,22 @@ export async function buildTimecode(ctx: ToolContext, raw: BuildArgs): Promise<O
       }
     }
     for (const [i, tr] of ordered.entries()) if (ok) ok = push(await edit(bridge, { timecode: n, action: "set_target", group, track: i + 1, target: `Sequence ${tr.sequence}` }, t, `target_${i + 1}`));
-    for (const [i, tr] of ordered.entries()) {
-      if (!ok) break;
-      const events = tr.events.map((e) => ({ raw: e.raw, token: ACTIONS[e.action].token, ...("status" in ACTIONS[e.action] ? { status: (ACTIONS[e.action] as { status: string }).status } : {}), ...(e.cue ? { cue: e.cue } : {}) }));
-      ok = push(await edit(bridge, { timecode: n, action: "add_events", group, track: i + 1, range: 1, events }, t, `events_${i + 1}`));
+    const progress = progressSteps(ordered.length);
+    try {
+      for (const [i, tr] of ordered.entries()) {
+        if (!ok) break;
+        const events = tr.events.map((e) => ({ raw: e.raw, token: ACTIONS[e.action].token, ...("status" in ACTIONS[e.action] ? { status: (ACTIONS[e.action] as { status: string }).status } : {}), ...(e.cue ? { cue: e.cue } : {}) }));
+        // At most TC_EVENTS_PER_REQUEST events per request (#145): each chunk appends to the track's command subtrack in
+        // time order, so a long track never holds the bridge (and the client) in one request.
+        const chunks = Math.ceil(events.length / TC_EVENTS_PER_REQUEST);
+        for (let k = 0; k < chunks && ok; k++) {
+          const part = events.slice(k * TC_EVENTS_PER_REQUEST, (k + 1) * TC_EVENTS_PER_REQUEST);
+          ok = push(await edit(bridge, { timecode: n, action: "add_events", group, track: i + 1, range: 1, events: part }, t, chunks === 1 ? `events_${i + 1}` : `events_${i + 1}.${k + 1}`));
+        }
+        progress.step(`build_timecode: track ${i + 1} of ${ordered.length} (Sequence ${tr.sequence}, ${events.length} event(s))`);
+      }
+    } finally {
+      progress.end();
     }
 
     let verification: Verification = notRequested();

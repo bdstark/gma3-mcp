@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { startHarness, type Harness } from "./helpers/tool-harness.ts";
-import { registerTimecodeTools, parseTime, formatTime, toRaw, displaySeconds, orderEvents, pairProblems, parseTrack, tcSlotOf, matchEvents, RAW_PER_SECOND } from "../src/tools/timecode.ts";
+import { registerTimecodeTools, parseTime, formatTime, toRaw, displaySeconds, orderEvents, pairProblems, parseTrack, tcSlotOf, matchEvents, RAW_PER_SECOND, TC_EVENTS_PER_REQUEST } from "../src/tools/timecode.ts";
 import { ValidationError } from "../src/validate.ts";
 
 // ---------------------------------------------------------------------------
@@ -231,6 +231,19 @@ test("create builds the group, the tracks, targets and events in time order, ver
   assert.deepEqual(s.groups[0][1].events.map((e) => [e.token, e.status]), [["Flash", "On"], ["Flash", "Off"]]);
   assert.deepEqual([s.name, s.settings.LoopMode, s.settings.TCSlot, s.settings.SwitchOff], ["Opening", "Off", "-1", "Playbacks Off"]);
   assert.deepEqual(result.show.tracks[0].events.map((e: any) => e.time), ["0:00:00:08", "0:00:00:15", "0:00:00:20", "0:00:01:00"]);
+});
+
+test("a long track is sent in requests of at most TC_EVENTS_PER_REQUEST events, in time order (#145)", async () => {
+  const events = Array.from({ length: 2 * TC_EVENTS_PER_REQUEST + 5 }, (_, i) => ({ at: 0.1 * (i + 1), action: "go" }));
+  const { result, isError } = await h.callJson("gma3_build_timecode", { timecode: 902, mode: "create", fps: 25, tracks: [{ sequence: 908, events }] });
+  assert.equal(isError, false, JSON.stringify(result.steps.filter((s: any) => s.status !== "succeeded")));
+  assert.equal(result.verification.status, "matched", JSON.stringify(result.verification));
+  const sizes = h.fake.requests.filter((r) => r.op === "timecode.edit" && r.args.action === "add_events").map((r) => (r.args.events as unknown[]).length);
+  assert.deepEqual(sizes, [TC_EVENTS_PER_REQUEST, TC_EVENTS_PER_REQUEST, 5]);
+  assert.deepEqual(result.steps.filter((s: any) => s.name.startsWith("events_")).map((s: any) => s.name), ["events_1.1", "events_1.2", "events_1.3"]);
+  const raws = con.shows.get(902)!.groups[0][0].events.map((e) => e.raw);
+  assert.deepEqual(raws, [...raws].sort((a, b) => a - b));
+  assert.equal(raws.length, events.length);
 });
 
 test("targets and cues are checked first; modes, playing shows and unpaired presses are refused", async () => {

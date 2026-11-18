@@ -40,9 +40,10 @@ import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { json, operation, type RegisterTools, type ToolContext } from "./context.js";
 import { presetId, type PresetRead, type PresetRow } from "./presets.js";
 import { cueRef, readObjects } from "./common.js";
-import { axisSettingsShape, matricksValue, matricksWanted } from "./groups.js";
+import { MATRICKS_OTHER_DEFAULTS, allMatricksProps, axisSettingsShape, matricksValue, matricksWanted } from "./groups.js";
 import { MAX_BATCH_ITEMS, batchOptionShape, duplicates, hasUncertainStep, itemOk, runBatch } from "../batch.js";
 import { HeldLock } from "../mutations.js";
+import { progressSteps } from "../progress.js";
 import {
   asRead,
   buildResult,
@@ -134,6 +135,8 @@ export interface Line {
   selectionFromValue?: boolean | null;
   /** The line's own X / Y / Z column when it is set ("X 1"): only part of the group gets values (#101). */
   axisSelect?: string;
+  /** Fields the bridge could not read (its `fieldErrors`): their values above are not known. */
+  unread?: string[];
   status: { failedCookedPart?: string; emptyLastCooking?: boolean | null };
 }
 
@@ -168,7 +171,7 @@ const NEEDS_BRIDGE = "the console runs an older bridge plugin (bridge 0.24.0 rea
 const notFound = (err: unknown) => err instanceof BridgeError && /no objects? found|no object at address|path not found/i.test(err.message);
 
 export async function readLines(bridge: Gma3Bridge, t: Target, timeout: number): Promise<Line[] | null> {
-  let res: { total?: number; offset?: number; count?: number; items?: Array<{ class?: string; index?: number; name?: string; fields?: Record<string, unknown> }> };
+  let res: { total?: number; offset?: number; count?: number; items?: Array<{ class?: string; index?: number; name?: string; fields?: Record<string, unknown>; fieldErrors?: Record<string, unknown> }> };
   try {
     res = (await bridge.request("children", { ref: targetRef(t), fields: LINE_FIELDS, asText: false, limit: 1000 }, timeout)) as typeof res;
   } catch (err) {
@@ -180,6 +183,7 @@ export async function readLines(bridge: Gma3Bridge, t: Target, timeout: number):
   (res.items ?? []).forEach((it, i) => {
     if (it.class !== "StandardRecipe" && it.class !== "PhaserRecipe") return;
     const f = it.fields ?? {};
+    const unread = Object.entries(it.fieldErrors ?? {}).filter(([, e]) => e !== undefined && e !== null).map(([k]) => k);
     const sel = handle(f.Selection);
     const val = handle(f.Values);
     const mtx = handle(f.MAtricks);
@@ -196,6 +200,7 @@ export async function readLines(bridge: Gma3Bridge, t: Target, timeout: number):
       selectionMode: typeof f.SelectionMode === "string" ? f.SelectionMode : undefined,
       selectionFromValue: bool(f.SelectionFromValue),
       ...(axisSelection(f) ? { axisSelect: axisSelection(f) } : {}),
+      ...(unread.length ? { unread } : {}),
       status: { failedCookedPart: typeof f.FailedCookedPart === "string" ? f.FailedCookedPart : undefined, emptyLastCooking: bool(f.EmptyLastCooking) },
     });
   });
@@ -869,6 +874,75 @@ const presetKey = (p: { pool: number; number: number }) => `${p.pool}.${p.number
 const nearValue = (a: number | null | undefined, b: number | null) => (a === null || b === null ? a === b : a !== undefined && Math.abs(a - b) < 1e-3);
 
 /**
+ * What a new recipe line reads for the settings a request may leave out (the fake console's model of an added line;
+ * not verified on a console). A wrong default here only makes a line be written again, never skipped.
+ */
+const NEW_LINE = { name: "", selectionMode: "Strict" } as const;
+
+/**
+ * How a cue part's lines on the console differ from what gma3_store_recipe_cues would write in replace mode, by line.
+ * Every setting readLines reads is compared: the group, the values preset, the MAtricks (none when the request gives
+ * none), Enabled (Yes unless the request says false), the name and selection mode (as given, or a new line's), no
+ * Filter and SelectionFromValue No (this tool sets neither, and a new line has neither; #145 review). The per-line
+ * columns are compared by columnDifferences. FailedCookedPart and EmptyLastCooking are results of the last cook, not
+ * settings, and are not compared. Empty when they are the same.
+ */
+function lineDifferences(spec: RecipeCueSpec, lines: Line[], presetAddr: Map<string, string>): string[] {
+  const out: string[] = [];
+  spec.lines.forEach((l, i) => {
+    const got = lines[i];
+    const n = i + 1;
+    if (!got) return void out.push(`line ${n} is missing`);
+    if (got.unread?.length) out.push(`line ${n}: ${got.unread.join(", ")} could not be read`);
+    out.push(...checkLineFields(got, n, { selection: l.selection, valuesAddr: presetAddr.get(presetKey(l.values)) ?? "?", matricks: l.matricks, enabled: l.enabled ?? true, name: l.name ?? NEW_LINE.name, selectionMode: l.selectionMode ?? NEW_LINE.selectionMode }));
+    if (l.matricks === undefined && got.matricks) out.push(`line ${n} has MAtricks ${got.matricks.no ?? "?"}`);
+    if (got.filter !== null) out.push(`line ${n} has Filter ${got.filter}`);
+    if (got.selectionFromValue !== false) out.push(`line ${n} SelectionFromValue reads ${got.selectionFromValue}`);
+  });
+  return out;
+}
+
+/** Integer columns (XWings, XBlock, ...): 0 means None, as gma3_configure_matricks writes it. */
+const INT_COLUMNS = new Set(allMatricksProps().filter((p) => !/(From|To)[XYZ]$/.test(p)));
+/**
+ * Every per-line column a recipe line carries and what it reads on a new line: the modelled MAtricks settings (None)
+ * and the other MAtricks properties at their reset values (MATRICKS_OTHER_DEFAULTS: X / Y / Z None, the inverts No,
+ * ...). Not verified on a console for recipe lines: a property a line does not have reads as absent or None.
+ */
+const LINE_COLUMN_DEFAULTS: ReadonlyMap<string, string> = new Map([...allMatricksProps().map((p) => [p, "None"] as [string, string]), ...Object.entries(MATRICKS_OTHER_DEFAULTS)]);
+const LINE_COLUMN_PROPS = [...LINE_COLUMN_DEFAULTS.keys()];
+
+/** Does a column the request leaves out read as a new line's would? */
+function columnUnset(property: string, got: unknown, inheritsMatricks: boolean): boolean {
+  if (got === undefined || got === null) return true;
+  const s = String(got).trim();
+  // A column inherited from the line's MAtricks reads "<2>": a new line with the same MAtricks inherits it too.
+  if (/^<.*>$/.test(s)) return inheritsMatricks;
+  if (s === "" || /^none$/i.test(s)) return true;
+  if (INT_COLUMNS.has(property) && /^0+$/.test(s)) return true;
+  const d = LINE_COLUMN_DEFAULTS.get(property);
+  return d !== undefined && d !== "None" && s.toLowerCase() === d.toLowerCase();
+}
+
+/**
+ * How a cue part's per-line columns differ from what replace would leave: each column the request sets reads its value,
+ * and every other one reads as on a new line (#145 review: x: {wings: 2} replaced without x, or a fade dropped from
+ * x: {select: 1, fade: ...}, must be written again).
+ */
+function columnDifferences(spec: RecipeCueSpec, columns: Map<number, Record<string, unknown>>): string[] {
+  const out: string[] = [];
+  spec.lines.forEach((l, i) => {
+    const n = i + 1;
+    const got = columns.get(n);
+    if (!got) return void out.push(`line ${n}: its columns were not read`);
+    const asked = new Map(l.columns.map((c) => [c.property, c]));
+    for (const c of l.columns) if (!nearValue(matricksValue(c.kind, got[c.property]), c.value)) out.push(`line ${n} ${c.property} reads ${JSON.stringify(got[c.property] ?? null)}`);
+    for (const p of LINE_COLUMN_PROPS) if (!asked.has(p) && !columnUnset(p, got[p], l.matricks !== undefined)) out.push(`line ${n} ${p} reads ${JSON.stringify(got[p])}, which the request does not set`);
+  });
+  return out;
+}
+
+/**
  * One axis of a line's MAtricks columns: the gma3_configure_matricks settings (XWings, XBlock, XGroup, XWidth, XShift,
  * XShuffle, FadeFromX / FadeToX, DelayFromX / DelayToX, PhaseFromX / PhaseToX, SpeedFromX / SpeedToX, and the same for
  * Y and Z), validated as that tool validates them, plus `select`, the X / Y / Z column itself (the build of #101 wrote
@@ -970,6 +1044,8 @@ interface CuePlan {
   lineEnd: number[];
   nameStep?: number;
   noteStep?: number;
+  /** Replace mode: the cue part already reads as asked, so nothing is sent for it (#145). */
+  alreadyDone?: boolean;
 }
 
 export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unknown>): Promise<OperationResult> {
@@ -1073,6 +1149,44 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
     ]);
     if (inspect.outcome !== "succeeded") return buildResult({ operation: op, target, steps: inspect.steps, warnings, summary: `${op} was not performed; nothing was sent: ${inspect.steps.find((s) => s.status !== "succeeded")?.error ?? "inspection failed"}` });
 
+    // 1b. Already done (#145): in replace mode a cue part whose lines, columns, name and note already read as this call
+    // asks is not written again, so a call sent again after its answer was lost (a client timeout while the console
+    // finished) does not rewrite what is there. Append cannot tell a repeat from a wanted second copy, so it always writes.
+    const alreadyDone = new Set<string>();
+    if (mode === "replace") {
+      const cmp = await runSteps([
+        {
+          name: "compare_existing",
+          run: async () => {
+            try {
+              for (const c of cues) {
+                const b = before.get(label(c.target)) ?? [];
+                if (b.length !== c.lines.length || b.some((l) => l.class !== "StandardRecipe")) continue;
+                if (lineDifferences(c, b, presetAddr).length) continue;
+                // Every per-line column, not only the ones the request sets: replace recreates the line, so a column the
+                // request leaves out must read as a new line's would (a dropped wings or fade is not already done).
+                const read = await readColumnsChecked(bridge, c.target, LINE_COLUMN_PROPS, t);
+                // A column that could not be read is not proof of anything: the cue part is written.
+                if (read.problems.length || columnDifferences(c, read.columns).length) continue;
+                if (c.name !== undefined || c.note !== undefined) {
+                  const res = await readObjects(bridge, cueRef(sequence, c.target.cue), ["Name", "Note"], 1);
+                  const f = res?.items?.[0]?.fields ?? {};
+                  if (c.name !== undefined && String(f.Name ?? "").trim() !== c.name) continue;
+                  if (c.note !== undefined && String(f.Note ?? "").trim() !== c.note) continue;
+                }
+                alreadyDone.add(label(c.target));
+              }
+            } catch (err) {
+              return asRead(stepFromError("compare_existing", err, { op: "children" }));
+            }
+            return asRead({ name: "compare_existing", status: "succeeded", op: "children", detail: { alreadyDone: alreadyDone.size } });
+          },
+        },
+      ]);
+      inspect.steps.push(...cmp.steps);
+      if (cmp.outcome !== "succeeded") return buildResult({ operation: op, target, steps: inspect.steps, warnings, summary: `${op} was not performed; nothing was sent: ${cmp.steps[0]?.error ?? "the comparison with the console failed"}` });
+    }
+
     // 2. The plan: per cue part the deletions (replace), then per line the commands and property writes gma3_edit_recipe
     // sends for an added line, then the cue's name and note.
     const setStepOf = (name: string, ref: string, property: string, value: string, ok: (got: unknown) => boolean) => ({
@@ -1086,6 +1200,10 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
     const plans: CuePlan[] = cues.map((spec) => {
       const b = before.get(label(spec.target)) ?? [];
       const plan: CuePlan = { spec, before: b, base: mode === "replace" ? 0 : b.length, steps: [], sends: [], lineEnd: [] };
+      if (alreadyDone.has(label(spec.target))) {
+        plan.alreadyDone = true;
+        return plan;
+      }
       const cmd = (name: string, command: string) => {
         plan.steps.push({ name, run: () => commandStep(bridge, name, command, t) });
         plan.sends.push(command);
@@ -1129,10 +1247,10 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
         target,
         steps: inspect.steps,
         warnings,
-        summary: `Preview only; nothing was sent. ${cues.length} cue part(s), ${lineCount} line(s) to ${mode === "replace" ? "write in place of the existing ones" : "append"}, ${requests} request(s)${cook ? `, then a ${cook} cook of each cue part` : ""}.`,
+        summary: `Preview only; nothing was sent. ${cues.length} cue part(s), ${lineCount} line(s) to ${mode === "replace" ? "write in place of the existing ones" : "append"}, ${requests} request(s)${alreadyDone.size ? `; ${alreadyDone.size} cue part(s) already read as asked and would not be written again` : ""}${cook ? `, then a ${cook} cook of each cue part` : ""}.`,
         extra: {
           preview: true,
-          plan: plans.map((p) => ({ target: label(p.spec.target), linesBefore: p.before.length, ...(mode === "replace" ? { deletes: p.before.length } : {}), lines: p.spec.lines.length, requests: p.steps.length, ...(detail ? { sends: p.sends } : {}) })),
+          plan: plans.map((p) => ({ target: label(p.spec.target), linesBefore: p.before.length, ...(p.alreadyDone ? { alreadyDone: true } : mode === "replace" ? { deletes: p.before.length } : {}), lines: p.spec.lines.length, requests: p.steps.length, ...(detail ? { sends: p.sends } : {}) })),
           ...(detail ? {} : { detailHint: "detail: true lists every command and property write" }),
         },
       });
@@ -1142,6 +1260,17 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
     const writeCue = async (p: CuePlan): Promise<OperationResult> => {
       const spec = p.spec;
       const ref = label(spec.target);
+      if (p.alreadyDone) {
+        const checked = `the ${spec.lines.length} recipe line(s) of ${ref} (every field this call writes)${spec.name !== undefined ? ", the cue's name" : ""}${spec.note !== undefined ? ", its note" : ""}, read before writing`;
+        return buildResult({
+          operation: op,
+          target: { ref },
+          steps: [asRead({ name: "compare_existing", status: "succeeded", op: "children", detail: { lines: spec.lines.length } })],
+          verification: { status: "matched", checked },
+          summary: `${ref}: already done: its ${spec.lines.length} line(s) already read as asked; nothing was sent.`,
+          extra: { lines: spec.lines.length, alreadyDone: true },
+        });
+      }
       const main = await runSteps(p.steps);
       const steps = [...main.steps];
       const complete = main.outcome === "succeeded";
@@ -1212,19 +1341,25 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
       else {
         const held: ToolContext = { ...ctx, mutations: new HeldLock() };
         let halted: string | null = null;
-        for (const p of plans) {
-          const ref = label(p.spec.target);
-          if (halted) {
-            cookSteps.push({ name: `cook ${ref}`, status: "skipped", error: halted });
-            continue;
+        const progress = progressSteps(plans.length);
+        try {
+          for (const p of plans) {
+            const ref = label(p.spec.target);
+            if (halted) {
+              cookSteps.push({ name: `cook ${ref}`, status: "skipped", error: halted });
+              continue;
+            }
+            const r = await cookRecipes(held, { target: { sequence, cue: p.spec.target.cue, part: p.spec.target.part }, mode: cook, replace_uncooked: raw.replace_uncooked === true, verify: raw.verify_cook !== false });
+            const status: StepStatus = hasUncertainStep(r) ? "unknown" : r.outcome === "succeeded" ? "succeeded" : "failed";
+            cookSteps.push({ name: `cook ${ref}`, status, op: "gma3_cook_recipes", ...(typeof r.command === "string" ? { command: r.command } : {}), ...(status === "succeeded" ? {} : { error: r.summary }) });
+            cooked.push({ target: ref, outcome: r.outcome, verification: r.verification.status, ...(detail ? { result: r } : itemOk(r) ? {} : { summary: r.summary }) });
+            cookVerifications.push(r.verification);
+            cookWarnings.push(...(r.warnings ?? []).map((w) => `cook: ${w}`));
+            progress.step(`${op}: cooked ${ref} (${status})`);
+            if (status === "unknown") halted = `not attempted: the cook of ${ref} got no reply, so the console's state is not known`;
           }
-          const r = await cookRecipes(held, { target: { sequence, cue: p.spec.target.cue, part: p.spec.target.part }, mode: cook, replace_uncooked: raw.replace_uncooked === true, verify: raw.verify_cook !== false });
-          const status: StepStatus = hasUncertainStep(r) ? "unknown" : r.outcome === "succeeded" ? "succeeded" : "failed";
-          cookSteps.push({ name: `cook ${ref}`, status, op: "gma3_cook_recipes", ...(typeof r.command === "string" ? { command: r.command } : {}), ...(status === "succeeded" ? {} : { error: r.summary }) });
-          cooked.push({ target: ref, outcome: r.outcome, verification: r.verification.status, ...(detail ? { result: r } : itemOk(r) ? {} : { summary: r.summary }) });
-          cookVerifications.push(r.verification);
-          cookWarnings.push(...(r.warnings ?? []).map((w) => `cook: ${w}`));
-          if (status === "unknown") halted = `not attempted: the cook of ${ref} got no reply, so the console's state is not known`;
+        } finally {
+          progress.end();
         }
       }
     }
@@ -1250,6 +1385,26 @@ export async function storeRecipeCues(ctx: ToolContext, raw: Record<string, unkn
 async function readColumns(bridge: Gma3Bridge, t: Target, props: string[], timeout: number): Promise<Map<number, Record<string, unknown>>> {
   const res = (await bridge.request("children", { ref: targetRef(t), fields: props, limit: 1000 }, timeout)) as { items?: Array<{ index?: number; fields?: Record<string, unknown> }> };
   return new Map((res.items ?? []).map((it, i) => [typeof it.index === "number" ? it.index : i + 1, it.fields ?? {}]));
+}
+
+/**
+ * readColumns for the already-done decision (#145 review): also what could not be read. `problems` names a list read in
+ * part (or with an enumeration error) and every field the bridge reports in `fieldErrors`, by line, so a failed read is
+ * never taken for a new line's default.
+ */
+async function readColumnsChecked(bridge: Gma3Bridge, t: Target, props: string[], timeout: number): Promise<{ columns: Map<number, Record<string, unknown>>; problems: string[] }> {
+  const res = (await bridge.request("children", { ref: targetRef(t), fields: props, limit: 1000 }, timeout)) as { total?: number; offset?: number; count?: number; enumerationError?: unknown; items?: Array<{ index?: number; fields?: Record<string, unknown>; fieldErrors?: Record<string, unknown> }> };
+  const problems: string[] = [];
+  if (!listComplete(res)) problems.push(`the columns of ${label(t)} were read only in part`);
+  if (res.enumerationError !== undefined && res.enumerationError !== null) problems.push(`the columns of ${label(t)} could not all be listed (${String(res.enumerationError)})`);
+  const columns = new Map<number, Record<string, unknown>>();
+  (res.items ?? []).forEach((it, i) => {
+    const n = typeof it.index === "number" ? it.index : i + 1;
+    columns.set(n, it.fields ?? {});
+    const bad = Object.entries(it.fieldErrors ?? {}).filter(([, e]) => e !== undefined && e !== null).map(([k]) => k);
+    if (bad.length) problems.push(`line ${n}: ${bad.join(", ")} could not be read`);
+  });
+  return { columns, problems };
 }
 
 // ---------------------------------------------------------------------------

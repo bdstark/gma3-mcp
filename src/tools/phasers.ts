@@ -31,6 +31,7 @@
  *     that programmer; `Preview Off` returns to Normal with its programmer as it was. Blind keeps the Normal programmer
  *     and its state cannot be read, so it is not used.
  */
+import { progressSteps } from "../progress.js";
 import { z } from "zod";
 import { BridgeError, type Gma3Bridge } from "../bridge.js";
 import { operation, type RegisterTools, type ToolContext } from "./context.js";
@@ -1162,6 +1163,7 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
     // 2. Build every job in one Preview session.
     const steps: StepResult[] = [...inspect.steps];
     let entered = false;
+    const progress = progressSteps(reports.length);
     try {
       const enter = await commandStep(bridge, "preview_on", "Preview On", t);
       steps.push(enter);
@@ -1263,11 +1265,13 @@ export async function buildPhaser(ctx: ToolContext, raw: BuildArgs): Promise<Ope
         steps.push(...run.steps);
         rep.steps = run.steps;
         rep.status = "built";
+        progress.step(`build_phaser: preset ${i + 1} of ${reports.length} (${job.ref}) ${run.outcome}`);
         // A failed effect does not stop the others; an unknown step (or leaving Preview) stops the build.
         const bad = run.steps.find((s) => s.status === "unknown" || (s.name === `${P}confirm_preview` && s.status !== "succeeded"));
         if (bad) ready = false;
       }
     } finally {
+      progress.end();
       // Leave the Preview environment whatever happened, once it may have been entered. ClearAll is sent only after
       // the console confirms it is in Preview: in Normal it would discard the operator's programmer.
       if (entered) {

@@ -97,7 +97,7 @@ Evidence: [the SB-08 probe record](../probes/sb-08-timecode-macos-2.5.1.md).
   3. `timecode.edit add_group`, waiting for its track;
   4. `add_track` per further track, waiting for its time range;
   5. `set_target` per track;
-  6. `add_events` per track, retried briefly while the console reports `[not-ready]`.
+  6. `add_events` per track, at most 100 events per request in time order (a longer track is several requests, #145), retried briefly while the console reports `[not-ready]`.
 - Verification reads the show back and compares:
   - every track's target;
   - every event's exact time, action, press/release status and cue, in order;

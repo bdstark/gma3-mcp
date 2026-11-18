@@ -21,6 +21,7 @@ import { HeldLock } from "./mutations.js";
 import type { ToolContext } from "./tools/context.js";
 import type { ExecutionOutcome, OperationResult, StepResult, StepStatus, Verification, VerificationOutcome } from "./results.js";
 import { stepFromError, validationFailure } from "./results.js";
+import { progressSteps } from "./progress.js";
 
 /** The batch options every batch form takes. */
 export const batchOptionShape = {
@@ -150,31 +151,37 @@ export async function runBatch(operation: string, items: BatchItem[], o: BatchOp
   const entries: BatchEntry[] = [];
   const failedKeys = new Map<string, number>();
   let halted: string | null = null;
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    if (halted) {
-      entries.push({ label: item.label, skipped: halted });
-      continue;
+  const progress = progressSteps(items.length);
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (halted) {
+        entries.push({ label: item.label, skipped: halted });
+        continue;
+      }
+      const itemKeys = [...(item.key !== undefined ? [item.key] : []), ...(item.keys ?? [])];
+      const failedOn = itemKeys.find((k) => failedKeys.has(k));
+      if (failedOn !== undefined) {
+        entries.push({ label: item.label, skipped: `not attempted: item ${failedKeys.get(failedOn)} on ${failedOn} did not succeed` });
+        continue;
+      }
+      let result: OperationResult;
+      try {
+        result = await item.run();
+      } catch (err) {
+        const step: StepResult = stepFromError("item", err);
+        result = { operation, target: { item: item.label }, outcome: step.status === "unknown" ? "unknown" : "failed", verification: { status: "not_requested" }, steps: [step], summary: `${item.label}: ${step.error ?? "failed"}` };
+      }
+      entries.push({ label: item.label, result });
+      progress.step(`${operation}: item ${i + 1} of ${items.length} (${item.label}) ${result.outcome}`);
+      if (hasUncertainStep(result)) halted = `not attempted: item ${i + 1} (${item.label}) has a step without a reply that may have changed the console, so its state is not known`;
+      else if (!itemOk(result)) {
+        for (const k of itemKeys) failedKeys.set(k, i + 1);
+        if (o.stopOnFailure) halted = `not attempted: item ${i + 1} (${item.label}) did not succeed and stop_on_failure is set`;
+      }
     }
-    const itemKeys = [...(item.key !== undefined ? [item.key] : []), ...(item.keys ?? [])];
-    const failedOn = itemKeys.find((k) => failedKeys.has(k));
-    if (failedOn !== undefined) {
-      entries.push({ label: item.label, skipped: `not attempted: item ${failedKeys.get(failedOn)} on ${failedOn} did not succeed` });
-      continue;
-    }
-    let result: OperationResult;
-    try {
-      result = await item.run();
-    } catch (err) {
-      const step: StepResult = stepFromError("item", err);
-      result = { operation, target: { item: item.label }, outcome: step.status === "unknown" ? "unknown" : "failed", verification: { status: "not_requested" }, steps: [step], summary: `${item.label}: ${step.error ?? "failed"}` };
-    }
-    entries.push({ label: item.label, result });
-    if (hasUncertainStep(result)) halted = `not attempted: item ${i + 1} (${item.label}) has a step without a reply that may have changed the console, so its state is not known`;
-    else if (!itemOk(result)) {
-      for (const k of itemKeys) failedKeys.set(k, i + 1);
-      if (o.stopOnFailure) halted = `not attempted: item ${i + 1} (${item.label}) did not succeed and stop_on_failure is set`;
-    }
+  } finally {
+    progress.end();
   }
   return summarizeBatch(operation, entries, o);
 }
