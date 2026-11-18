@@ -410,12 +410,17 @@ export async function mvrImport(ctx: ToolContext, raw: MvrImportArgs, deps: MvrD
   const toImport = [...typePlans.values()].filter((p) => p.file !== undefined && chosen.some((f) => serves(p, f.gdtfSpec) && !problems.has(f)));
   for (const p of toImport) {
     try {
-      const st = (await ctx.bridge.request("patch.libraryStat", { file: p.file }, t)) as { exists: boolean; size?: number; crc32?: string; listedIn?: string[] };
+      const st = (await ctx.bridge.request("patch.libraryStat", { file: p.file }, t)) as { exists: boolean; size?: number; crc32?: string; listedIn?: string[]; matches?: Array<{ source: string; file: string }> };
       const elsewhere = (st.listedIn ?? []).filter((s) => s !== "user");
+      // A library file differing only in case is the same file on macOS and Windows; gma3_patch_library_add refuses it,
+      // so it is this GDTF's problem before anything is uploaded (review of #162).
+      const caseOnly = (st.matches ?? []).filter((m) => m.file !== p.file);
       const sum = crc32(p.gdtf.bytes as Buffer).toString(16).padStart(8, "0");
       const why = elsewhere.length
         ? `${p.file} is already in the ${elsewhere.join(", ")} library; import it from there and name the type with types["${p.spec}"]`
-        : st.exists && !(st.size === p.gdtf.bytes?.length && st.crc32 === sum)
+        : caseOnly.length
+          ? `${p.file} differs only in case from ${caseOnly.map((m) => `${m.file} (${m.source})`).join(", ")}, which the library cannot hold apart; import that one and name the type with types["${p.spec}"]`
+          : st.exists && !(st.size === p.gdtf.bytes?.length && st.crc32 === sum)
           ? `the user library already has a different ${p.file}; import that one and name the type with types["${p.spec}"], or remove it`
           : undefined;
       if (why) for (const f of chosen) if (serves(p, f.gdtfSpec)) flag(f, why);

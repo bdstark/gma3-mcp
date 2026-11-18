@@ -219,6 +219,8 @@ interface World {
   /** Patched ranges (absolute, 0-based) by FID. */
   live: Array<{ fid: number; first: number; last: number }>;
   library: Map<string, Buffer>;
+  /** Library files patch.libraryStat lists as matching a name ignoring case (bridge 0.38.0 matches). */
+  libraryMatches: Array<{ source: string; file: string }>;
   oldBridge: boolean;
   /** patch.check reports these patched fixtures' occupancy as unknown. */
   occupancyUnknown: Array<{ fid: number; reason: string }>;
@@ -231,7 +233,7 @@ const abs = (a: string) => {
 };
 
 async function harness(world: Partial<World> = {}): Promise<{ h: Harness; w: World }> {
-  const w: World = { stages: ["Stage 1", "Main Floor"], types: [{ no: 3, name: "Wash 7", manufacturer: "Glow Co", modes: [{ no: 1, name: "8ch", footprint: 8, breaks: 1 }] }], live: [{ fid: 1, first: 0, last: 7 }], library: new Map(), oldBridge: false, occupancyUnknown: [], state: { destination: "Root", copyOpen: false, modal: false }, ...world };
+  const w: World = { stages: ["Stage 1", "Main Floor"], types: [{ no: 3, name: "Wash 7", manufacturer: "Glow Co", modes: [{ no: 1, name: "8ch", footprint: 8, breaks: 1 }] }], live: [{ fid: 1, first: 0, last: 7 }], library: new Map(), libraryMatches: [], oldBridge: false, occupancyUnknown: [], state: { destination: "Root", copyOpen: false, modal: false }, ...world };
   const h = await startHarness(registerMvrTools);
   h.fake.on("patch.state", () => ({ ...w.state, stages: w.stages }));
   h.fake.on("patch.types", () => ({ types: w.types }));
@@ -248,7 +250,7 @@ async function harness(world: Partial<World> = {}): Promise<{ h: Harness; w: Wor
   });
   h.fake.on("patch.libraryStat", (a) => {
     const b = w.library.get(String(a.file));
-    return { file: a.file, path: `/lib/${a.file}`, exists: b !== undefined, ...(b ? { size: b.length, crc32: crc32(b).toString(16).padStart(8, "0") } : {}), listedIn: b ? ["user"] : [] };
+    return { file: a.file, path: `/lib/${a.file}`, exists: b !== undefined, ...(b ? { size: b.length, crc32: crc32(b).toString(16).padStart(8, "0") } : {}), listedIn: b ? ["user"] : [], matches: [...(b ? [{ source: "user", file: String(a.file) }] : []), ...w.libraryMatches.filter((m) => m.file.toLowerCase() === String(a.file).toLowerCase())] };
   });
   return { h, w };
 }
@@ -687,6 +689,38 @@ test("gma3_patch_import_mvr: unknown DMX occupancy stops only an import with add
     const addressed = await mvrImport(h.ctx, { content_base64: b64(RIG()), preview: true }, deps);
     assert.equal(addressed.outcome, "failed");
     assert.match(String(addressed.steps.at(-1)?.error), /DMX occupancy of 1 patched fixture\(s\) cannot be established \(FID 7/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_import_mvr: a library file differing only in case is refused before any upload (review of #162)", async () => {
+  const { h, w } = await harness({ libraryMatches: [{ source: "user", file: "acme@spot_300.gdtf" }] });
+  try {
+    const { deps, calls } = recorder(w);
+    for (const preview of [true, false]) {
+      const res = await mvrImport(h.ctx, { content_base64: b64(RIG()), preview, exclusive: true }, deps);
+      assert.equal(res.outcome, "failed");
+      assert.match(String(res.steps.find((x) => x.name === "check_mvr")?.error), /ACME@Spot_300\.gdtf differs only in case from acme@spot_300\.gdtf \(user\)/);
+    }
+    assert.equal(calls.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("gma3_patch_import_mvr: a fixture number above 99,999,999 is that fixture's problem, skipped with skip_unusable (review of #162)", async () => {
+  const { h, w } = await harness();
+  try {
+    const { deps, calls } = recorder(w);
+    const file = mvr({ Front: { fixtures: [{ name: "Wash 1", fid: 201, spec: "Glow_Co@Wash_7.gdtf", mode: "8ch", addresses: [[0, "2.001"]] }, { name: "Huge", fid: 100000000, spec: "Glow_Co@Wash_7.gdtf", mode: "8ch", addresses: [[0, "2.009"]] }] } });
+    const refused = await mvrImport(h.ctx, { content_base64: b64(file), preview: true }, deps);
+    assert.equal(refused.outcome, "failed");
+    assert.match(String(refused.steps.find((x) => x.name === "check_mvr")?.error), /FID 100000000 "Huge": its fixture number 100000000 is above the console's 99999999/);
+    const res = await mvrImport(h.ctx, { content_base64: b64(file), exclusive: true, skip_unusable: true, names: false, place: false }, deps);
+    assert.equal(res.outcome, "succeeded", res.summary);
+    assert.deepEqual(calls.map((c) => [c.tool, c.args.fid]), [["add", 201]]);
+    assert.ok(h.fake.requests.filter((r) => r.op === "patch.check").every((r) => (r.args.ranges as Array<{ fid: number }>).every((x) => x.fid <= 99999999)));
   } finally {
     await h.close();
   }
