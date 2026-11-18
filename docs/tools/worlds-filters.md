@@ -35,7 +35,8 @@ The steps:
 
 - `appearance` is a number, or the name of an existing appearance.
 - `create: {name, color "#RRGGBB", alpha (percent, default 100 with a color), image "Image 3.2", image_mode}` creates the appearance in a free number, or changes an existing one with `on_taken: "update"`.
-- `object` (`"Group 3"`, `"Sequence 5"`, `"Preset 4.12"`, ...) gets `Assign Appearance <n> At <object>`.
+- `object` (`"Group 3"`, `"Sequence 5"`, `"Preset 4.12"`, ...) gets `Assign Appearance <n> At <object>`. It must name exactly one object: wildcards are refused, and so is a name several objects (or appearances) have.
+- Batch form: an item that only assigns an appearance is skipped when an earlier item creating or changing that appearance did not succeed; a failed assignment does not stop other assignments of the same appearance.
 
 The steps:
 

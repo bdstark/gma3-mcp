@@ -78,7 +78,14 @@ class Console {
 
   objectsOf(ref: string, fields: string[], asText: boolean) {
     const range = ref.match(/^(\w+) Thru$/);
-    const keys = range ? [...this.objects.keys()].filter((k) => k.startsWith(`${range[1]} `)) : this.objects.has(ref) ? [ref] : [];
+    const named = ref.match(/^(\w+) "([^"]+)"$/);
+    const keys = range
+      ? [...this.objects.keys()].filter((k) => k.startsWith(`${range[1]} `))
+      : named
+        ? [...this.objects.keys()].filter((k) => k.startsWith(`${named[1]} `) && this.objects.get(k)!.name === named[2])
+        : this.objects.has(ref)
+          ? [ref]
+          : [];
     if (!keys.length) throw new Error("no objects found");
     const items = keys.map((k) => this.row(k, fields, asText));
     return { total: items.length, offset: 0, count: items.length, items };
@@ -373,5 +380,34 @@ test("feature groups fail closed (#161 review): an unreadable attribute Feature 
   r = await h.callJson("gma3_store_filter", { filter: 10, feature_groups: ["Position"] });
   assert.equal(r.result.outcome, "failed", r.text);
   assert.match(r.text, /the features of feature group Color could not be listed/);
+  assert.deepEqual(h.fake.commands, []);
+});
+
+test("assignments depend on the appearance they assign (#161 review): a failed create skips them; a failed assignment does not skip other assignments of it", async () => {
+  c.ignoreSet.add("BackR");
+  let r = await h.callJson("gma3_set_appearance", { assignments: [{ appearance: 26, create: { color: "#FF0000" } }, { object: "Group 3", appearance: "26" }] });
+  assert.equal(r.result.items[0].verification, "mismatched", r.text);
+  assert.equal(r.result.items[1].outcome, "not_attempted", r.text);
+  assert.match(r.result.items[1].summary, /item 1 on appearance 26 did not succeed/);
+  assert.equal(h.fake.commands.some((x) => x.startsWith("Assign Appearance")), false);
+  install();
+  c.objects.get("Group 3")!.lock = "UL";
+  r = await h.callJson("gma3_set_appearance", { assignments: [{ object: "Group 3", appearance: 1 }, { object: "Group 4", appearance: 1 }] });
+  assert.equal(r.result.items[0].outcome, "failed", r.text);
+  assert.equal(r.result.items[1].outcome, "succeeded", r.text);
+  assert.deepEqual(h.fake.commands, ["Assign Appearance 1 At Group 4"]);
+});
+
+test("the assigned object must be exactly one object (#161 review): wildcards are refused, a name two objects have is refused", async () => {
+  let r = await h.callJson("gma3_set_appearance", { object: 'Group "Front*"', appearance: 1 });
+  assert.equal(r.result.outcome, "failed");
+  assert.match(r.text, /wildcards/);
+  c.objects.get("Group 4")!.name = "Front";
+  r = await h.callJson("gma3_set_appearance", { object: 'Group "Front"', appearance: 1 });
+  assert.equal(r.result.outcome, "failed", r.text);
+  assert.match(r.text, /Group \\"Front\\" names 2 objects/);
+  c.objects.set("Appearance 2", { class: "Appearance", name: "Macro", fields: { Image: "", ImageMode: "Bar", BackR: "0", BackG: "0", BackB: "0", BackAlpha: "0" } });
+  r = await h.callJson("gma3_set_appearance", { object: "Group 3", appearance: "Macro" });
+  assert.match(r.text, /names 2 appearances; give it by number/);
   assert.deepEqual(h.fake.commands, []);
 });

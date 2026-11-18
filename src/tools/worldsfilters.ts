@@ -201,6 +201,8 @@ const yesNo = (v: unknown): boolean | null => {
 
 interface PoolState {
   exists: boolean;
+  /** How many objects the reference resolved to (a name can match several). */
+  total?: number;
   name?: string;
   addr?: string;
   locked?: boolean | null;
@@ -215,7 +217,7 @@ async function readOne(bridge: Gma3Bridge, ref: string, fields: string[], asText
   const f = (item.fields ?? {}) as Record<string, unknown>;
   const errs = (item.fieldErrors ?? {}) as Record<string, unknown>;
   const nm = typeof f.Name === "string" ? f.Name : typeof f.Name === "object" && f.Name ? String((f.Name as { name?: unknown }).name ?? "") : item.name;
-  return { exists: true, name: nm, addr: item.addr, locked: errs.Lock !== undefined ? null : lockState(f.Lock), fields: f, fieldErrors: errs };
+  return { exists: true, total: typeof res?.total === "number" ? res.total : undefined, name: nm, addr: item.addr, locked: errs.Lock !== undefined ? null : lockState(f.Lock), fields: f, fieldErrors: errs };
 }
 
 const refuse = (name: string, error: string, detail?: unknown): StepResult => asRead({ name, status: "failed", error, ...(detail !== undefined ? { detail } : {}) });
@@ -573,6 +575,7 @@ export function parseTargetObject(field: string, value: unknown): string {
   const s = value.trim().replace(/\s+/g, " ");
   if (/\b(thru|through)\b|[+;]/i.test(s)) throw new ValidationError(`${field}: one object per item (got ${JSON.stringify(s)}); use the batch form for several`, field);
   if (!/^[A-Za-z]+ (\d+(\.\d+)*|"[^"]+")$/.test(s)) throw new ValidationError(`${field} must be an object keyword and number such as "Group 3" or "Preset 4.12" (got ${JSON.stringify(s)})`, field);
+  if (/[*?]/.test(s)) throw new ValidationError(`${field}: wildcards ("*", "?") can match several objects; name one object (got ${JSON.stringify(s)})`, field);
   if (/^appearance /i.test(s)) throw new ValidationError(`${field}: an appearance is not assigned to an appearance; give the object that should show it`, field);
   return s;
 }
@@ -646,6 +649,11 @@ export async function setAppearance(ctx: ToolContext, raw: SetAppearanceArgs): P
         steps.push(refuse("check_object", `${object} does not exist; nothing was sent`));
         return done();
       }
+      // The assignment is sent with the reference as given: it must name exactly the object that is checked (#161 review).
+      if (objBefore.total !== 1) {
+        steps.push(refuse("check_object", objBefore.total === undefined ? `how many objects ${object} names could not be read; nothing was sent` : `${object} names ${objBefore.total} objects; give one object (by number); nothing was sent`));
+        return done();
+      }
       if (objBefore.locked !== false) {
         steps.push(refuse("check_object", objBefore.locked ? `${object} is locked; nothing was sent` : `the Lock of ${object} could not be read; nothing was sent`));
         return done();
@@ -657,6 +665,10 @@ export async function setAppearance(ctx: ToolContext, raw: SetAppearanceArgs): P
     steps.push(a.step);
     if (!a.value) return done();
     const appBefore = a.value;
+    if (appBefore.exists && appBefore.total !== 1) {
+      steps.push(refuse("check_appearance", appBefore.total === undefined ? `how many appearances ${appRef} names could not be read; nothing was sent` : `${appRef} names ${appBefore.total} appearances; give it by number; nothing was sent`));
+      return done();
+    }
     if (!spec && !appBefore.exists) {
       steps.push(refuse("check_appearance", `${appRef} does not exist; give create to make it; nothing was sent`));
       return done();
@@ -806,10 +818,14 @@ const appearanceShape = {
   on_name_taken: z.enum(ON_NAME_TAKEN).optional(),
 };
 
+/** The appearance an item names, canonical ("20", 20 and " 20 " are one; a name case aside). */
+export function appearanceRef(it: Record<string, unknown>): string {
+  return `appearance ${String(it.appearance).trim().replace(/^"|"$/g, "").toLowerCase()}`;
+}
+
 /** The appearance an item writes (canonical), when it creates or changes one. */
 export function appearanceKey(it: Record<string, unknown>): string | undefined {
-  if (it.create === undefined) return undefined;
-  return `appearance ${String(it.appearance).trim().toLowerCase()}`;
+  return it.create === undefined ? undefined : appearanceRef(it);
 }
 
 export const registerWorldFilterTools: RegisterTools = (server, ctx) => {
@@ -896,6 +912,8 @@ export const registerWorldFilterTools: RegisterTools = (server, ctx) => {
                 const k = appearanceKey(it);
                 return k && it.object !== undefined ? [k] : [];
               },
+              // An assignment uses the appearance: it is skipped when an earlier item creating or changing it failed (#161 review).
+              depends: (it) => (it.create === undefined ? [appearanceRef(it)] : []),
               check: (items) => duplicates(items.map(appearanceKey).filter((x): x is string => x !== undefined)).map((x) => `${x} is created or changed by more than one item`),
               run: (it, c) => setAppearance(c, it as SetAppearanceArgs),
             })
